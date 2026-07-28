@@ -1,0 +1,66 @@
+# 项目统一配置文件。
+# 本地开发阶段先集中管理 MySQL、Qdrant、Embedding 和日志配置。
+
+app:
+  name: AI Data Analysis
+  version: 0.1.0
+
+mysql:
+  host: 127.0.0.1
+  port: 3309
+  user: app_user
+  password: "123456"
+  dw_database: dw
+  meta_database: meta
+  charset: utf8mb4
+  pool_pre_ping: true
+  pool_recycle: 3600
+
+qdrant:
+  url: http://127.0.0.1:6333
+  tables_collection: meta_tables_semantic
+  columns_collection: meta_columns_semantic
+  metrics_collection: meta_metrics_semantic
+  dimension_values_collection: meta_dimension_values_semantic
+  vector_size: 1024
+  distance: Cosine
+  upsert_batch_size: 64
+
+elasticsearch:
+  url: http://127.0.0.1:9200
+  # 应用只访问 alias；重建时先写新的物理索引，再原子切换 alias。
+  dimension_values_alias: meta_dimension_values
+  dimension_values_index: meta_dimension_values_v1
+  bulk_batch_size: 500
+
+dimension_value_search:
+  # 第一版只索引文本型维度和明确的枚举维度，月份、评分等走结构化条件。
+  included_dimensions:
+    - product_category
+    - customer_state
+    - seller_state
+    - order_status
+    - payment_type
+    - is_delayed
+  es_top_k: 20
+  vector_top_k: 20
+  final_top_k: 10
+  vector_score_threshold: 0.55
+  rrf_k: 60
+
+embedding:
+  url: http://127.0.0.1:8081
+  model: BAAI/bge-large-zh-v1.5
+  # cpu-1.8 在当前 macOS Docker 环境中批量请求可能触发内部队列阻塞。
+  batch_size: 1
+  retry_count: 3
+  retry_backoff_seconds: 2
+
+logging:
+  level: INFO
+  format: "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+
+llm:
+  model_name: Pro/zai-org/GLM-5.1
+  api_key: ${oc.env:LLM_API_KEY}
+  base_url: https://api.siliconflow.cn/v1

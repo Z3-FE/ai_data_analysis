@@ -31,6 +31,8 @@ CREATE TABLE tables (
   business_name VARCHAR(128) NOT NULL COMMENT '业务名称',
   grain TEXT NOT NULL COMMENT '表粒度说明',
   description TEXT NOT NULL COMMENT '表业务说明',
+  aliases JSON NULL COMMENT '表的别名、同义词、业务叫法，用于向量检索召回增强',
+  status VARCHAR(32) NOT NULL DEFAULT 'active' COMMENT '元数据状态，active 表示启用，inactive 表示停用',
   UNIQUE KEY uk_meta_tables (database_name, table_name),
   CONSTRAINT fk_meta_tables_data_source FOREIGN KEY (data_source_id) REFERENCES data_sources(data_source_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='DW 表元数据，描述每张表的类型、粒度和用途';
@@ -46,6 +48,8 @@ CREATE TABLE columns (
   is_queryable TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否允许 AI 查询',
   is_aggregatable TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否允许聚合',
   description TEXT NOT NULL COMMENT '字段业务说明',
+  aliases JSON NULL COMMENT '字段的别名、同义词、业务叫法，用于向量检索召回增强',
+  status VARCHAR(32) NOT NULL DEFAULT 'active' COMMENT '元数据状态，active 表示启用，inactive 表示停用',
   UNIQUE KEY uk_meta_columns (table_id, column_name),
   CONSTRAINT fk_meta_columns_table FOREIGN KEY (table_id) REFERENCES tables(table_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='字段元数据，描述字段含义、角色和可查询能力';
@@ -73,6 +77,8 @@ CREATE TABLE metrics (
   aggregation_type VARCHAR(32) NOT NULL COMMENT '聚合类型',
   unit VARCHAR(32) NULL COMMENT '指标单位',
   description TEXT NOT NULL COMMENT '指标业务口径',
+  aliases JSON NULL COMMENT '指标的别名、同义词、业务叫法，用于向量检索召回增强',
+  status VARCHAR(32) NOT NULL DEFAULT 'active' COMMENT '元数据状态，active 表示启用，inactive 表示停用',
   CONSTRAINT fk_meta_metrics_base_table FOREIGN KEY (base_table_id) REFERENCES tables(table_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='指标定义表，记录销售额、订单量、客单价等指标口径';
 
@@ -137,7 +143,10 @@ CREATE TABLE query_examples (
 INSERT INTO data_sources VALUES
 ('olist_dw', 'Olist DW', 'dw', 'mysql', 'Olist 电商数据的分析型数据仓库，包含维度表和事实表。');
 
-INSERT INTO tables VALUES
+INSERT INTO tables (
+  table_id, data_source_id, database_name, table_name, table_type,
+  business_name, grain, description
+) VALUES
 ('dw.dim_date', 'olist_dw', 'dw', 'dim_date', 'dimension', '日期维度', '一个自然日期一行', '支持按天、周、月、季度、年分析。'),
 ('dw.dim_customer', 'olist_dw', 'dw', 'dim_customer', 'dimension', '客户维度', '一个 customer_id 一行', '保存订单级客户 ID、唯一客户 ID 和客户地区。'),
 ('dw.dim_product', 'olist_dw', 'dw', 'dim_product', 'dimension', '商品维度', '一个 product_id 一行', '保存商品、品类、图片、重量和尺寸属性。'),
@@ -151,7 +160,10 @@ INSERT INTO tables VALUES
 ('dw.fact_payment', 'olist_dw', 'dw', 'fact_payment', 'fact', '支付事实', '一个订单支付记录一行', '用于支付方式、分期和支付金额分析。'),
 ('dw.fact_review', 'olist_dw', 'dw', 'fact_review', 'fact', '评价事实', '一条评价记录一行', '用于评分、好评率、差评和评论分析。');
 
-INSERT INTO columns VALUES
+INSERT INTO columns (
+  column_id, table_id, column_name, business_name, data_type,
+  semantic_role, is_queryable, is_aggregatable, description
+) VALUES
 ('dw.fact_order_item.price', 'dw.fact_order_item', 'price', '商品成交金额', 'DECIMAL(12,2)', 'measure', 1, 1, '商品明细成交金额，不含运费。'),
 ('dw.fact_order_item.freight_value', 'dw.fact_order_item', 'freight_value', '运费金额', 'DECIMAL(12,2)', 'measure', 1, 1, '订单明细对应的运费金额。'),
 ('dw.fact_order_item.item_count', 'dw.fact_order_item', 'item_count', '商品明细数', 'INT', 'measure', 1, 1, '每行固定为 1，用于统计商品明细数。'),
@@ -176,7 +188,10 @@ INSERT INTO relationships VALUES
 ('fact_payment_to_dim_payment_type', 'dw.fact_payment', 'payment_type_key', 'dw.dim_payment_type', 'payment_type_key', 'many_to_one', '支付事实关联支付方式维度。'),
 ('fact_review_to_dim_customer', 'dw.fact_review', 'customer_key', 'dw.dim_customer', 'customer_key', 'many_to_one', '评价事实关联客户维度。');
 
-INSERT INTO metrics VALUES
+INSERT INTO metrics (
+  metric_id, metric_name, business_name, base_table_id, expression_sql,
+  aggregation_type, unit, description
+) VALUES
 ('gmv', 'gmv', '销售额', 'dw.fact_order_item', 'SUM(price)', 'sum', 'currency', '商品成交金额之和，第一版口径不含运费。'),
 ('freight_amount', 'freight_amount', '运费金额', 'dw.fact_order_item', 'SUM(freight_value)', 'sum', 'currency', '订单明细运费金额之和。'),
 ('order_count', 'order_count', '订单量', 'dw.fact_order', 'SUM(order_count)', 'sum', 'order', '订单事实表每行一个订单，按 order_count 求和。'),
@@ -187,6 +202,10 @@ INSERT INTO metrics VALUES
 ('good_review_rate', 'good_review_rate', '好评率', 'dw.fact_review', 'SUM(CASE WHEN review_score >= 4 THEN 1 ELSE 0 END) / COUNT(*)', 'ratio', 'percent', '评分大于等于 4 的评价占比。'),
 ('delay_rate', 'delay_rate', '延迟率', 'dw.fact_order', 'SUM(CASE WHEN is_delayed = 1 THEN 1 ELSE 0 END) / COUNT(*)', 'ratio', 'percent', '实际送达晚于预计送达的订单占比。'),
 ('avg_delivery_days', 'avg_delivery_days', '平均配送天数', 'dw.fact_order', 'AVG(customer_delivery_days)', 'avg', 'day', '下单到客户收货的平均天数。');
+
+UPDATE tables SET aliases = JSON_ARRAY(), status = 'active';
+UPDATE columns SET aliases = JSON_ARRAY(), status = 'active';
+UPDATE metrics SET aliases = JSON_ARRAY(), status = 'active';
 
 INSERT INTO dimensions VALUES
 ('purchase_month', 'purchase_month', '下单月份', 'dw.dim_date', 'year_month_value', '按下单日期所属月份分析。'),

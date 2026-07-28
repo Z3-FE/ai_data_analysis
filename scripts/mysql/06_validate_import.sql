@@ -31,6 +31,7 @@ UNION ALL SELECT 'meta.columns', COUNT(*) FROM meta.columns
 UNION ALL SELECT 'meta.relationships', COUNT(*) FROM meta.relationships
 UNION ALL SELECT 'meta.metrics', COUNT(*) FROM meta.metrics
 UNION ALL SELECT 'meta.dimensions', COUNT(*) FROM meta.dimensions
+UNION ALL SELECT 'meta.dimension_values', COUNT(*) FROM meta.dimension_values
 UNION ALL SELECT 'meta.metric_dimensions', COUNT(*) FROM meta.metric_dimensions
 UNION ALL SELECT 'meta.subject_areas', COUNT(*) FROM meta.subject_areas;
 
