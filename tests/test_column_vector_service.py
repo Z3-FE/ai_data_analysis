@@ -14,6 +14,7 @@ def make_column() -> dict:
     return {
         "column_id": "dw.fact_order.order_count",
         "table_id": "dw.fact_order",
+        "table_name": "fact_order",
         "column_name": "order_count",
         "business_name": "订单数",
         "data_type": "INT",
@@ -29,7 +30,7 @@ def make_column() -> dict:
 class FakeEmbeddingClient:
     """返回固定 1024 维向量。"""
 
-    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [[0.1] * 1024 for _ in texts]
 
 

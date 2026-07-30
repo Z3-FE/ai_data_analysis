@@ -4,15 +4,16 @@
   uv run python -m app.scripts.build_meta_vectors
 """
 
+import asyncio
 import json
 import logging
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.clients.embedding_client import EmbeddingClient
-from app.clients.mysql_client import MetaSessionLocal
-from app.clients.qdrant_client import VectorDbClient
+from app.clients.embedding_client import embedding_client_manager
+from app.clients.mysql_client import meta_mysql_client_manager
+from app.clients.qdrant_client import qdrant_client_manager
 from app.core.logging import setup_logging
 from app.repositories.qdrant_repository import QdrantRepository
 from app.services.semantic.column_vector_service import build_meta_column_vectors
@@ -22,9 +23,16 @@ from app.services.semantic.table_vector_service import build_meta_table_vectors
 logger = logging.getLogger(__name__)
 
 
+def _require_initialized(resource, resource_name: str):
+    """确保脚本级客户端已经初始化。"""
+    if resource is None:
+        raise RuntimeError(f"{resource_name}尚未初始化")
+    return resource
+
+
 def build_all_meta_vectors(
     db: Session,
-    embedding_client: EmbeddingClient,
+    embedding_client,
     qdrant_repository: QdrantRepository,
 ) -> dict[str, Any]:
     """按表、字段、指标顺序构建全部元数据向量。"""
@@ -69,15 +77,39 @@ def build_all_meta_vectors(
 def main() -> None:
     """脚本入口：统一构建并输出三类元数据向量统计。"""
     setup_logging()
-    embedding_client = EmbeddingClient()
-    qdrant_repository = QdrantRepository(client=VectorDbClient())
-    with MetaSessionLocal() as db:
-        result = build_all_meta_vectors(
-            db,
-            embedding_client=embedding_client,
-            qdrant_repository=qdrant_repository,
+    embedding_client_manager.init()
+    qdrant_client_manager.init()
+    meta_mysql_client_manager.init()
+    try:
+        embedding_client = _require_initialized(
+            embedding_client_manager.client,
+            "Embedding 客户端",
         )
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+        qdrant_client = _require_initialized(
+            qdrant_client_manager.client,
+            "Qdrant 客户端",
+        )
+        session_factory = _require_initialized(
+            meta_mysql_client_manager.session_factory,
+            "Meta MySQL Session 工厂",
+        )
+        qdrant_repository = QdrantRepository(client=qdrant_client)
+
+        async def _run() -> dict[str, Any]:
+            async with session_factory() as session:
+                return await session.run_sync(
+                    lambda sync_session: build_all_meta_vectors(
+                        sync_session,
+                        embedding_client=embedding_client,
+                        qdrant_repository=qdrant_repository,
+                    )
+                )
+
+        result = asyncio.run(_run())
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    finally:
+        asyncio.run(qdrant_client_manager.close())
+        asyncio.run(meta_mysql_client_manager.close())
 
 
 if __name__ == "__main__":

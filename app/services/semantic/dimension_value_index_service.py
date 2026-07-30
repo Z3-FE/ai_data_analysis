@@ -14,7 +14,6 @@ from typing import Any
 from qdrant_client.http.models import PointStruct
 from sqlalchemy.orm import Session
 
-from app.clients.embedding_client import EmbeddingClient
 from app.core.config import settings
 from app.repositories.elasticsearch_repository import ElasticsearchRepository
 from app.repositories.meta_repository import list_active_dimension_values
@@ -157,7 +156,7 @@ def _validate_vectors(vectors: list[list[float]], expected_count: int) -> None:
 
 def _build_qdrant_dimension_value_vectors(
     vector_documents: list[DimensionValueVectorDocument],
-    embedding_client: EmbeddingClient,
+    embedding_client,
     qdrant_repository: QdrantRepository,
 ) -> dict[str, Any]:
     """分批生成并写入 Qdrant，支持中断后按 point_id 续建。"""
@@ -196,7 +195,7 @@ def _build_qdrant_dimension_value_vectors(
             start + len(batch),
             len(vector_documents),
         )
-        vectors = embedding_client.embed_texts([document.text for document in pending])
+        vectors = embedding_client.embed_documents([document.text for document in pending])
         _validate_vectors(vectors, len(pending))
         points = [
             PointStruct(
@@ -220,24 +219,21 @@ def _build_qdrant_dimension_value_vectors(
 
 def build_dimension_value_indexes(
     db: Session,
-    embedding_client: EmbeddingClient,
+    embedding_client,
     qdrant_repository: QdrantRepository,
     es_repository: ElasticsearchRepository,
 ) -> dict[str, Any]:
-    """从 MySQL 同时构建 ES 全文索引和 Qdrant 字段值语义索引。"""
-    values = list_active_dimension_values(
-        db,
-        settings.dimension_value_search.included_dimensions,
-    )
+    """构建维度值的 ES 全文索引和 Qdrant 语义索引。"""
+    values = list_active_dimension_values(db, settings.dimension_value_search.included_dimensions)
     if not values:
-        raise ValueError("meta.dimension_values 中没有符合配置的启用状态维度值。")
+        raise ValueError("meta.dimension_values 中没有可索引的维度值。")
 
     es_documents = [build_es_document(value) for value in values]
-    physical_index = settings.elasticsearch.dimension_values_index
+    index_name = settings.elasticsearch.dimension_values_index
     alias_name = settings.elasticsearch.dimension_values_alias
-    es_repository.recreate_dimension_values_index(physical_index)
-    es_count = es_repository.bulk_index(physical_index, es_documents)
-    es_repository.switch_alias(alias_name, physical_index)
+    es_repository.recreate_dimension_values_index(index_name)
+    document_count = es_repository.bulk_index(index_name, es_documents)
+    es_repository.switch_alias(alias_name, index_name)
 
     vector_documents = [
         document
@@ -253,10 +249,10 @@ def build_dimension_value_indexes(
     return {
         "value_count": len(values),
         "elasticsearch": {
-            "index": physical_index,
-            "alias": alias_name,
-            "document_count": es_count,
-            "alias_count": es_repository.count(alias_name),
+            "index_name": index_name,
+            "alias_name": alias_name,
+            "document_count": document_count,
+            "alias_switched": True,
         },
         "qdrant": qdrant_result,
     }

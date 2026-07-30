@@ -1,49 +1,51 @@
-"""MySQL 客户端和 SQLAlchemy Session 管理。
+"""MySQL 客户端管理器。
 
-MySQL 是当前项目的结构化数据核心：`dw` 保存数仓事实表和维度表，`meta`
-保存语义元数据。这里统一创建 MySQL engine 和 Session 工厂。
+统一创建和管理项目中的异步 MySQL 客户端。当前项目会同时连接两套 MySQL：
+meta 数据库保存结构化元数据，dw 数据库模拟真实数据仓库。
 """
 
-from collections.abc import Generator
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
-
-from app.core.config import settings
-
-engine_options = {
-    "pool_pre_ping": settings.mysql.pool_pre_ping,
-    "pool_recycle": settings.mysql.pool_recycle,
-}
-
-meta_engine = create_engine(settings.mysql.meta_database_url, **engine_options)
-dw_engine = create_engine(settings.mysql.dw_database_url, **engine_options)
-
-MetaSessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=meta_engine,
-)
-DwSessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=dw_engine,
-)
+from app.core.config import MysqlConfig, settings
 
 
-def get_meta_db() -> Generator[Session, None, None]:
-    """为一次请求提供连接 `meta` 数据库的 SQLAlchemy Session。"""
-    db = MetaSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+class MySQLClientManager:
+    """管理 MySQL Engine 和 Session 工厂。"""
+
+    def __init__(self, config: MysqlConfig, database: str) -> None:
+        self.config = config
+        self.database = database
+        self.engine: AsyncEngine | None = None
+        self.session_factory: async_sessionmaker | None = None
+
+    def _get_url(self) -> str:
+        """拼接 MySQL 异步连接地址。"""
+        return (
+            f"mysql+asyncmy://{self.config.user}:{self.config.password}"
+            f"@{self.config.host}:{self.config.port}/{self.database}"
+            f"?charset={self.config.charset}"
+        )
+
+    def init(self) -> None:
+        """初始化 Engine 和 Session 工厂。"""
+        self.engine = create_async_engine(
+            self._get_url(),
+            pool_pre_ping=self.config.pool_pre_ping,
+            pool_recycle=self.config.pool_recycle,
+        )
+        self.session_factory = async_sessionmaker(
+            self.engine,
+            autoflush=True,
+            expire_on_commit=False,
+        )
+
+    async def close(self) -> None:
+        """释放连接池资源。"""
+        if self.engine is not None:
+            await self.engine.dispose()
+            self.engine = None
+            self.session_factory = None
 
 
-def get_dw_db() -> Generator[Session, None, None]:
-    """为一次请求提供连接 `dw` 数据库的 SQLAlchemy Session。"""
-    db = DwSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+meta_mysql_client_manager = MySQLClientManager(settings.mysql, settings.mysql.meta_database)
+dw_mysql_client_manager = MySQLClientManager(settings.mysql, settings.mysql.dw_database)

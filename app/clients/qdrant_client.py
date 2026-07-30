@@ -1,27 +1,35 @@
-"""Qdrant 连接客户端。
+"""Qdrant 异步客户端管理器。
 
-这里只负责创建 QdrantClient 实例和基础健康检查，不承载任何集合创建、写入、
-查询或过滤逻辑。具体业务操作统一下放到 `app.repositories.qdrant_repository`。
+这里只负责创建、保存和关闭 AsyncQdrantClient，不承载集合创建、写入、查询或过滤逻辑。
+具体 Qdrant 操作统一放到 repositories/qdrant 下。
 """
 
-from qdrant_client import QdrantClient
+from typing import Optional
 
-from app.core.config import settings
+from qdrant_client import AsyncQdrantClient
+
+from app.core.config import QdrantConfig, settings
 
 
-class VectorDbClient:
-    """Qdrant 连接包装。"""
+class QdrantClientManager:
+    """管理 Qdrant 异步客户端的生命周期。"""
 
-    def __init__(self, url: str | None = None) -> None:
-        self.client = QdrantClient(
-            url=url or settings.qdrant.url,
+    def __init__(self, config: QdrantConfig) -> None:
+        self.config = config
+        self.client: Optional[AsyncQdrantClient] = None
+
+    def init(self) -> None:
+        """显式初始化 Qdrant 异步客户端。"""
+        self.client = AsyncQdrantClient(
+            url=self.config.url,
             check_compatibility=False,
         )
 
-    def health(self) -> bool:
-        """检查 Qdrant 服务是否可访问。"""
-        try:
-            self.client.get_collections()
-            return True
-        except Exception:
-            return False
+    async def close(self) -> None:
+        """关闭 Qdrant 异步客户端。"""
+        if self.client is not None:
+            await self.client.close()
+            self.client = None
+
+
+qdrant_client_manager = QdrantClientManager(settings.qdrant)

@@ -5,13 +5,19 @@
 """
 
 import json
+import logging
 import re
 
 import jieba.analyse
+from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.prompts import PromptTemplate
 from langgraph.runtime import Runtime
 
 from app.agent.context import AgentContext
+from app.agent.prompts.prompt_loader import load_prompt
 from app.agent.state import AgentState
+
+logger = logging.getLogger(__name__)
 
 _JSON_ARRAY_PATTERN = re.compile(r"\[[\s\S]*\]")
 _STOP_WORDS = {
@@ -27,47 +33,19 @@ _STOP_WORDS = {
     "一下吧",
 }
 _ALLOW_POS = (
-    "n",  # 名词：商品、订单、销售额
-    "nr",  # 人名：张三、李四
-    "ns",  # 地名：华北、北京、上海
-    "nt",  # 机构团体名：门店、品牌、渠道
-    "nz",  # 其他专有名词：SKU、GMV、AOV
-    "v",  # 动词：统计、对比、查询
-    "vn",  # 名动词：销售、成交、退款
-    "a",  # 形容词：新增、有效、活跃
-    "an",  # 名形词：可用、有效、异常
-    "eng",  # 英文：GMV、SKU、ROI
-    "i",  # 成语或习用语，避免遗漏整体表达
-    "l",  # 常用固定短语，例如“销售总额”
+    "n",
+    "nr",
+    "ns",
+    "nt",
+    "nz",
+    "v",
+    "vn",
+    "a",
+    "an",
+    "eng",
+    "i",
+    "l",
 )
-
-
-def _parse_keywords(raw_text: str) -> list[str]:
-    """从模型输出中解析关键词列表。"""
-    text = raw_text.strip()
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        match = _JSON_ARRAY_PATTERN.search(text)
-        if not match:
-            return []
-        data = json.loads(match.group(0))
-
-    if not isinstance(data, list):
-        return []
-    return _dedupe_keywords(str(item) for item in data)
-
-
-def _extract_jieba_keywords(question: str) -> list[str]:
-    """使用 jieba TF-IDF 提取词面关键词。"""
-    words = jieba.analyse.extract_tags(
-        question,
-        topK=8,
-        withWeight=False,
-        allowPOS=_ALLOW_POS,
-    )
-    return _dedupe_keywords(words)
-
 
 def _dedupe_keywords(values) -> list[str]:
     """清洗、过滤并保持顺序去重。"""
@@ -88,7 +66,7 @@ def _merge_keywords(llm_keywords: list[str], jieba_keywords: list[str]) -> list[
     return _dedupe_keywords([*llm_keywords, *jieba_keywords])
 
 
-def extract_keywords_node(
+async def extract_keywords_node(
     state: AgentState,
     runtime: Runtime[AgentContext],
 ) -> AgentState:
@@ -98,23 +76,19 @@ def extract_keywords_node(
     writer({"type": "progress", "step": step, "status": "running"})
 
     question = state.get("input_text", "")
-    prompt = f"""
-你是数据分析系统中的关键词抽取节点。
-请从用户问题中提取最适合后续检索的关键词。
+    prompt = PromptTemplate(
+        template = load_prompt('extract_keywords'),
+        input_variables=["query"]
+    )
+    chain = prompt | runtime.context["llm_client"] | JsonOutputParser()
+    llm_keywords = await chain.ainvoke({"query": question})
 
-要求：
-1. 只输出 JSON 数组，不要输出解释文字。
-2. 保留指标词、维度词、时间词、过滤条件词。
-3. 去掉“帮我”“看一下”“统计一下”这类无意义表达。
-4. 如果没有明确关键词，返回空数组 []。
+    jieba_keywords = jieba.analyse.extract_tags(question, allowPOS=_ALLOW_POS)
 
-用户问题：{question}
-""".strip()
-
-    llm_output = runtime.context["llm_client"].chat(prompt)
-    llm_keywords = _parse_keywords(llm_output)
-    jieba_keywords = _extract_jieba_keywords(question)
     keywords = _merge_keywords(llm_keywords, jieba_keywords)
+
+
+    logger.info("关键词抽取 LLM 原始输出：%s", llm_keywords)
 
     writer(
         {
@@ -131,7 +105,6 @@ def extract_keywords_node(
         "llm_keywords": llm_keywords,
         "jieba_keywords": jieba_keywords,
         "keywords": keywords,
-        "llm_output": llm_output,
         "output_text": json.dumps(
             {
                 "keywords": keywords,
@@ -142,3 +115,5 @@ def extract_keywords_node(
             ensure_ascii=False,
         ),
     }
+
+

@@ -1,56 +1,35 @@
-"""LLM 调用客户端。
+"""LLM 客户端生命周期管理。
 
-当前通过 SiliconFlow OpenAI 兼容接口调用模型。这里保持很薄，只负责一次最小
-聊天补全请求和流式输出，后续如果需要多轮消息，再扩展这个客户端。
+按教程风格集中初始化 LangChain Chat Model，节点通过 `invoke` 直接使用插件对象。
 """
 
-from collections.abc import Iterator
+from typing import Optional
 
-from openai import OpenAI
+from langchain.chat_models import init_chat_model
 
-from app.core.config import settings
+from app.core.config import LlmConfig, settings
 
 
-class LLMClient:
-    """封装最小 LLM 调用能力。"""
+class LLMClientManager:
+    """管理 LLM 插件对象的初始化。"""
 
-    def __init__(
-        self,
-        model_name: str | None = None,
-        api_key: str | None = None,
-        base_url: str | None = None,
-    ) -> None:
-        llm_config = settings.llm
-        self.model_name = model_name or llm_config.model_name
-        self.client = OpenAI(
-            api_key=api_key or llm_config.api_key,
-            base_url=base_url or llm_config.base_url,
+    def __init__(self, config: LlmConfig) -> None:
+        self.config = config
+        self.client = None
+
+    def init(self) -> None:
+        """显式初始化 LLM 插件对象。"""
+        self.client = init_chat_model(
+            model=self.config.model_name,
+            model_provider="openai",
+            base_url=self.config.base_url,
+            api_key=self.config.api_key,
+            temperature=0,
         )
 
-    def _messages(self, user_text: str) -> list[dict[str, str]]:
-        """构造最小对话消息。"""
-        return [
-            {"role": "system", "content": "你是一个简洁的中文数据分析助手。"},
-            {"role": "user", "content": user_text},
-        ]
+    def close(self) -> None:
+        """当前 LLM 插件对象无显式关闭逻辑，保留生命周期接口。"""
+        self.client = None
 
-    def chat(self, user_text: str) -> str:
-        """发送单轮用户消息并返回模型文本回复。"""
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=self._messages(user_text),
-        )
-        return response.choices[0].message.content or ""
 
-    def chat_stream(self, user_text: str) -> Iterator[str]:
-        """流式发送单轮用户消息，逐段返回模型文本。"""
-        stream = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=self._messages(user_text),
-            stream=True,
-        )
-        for chunk in stream:
-            delta = chunk.choices[0].delta
-            content = getattr(delta, "content", None) or ""
-            if content:
-                yield content
+llm_client_manager = LLMClientManager(settings.llm)

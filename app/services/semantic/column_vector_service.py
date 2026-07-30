@@ -12,7 +12,6 @@ from typing import Any
 from qdrant_client.http.models import PointStruct
 from sqlalchemy.orm import Session
 
-from app.clients.embedding_client import EmbeddingClient
 from app.core.config import settings
 from app.repositories.meta_repository import list_active_columns_for_embedding
 from app.repositories.qdrant_repository import QdrantRepository
@@ -54,6 +53,7 @@ def build_column_vector_documents(column: dict[str, Any]) -> list[ColumnVectorDo
     payload = {
         "column_id": column["column_id"],
         "table_id": column["table_id"],
+        "table_name": column["table_name"],
         "column_name": column["column_name"],
         "business_name": column["business_name"],
         "data_type": column["data_type"],
@@ -95,7 +95,7 @@ def build_column_vector_documents(column: dict[str, Any]) -> list[ColumnVectorDo
 
 def build_meta_column_vectors(
     db: Session,
-    embedding_client: EmbeddingClient,
+    embedding_client,
     qdrant_repository: QdrantRepository,
 ) -> dict[str, Any]:
     """构建 meta.columns 的 Qdrant 向量数据。"""
@@ -108,7 +108,7 @@ def build_meta_column_vectors(
         for column in columns
         for document in build_column_vector_documents(column)
     ]
-    vectors = embedding_client.embed_texts([document.text for document in documents])
+    vectors = embedding_client.embed_documents([document.text for document in documents])
 
     if len(vectors) != len(documents):
         raise ValueError("Embedding 返回向量数量与待写入文档数量不一致。")

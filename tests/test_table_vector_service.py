@@ -28,7 +28,7 @@ def make_table() -> dict:
 class FakeEmbeddingClient:
     """返回固定 1024 维向量，避免测试依赖真实 TEI 服务。"""
 
-    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [[0.1] * 1024 for _ in texts]
 
 

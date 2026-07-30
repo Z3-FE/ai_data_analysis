@@ -7,19 +7,19 @@
 from collections.abc import Iterable
 from typing import Any
 
-from app.clients.elasticsearch_client import FullTextSearchClient
+from elasticsearch import AsyncElasticsearch
 
 
 class ElasticsearchRepository:
     """封装 Elasticsearch 索引与查询操作。"""
 
-    def __init__(self, client: FullTextSearchClient) -> None:
+    def __init__(self, client: AsyncElasticsearch) -> None:
         self.client = client
 
     @property
     def sdk(self):
         """暴露底层 SDK，便于仓库内部统一调用。"""
-        return self.client.client
+        return self.client
 
     def recreate_dimension_values_index(self, index_name: str) -> None:
         """重建维度值物理索引，并配置精确匹配与中外文全文匹配字段。"""

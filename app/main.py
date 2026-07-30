@@ -5,18 +5,50 @@
 
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 
 from app.api.router import api_router
+from app.clients.embedding_client import embedding_client_manager
+from app.clients.elasticsearch_client import elasticsearch_client_manager
+from app.clients.llm_client import llm_client_manager
+from app.clients.mysql_client import dw_mysql_client_manager, meta_mysql_client_manager
+from app.clients.qdrant_client import qdrant_client_manager
 from app.core.config import settings
 from app.core.logging import setup_logging
 
 setup_logging()
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title=settings.app.name, version=settings.app.version)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """统一管理应用级客户端的启动和关闭。"""
+    llm_client_manager.init()
+    embedding_client_manager.init()
+    qdrant_client_manager.init()
+    elasticsearch_client_manager.init()
+    meta_mysql_client_manager.init()
+    dw_mysql_client_manager.init()
+    logger.info("应用级客户端初始化完成")
+    try:
+        yield
+    finally:
+        await elasticsearch_client_manager.close()
+        await qdrant_client_manager.close()
+        await meta_mysql_client_manager.close()
+        await dw_mysql_client_manager.close()
+        llm_client_manager.close()
+        logger.info("应用级客户端已关闭")
+
+
+app = FastAPI(
+    title=settings.app.name,
+    version=settings.app.version,
+    lifespan=lifespan,
+)
 app.include_router(api_router, prefix="/api")
 
 

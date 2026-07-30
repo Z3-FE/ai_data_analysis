@@ -12,7 +12,6 @@ from typing import Any
 from qdrant_client.http.models import PointStruct
 from sqlalchemy.orm import Session
 
-from app.clients.embedding_client import EmbeddingClient
 from app.core.config import settings
 from app.repositories.meta_repository import list_active_metrics_for_embedding
 from app.repositories.qdrant_repository import QdrantRepository
@@ -94,7 +93,7 @@ def build_metric_vector_documents(metric: dict[str, Any]) -> list[MetricVectorDo
 
 def build_meta_metric_vectors(
     db: Session,
-    embedding_client: EmbeddingClient,
+    embedding_client,
     qdrant_repository: QdrantRepository,
 ) -> dict[str, Any]:
     """构建 meta.metrics 的 Qdrant 向量数据。"""
@@ -107,7 +106,7 @@ def build_meta_metric_vectors(
         for metric in metrics
         for document in build_metric_vector_documents(metric)
     ]
-    vectors = embedding_client.embed_texts([document.text for document in documents])
+    vectors = embedding_client.embed_documents([document.text for document in documents])
 
     if len(vectors) != len(documents):
         raise ValueError("Embedding 返回向量数量与待写入文档数量不一致。")

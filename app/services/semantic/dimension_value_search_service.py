@@ -3,7 +3,6 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.clients.embedding_client import EmbeddingClient
 from app.core.config import settings
 from app.repositories.elasticsearch_repository import ElasticsearchRepository
 from app.repositories.qdrant_repository import QdrantRepository
@@ -96,7 +95,7 @@ class DimensionValueSearchService:
 
     def __init__(
         self,
-        embedding_client: EmbeddingClient,
+        embedding_client,
         qdrant_repository: QdrantRepository,
         es_repository: ElasticsearchRepository,
     ) -> None:
@@ -117,7 +116,7 @@ class DimensionValueSearchService:
             index_name=settings.elasticsearch.dimension_values_alias,
             limit=config.es_top_k,
         )
-        query_vector = self.embedding_client.embed_texts([normalized_query])[0]
+        query_vector = self.embedding_client.embed_query(normalized_query)
         vector_hits = self.qdrant_repository.search_points(
             collection_name=settings.qdrant.dimension_values_collection,
             vector=query_vector,

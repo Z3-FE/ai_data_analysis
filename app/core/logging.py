@@ -12,8 +12,8 @@ from app.core.config import settings
 def setup_logging() -> None:
     """初始化项目日志格式和日志级别。"""
     logging.basicConfig(
-        level=settings.log_level,
-        format=settings.log_format,
+        level=settings.logging.level,
+        format=settings.logging.format,
         force=True,
     )
 

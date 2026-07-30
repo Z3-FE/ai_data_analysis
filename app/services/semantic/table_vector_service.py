@@ -12,7 +12,6 @@ from typing import Any
 from qdrant_client.http.models import PointStruct
 from sqlalchemy.orm import Session
 
-from app.clients.embedding_client import EmbeddingClient
 from app.core.config import settings
 from app.repositories.meta_repository import list_active_tables_for_embedding
 from app.repositories.qdrant_repository import QdrantRepository
@@ -95,7 +94,7 @@ def build_table_vector_documents(table: dict[str, Any]) -> list[TableVectorDocum
 
 def build_meta_table_vectors(
     db: Session,
-    embedding_client: EmbeddingClient,
+    embedding_client,
     qdrant_repository: QdrantRepository,
 ) -> dict[str, Any]:
     """构建 meta.tables 的 Qdrant 向量数据。"""
@@ -108,7 +107,7 @@ def build_meta_table_vectors(
         for table in tables
         for document in build_table_vector_documents(table)
     ]
-    vectors = embedding_client.embed_texts([document.text for document in documents])
+    vectors = embedding_client.embed_documents([document.text for document in documents])
 
     if len(vectors) != len(documents):
         raise ValueError("Embedding 返回向量数量与待写入文档数量不一致。")

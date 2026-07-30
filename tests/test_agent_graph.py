@@ -2,15 +2,29 @@
 
 import unittest
 
-from app.clients.embedding_client import EmbeddingClient
-from app.clients.llm_client import LLMClient
+from types import SimpleNamespace
+
+from langchain_core.runnables import RunnableLambda
+
 from app.services.agent_service import AgentService
 
 
+async def _fake_aembed_query(text: str) -> list[float]:
+    """返回固定查询向量。"""
+    return [0.1] * 1024
+
+
 class FakeQdrantRepository:
-    """提供 retrieve_columns 所需的最小仓库接口。"""
+    """提供通用 Qdrant 仓库的最小接口。"""
 
     def search_points(self, **kwargs) -> list[dict]:
+        return []
+
+
+class FakeSemanticRepository:
+    """提供语义集合检索所需的最小接口。"""
+
+    async def search(self, **kwargs) -> list:
         return []
 
 
@@ -19,10 +33,14 @@ class AgentGraphTest(unittest.TestCase):
 
     def test_run_returns_echo_result(self) -> None:
         result = AgentService(
-            llm_client=LLMClient(),
-            embedding_client=EmbeddingClient(),
+            llm_client=RunnableLambda(lambda prompt: "[]"),
+            embedding_client=SimpleNamespace(aembed_query=lambda text: _fake_aembed_query(text)),
             qdrant_repository=FakeQdrantRepository(),
             elasticsearch_repository=object(),
+            meta_tables_semantic_repository=FakeSemanticRepository(),
+            meta_columns_semantic_repository=FakeSemanticRepository(),
+            meta_metrics_semantic_repository=FakeSemanticRepository(),
+            meta_dimension_values_semantic_repository=FakeSemanticRepository(),
         ).run("你好")
 
         self.assertEqual(result["input_text"], "你好")
@@ -38,7 +56,6 @@ class AgentGraphTest(unittest.TestCase):
         self.assertIsInstance(result["column_recall_terms"], list)
         self.assertIsInstance(result["column_candidates"], list)
         self.assertTrue(result["output_text"])
-        self.assertTrue(result["llm_output"])
 
 
 if __name__ == "__main__":

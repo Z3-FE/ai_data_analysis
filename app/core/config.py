@@ -133,26 +133,6 @@ class Settings:
     llm: LlmConfig
     logging: LoggingConfig
 
-    @property
-    def dw_database_url(self) -> str:
-        """兼容旧代码：返回 DW 数据库连接 URL。"""
-        return self.mysql.dw_database_url
-
-    @property
-    def meta_database_url(self) -> str:
-        """兼容旧代码：返回 meta 元数据库连接 URL。"""
-        return self.mysql.meta_database_url
-
-    @property
-    def log_level(self) -> str:
-        """兼容旧代码：返回日志级别。"""
-        return self.logging.level
-
-    @property
-    def log_format(self) -> str:
-        """兼容旧代码：返回日志格式。"""
-        return self.logging.format
-
 
 def _load_dotenv(path: Path | None = None) -> None:
     """读取项目根目录 `.env` 到当前进程环境变量。"""

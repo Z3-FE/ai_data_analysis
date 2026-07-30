@@ -35,8 +35,8 @@ def make_source(raw_value: str, display_name: str) -> dict:
 class FakeEmbeddingClient:
     """为检索词返回一个固定向量。"""
 
-    def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        return [[0.1] * 1024]
+    def embed_query(self, text: str) -> list[float]:
+        return [0.1] * 1024
 
 
 class FakeFullTextRepository:

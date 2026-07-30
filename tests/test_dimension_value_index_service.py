@@ -37,7 +37,7 @@ def make_dimension_value() -> dict:
 class FakeEmbeddingClient:
     """返回固定 1024 维向量。"""
 
-    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [[0.1] * 1024 for _ in texts]
 
 

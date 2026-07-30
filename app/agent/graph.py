@@ -18,6 +18,10 @@ def build_agent_graph():
     graph.add_node("extract_keywords", extract_keywords_node)
     graph.add_node("retrieve_columns", retrieve_columns)
 
+    # graph.add_edge(START, "extract_keywords")
+    # graph.add_edge("extract_keywords", END)
+    #
+
     graph.add_edge(START, "extract_keywords")
     graph.add_edge("extract_keywords", "retrieve_columns")
     graph.add_edge("retrieve_columns", END)

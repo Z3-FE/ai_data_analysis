@@ -56,21 +56,23 @@ def list_active_columns_for_embedding(db: Session) -> list[dict[str, Any]]:
         text(
             """
             SELECT
-                column_id,
-                table_id,
-                column_name,
-                business_name,
-                data_type,
-                semantic_role,
-                is_queryable,
-                is_aggregatable,
-                description,
-                aliases,
-                status
-            FROM meta.columns
-            WHERE status = 'active'
-              AND is_queryable = 1
-            ORDER BY column_id
+                c.column_id,
+                c.table_id,
+                t.table_name,
+                c.column_name,
+                c.business_name,
+                c.data_type,
+                c.semantic_role,
+                c.is_queryable,
+                c.is_aggregatable,
+                c.description,
+                c.aliases,
+                c.status
+            FROM meta.columns c
+            JOIN meta.tables t ON c.table_id = t.table_id
+            WHERE c.status = 'active'
+              AND c.is_queryable = 1
+            ORDER BY c.column_id
             """
         )
     )

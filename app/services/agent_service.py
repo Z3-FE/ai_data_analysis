@@ -4,15 +4,19 @@
 的数据结构。路由层不直接接触 LangGraph 细节。
 """
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
+from typing import Any
 
 from app.agent.context import AgentContext
 from app.agent.graph import agent_graph
 from app.agent.state import AgentState
-from app.clients.embedding_client import EmbeddingClient
-from app.clients.llm_client import LLMClient
 from app.repositories.elasticsearch_repository import ElasticsearchRepository
+from app.repositories.qdrant.meta_columns_semantic_repository import MetaColumnsSemanticRepository
+from app.repositories.qdrant.meta_dimension_values_semantic_repository import MetaDimensionValuesSemanticRepository
+from app.repositories.qdrant.meta_metrics_semantic_repository import MetaMetricsSemanticRepository
+from app.repositories.qdrant.meta_tables_semantic_repository import MetaTablesSemanticRepository
 from app.repositories.qdrant_repository import QdrantRepository
 
 
@@ -21,15 +25,23 @@ class AgentService:
 
     def __init__(
         self,
-        llm_client: LLMClient,
-        embedding_client: EmbeddingClient,
+        llm_client: Any,
+        embedding_client: Any,
         qdrant_repository: QdrantRepository,
         elasticsearch_repository: ElasticsearchRepository,
+        meta_tables_semantic_repository: MetaTablesSemanticRepository,
+        meta_columns_semantic_repository: MetaColumnsSemanticRepository,
+        meta_metrics_semantic_repository: MetaMetricsSemanticRepository,
+        meta_dimension_values_semantic_repository: MetaDimensionValuesSemanticRepository,
     ) -> None:
         self.llm_client = llm_client
         self.embedding_client = embedding_client
         self.qdrant_repository = qdrant_repository
         self.elasticsearch_repository = elasticsearch_repository
+        self.meta_tables_semantic_repository = meta_tables_semantic_repository
+        self.meta_columns_semantic_repository = meta_columns_semantic_repository
+        self.meta_metrics_semantic_repository = meta_metrics_semantic_repository
+        self.meta_dimension_values_semantic_repository = meta_dimension_values_semantic_repository
 
     def _context(self) -> AgentContext:
         """组装本次图执行使用的外部依赖。"""
@@ -38,6 +50,10 @@ class AgentService:
             embedding_client=self.embedding_client,
             qdrant_repository=self.qdrant_repository,
             elasticsearch_repository=self.elasticsearch_repository,
+            meta_tables_semantic_repository=self.meta_tables_semantic_repository,
+            meta_columns_semantic_repository=self.meta_columns_semantic_repository,
+            meta_metrics_semantic_repository=self.meta_metrics_semantic_repository,
+            meta_dimension_values_semantic_repository=self.meta_dimension_values_semantic_repository,
         )
 
     def _format_result(self, input_text: str, result: AgentState) -> dict:
@@ -57,7 +73,7 @@ class AgentService:
     def run(self, input_text: str) -> dict:
         """同步执行当前 Agent 图并返回结构化结果。"""
         state: AgentState = AgentState(input_text=input_text)
-        result = agent_graph.invoke(input=state, context=self._context())
+        result = asyncio.run(agent_graph.ainvoke(input=state, context=self._context()))
         return self._format_result(input_text, result)
 
     async def qyStream(self, input_text: str) -> AsyncIterator[str]:
