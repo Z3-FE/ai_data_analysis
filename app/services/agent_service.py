@@ -12,12 +12,12 @@ from typing import Any
 from app.agent.context import AgentContext
 from app.agent.graph import agent_graph
 from app.agent.state import AgentState
-from app.repositories.elasticsearch_repository import ElasticsearchRepository
-from app.repositories.qdrant.meta_columns_semantic_repository import MetaColumnsSemanticRepository
-from app.repositories.qdrant.meta_dimension_values_semantic_repository import MetaDimensionValuesSemanticRepository
-from app.repositories.qdrant.meta_metrics_semantic_repository import MetaMetricsSemanticRepository
-from app.repositories.qdrant.meta_tables_semantic_repository import MetaTablesSemanticRepository
-from app.repositories.qdrant_repository import QdrantRepository
+from app.repositories.es.es_dimension_value_repository import DimensionValueSearch
+from app.repositories.mysql.meta.mysql_meta_catalog_repository import MetaCatalogRepository
+from app.repositories.qdrant.qa_meta_columns_repository import MetaColumnsSemanticRepository
+from app.repositories.qdrant.qa_meta_dimension_values_repository import MetaDimensionValuesSemanticRepository
+from app.repositories.qdrant.qa_meta_metrics_repository import MetaMetricsSemanticRepository
+from app.repositories.qdrant.qa_meta_tables_repository import MetaTablesSemanticRepository
 
 
 class AgentService:
@@ -27,33 +27,33 @@ class AgentService:
         self,
         llm_client: Any,
         embedding_client: Any,
-        qdrant_repository: QdrantRepository,
-        elasticsearch_repository: ElasticsearchRepository,
+        dimension_value_search: DimensionValueSearch,
         meta_tables_semantic_repository: MetaTablesSemanticRepository,
         meta_columns_semantic_repository: MetaColumnsSemanticRepository,
         meta_metrics_semantic_repository: MetaMetricsSemanticRepository,
         meta_dimension_values_semantic_repository: MetaDimensionValuesSemanticRepository,
+        meta_catalog_repository: MetaCatalogRepository,
     ) -> None:
         self.llm_client = llm_client
         self.embedding_client = embedding_client
-        self.qdrant_repository = qdrant_repository
-        self.elasticsearch_repository = elasticsearch_repository
+        self.dimension_value_search = dimension_value_search
         self.meta_tables_semantic_repository = meta_tables_semantic_repository
         self.meta_columns_semantic_repository = meta_columns_semantic_repository
         self.meta_metrics_semantic_repository = meta_metrics_semantic_repository
         self.meta_dimension_values_semantic_repository = meta_dimension_values_semantic_repository
+        self.meta_catalog_repository = meta_catalog_repository
 
     def _context(self) -> AgentContext:
         """组装本次图执行使用的外部依赖。"""
         return AgentContext(
             llm_client=self.llm_client,
             embedding_client=self.embedding_client,
-            qdrant_repository=self.qdrant_repository,
-            elasticsearch_repository=self.elasticsearch_repository,
+            dimension_value_search=self.dimension_value_search,
             meta_tables_semantic_repository=self.meta_tables_semantic_repository,
             meta_columns_semantic_repository=self.meta_columns_semantic_repository,
             meta_metrics_semantic_repository=self.meta_metrics_semantic_repository,
             meta_dimension_values_semantic_repository=self.meta_dimension_values_semantic_repository,
+            meta_catalog_repository=self.meta_catalog_repository,
         )
 
     def _format_result(self, input_text: str, result: AgentState) -> dict:
@@ -66,6 +66,20 @@ class AgentService:
             "keywords": result.get("keywords", []),
             "column_recall_terms": result.get("column_recall_terms", []),
             "column_candidates": result.get("column_candidates", []),
+            "table_recall_terms": result.get("table_recall_terms", []),
+            "table_candidates": result.get("table_candidates", []),
+            "metrics_recall_terms": result.get("metrics_recall_terms", []),
+            "metrics_candidates": result.get("metrics_candidates", []),
+            "dimension_value_recall_terms": result.get(
+                "dimension_value_recall_terms", []
+            ),
+            "dimension_value_candidates": result.get(
+                "dimension_value_candidates", []
+            ),
+            "table_infos": result.get("table_infos", []),
+            "metric_infos": result.get("metric_infos", []),
+            "relationship_infos": result.get("relationship_infos", []),
+            "metric_dimension_infos": result.get("metric_dimension_infos", []),
             "output_text": result.get("output_text", ""),
             "llm_output": result.get("llm_output", ""),
         }

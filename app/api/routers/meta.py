@@ -4,15 +4,12 @@
 DW 表、指标、维度和表关系。
 """
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_meta_session
-from app.schemas.meta import DimensionValueSearchResult, MetaTable
+from app.schemas.meta import MetaTable
 from app.services.meta_catalog_service import list_meta_tables
-from app.services.semantic.dimension_value_search_service import (
-    DimensionValueSearchService,
-)
 
 router = APIRouter(prefix="/meta", tags=["meta"])
 
@@ -21,16 +18,3 @@ router = APIRouter(prefix="/meta", tags=["meta"])
 async def get_meta_tables(db: AsyncSession = Depends(get_meta_session)) -> list[MetaTable]:
     """返回元数据库中登记的 DW 表清单。"""
     return await db.run_sync(list_meta_tables)
-
-
-@router.get(
-    "/dimension-values/search",
-    response_model=list[DimensionValueSearchResult],
-)
-def search_dimension_values(
-    query: str,
-    limit: int = Query(default=10, ge=1, le=50),
-) -> list[DimensionValueSearchResult]:
-    """使用 Elasticsearch 和 Qdrant 混合检索真实维度值。"""
-    results = DimensionValueSearchService().search(query_text=query, limit=limit)
-    return [DimensionValueSearchResult.model_validate(result) for result in results]

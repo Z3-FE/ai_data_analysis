@@ -13,12 +13,12 @@ from app.clients.elasticsearch_client import elasticsearch_client_manager
 from app.clients.llm_client import llm_client_manager
 from app.clients.mysql_client import meta_mysql_client_manager
 from app.clients.qdrant_client import qdrant_client_manager
-from app.repositories.elasticsearch_repository import ElasticsearchRepository
-from app.repositories.qdrant.meta_columns_semantic_repository import MetaColumnsSemanticRepository
-from app.repositories.qdrant.meta_dimension_values_semantic_repository import MetaDimensionValuesSemanticRepository
-from app.repositories.qdrant.meta_metrics_semantic_repository import MetaMetricsSemanticRepository
-from app.repositories.qdrant.meta_tables_semantic_repository import MetaTablesSemanticRepository
-from app.repositories.qdrant_repository import QdrantRepository
+from app.repositories.es.es_dimension_value_repository import DimensionValueSearch
+from app.repositories.mysql.meta.mysql_meta_catalog_repository import MetaCatalogRepository
+from app.repositories.qdrant.qa_meta_columns_repository import MetaColumnsSemanticRepository
+from app.repositories.qdrant.qa_meta_dimension_values_repository import MetaDimensionValuesSemanticRepository
+from app.repositories.qdrant.qa_meta_metrics_repository import MetaMetricsSemanticRepository
+from app.repositories.qdrant.qa_meta_tables_repository import MetaTablesSemanticRepository
 from app.services.agent_service import AgentService
 
 T = TypeVar("T")
@@ -51,10 +51,11 @@ async def get_meta_session():
         yield session
 
 
-def get_qdrant_repository() -> QdrantRepository:
-    """创建 Qdrant 通用仓库。"""
-    client = _require_initialized(qdrant_client_manager.client, "Qdrant 客户端")
-    return QdrantRepository(client=client)
+async def get_meta_catalog_repository(
+    session=Depends(get_meta_session),
+) -> MetaCatalogRepository:
+    """创建 Agent 运行期使用的 Meta MySQL 元数据仓储。"""
+    return MetaCatalogRepository(session=session)
 
 
 async def get_meta_tables_semantic_repository() -> MetaTablesSemanticRepository:
@@ -81,19 +82,19 @@ async def get_meta_dimension_values_semantic_repository() -> MetaDimensionValues
     return MetaDimensionValuesSemanticRepository(client=client)
 
 
-def get_elasticsearch_repository() -> ElasticsearchRepository:
-    """创建 Elasticsearch 仓库。"""
+def get_dimension_value_search() -> DimensionValueSearch:
+    """创建 Agent 在线维度值 ES 检索对象。"""
     client = _require_initialized(
         elasticsearch_client_manager.client,
         "Elasticsearch 客户端",
     )
-    return ElasticsearchRepository(client=client)
+    return DimensionValueSearch(client=client)
 
 
 def get_agent_service(
     llm_client: Annotated[Any, Depends(get_llm_client)],
     embedding_client: Annotated[Any, Depends(get_embedding_client)],
-    qdrant_repository: Annotated[QdrantRepository, Depends(get_qdrant_repository)],
+    dimension_value_search: Annotated[DimensionValueSearch, Depends(get_dimension_value_search)],
     meta_tables_semantic_repository: Annotated[
         MetaTablesSemanticRepository,
         Depends(get_meta_tables_semantic_repository),
@@ -110,18 +111,18 @@ def get_agent_service(
         MetaDimensionValuesSemanticRepository,
         Depends(get_meta_dimension_values_semantic_repository),
     ],
-    elasticsearch_repository: Annotated[
-        ElasticsearchRepository, Depends(get_elasticsearch_repository)
+    meta_catalog_repository: Annotated[
+        MetaCatalogRepository, Depends(get_meta_catalog_repository)
     ],
 ) -> AgentService:
     """组装一次 Agent 执行所需的服务。"""
     return AgentService(
         llm_client=llm_client,
         embedding_client=embedding_client,
-        qdrant_repository=qdrant_repository,
-        elasticsearch_repository=elasticsearch_repository,
+        dimension_value_search=dimension_value_search,
         meta_tables_semantic_repository=meta_tables_semantic_repository,
         meta_columns_semantic_repository=meta_columns_semantic_repository,
         meta_metrics_semantic_repository=meta_metrics_semantic_repository,
         meta_dimension_values_semantic_repository=meta_dimension_values_semantic_repository,
+        meta_catalog_repository=meta_catalog_repository,
     )

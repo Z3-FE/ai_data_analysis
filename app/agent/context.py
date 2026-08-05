@@ -6,12 +6,12 @@ state 合并，避免把连接类、客户端对象塞进业务状态。
 
 from typing import Any, TypedDict
 
-from app.repositories.elasticsearch_repository import ElasticsearchRepository
-from app.repositories.qdrant.meta_columns_semantic_repository import MetaColumnsSemanticRepository
-from app.repositories.qdrant.meta_dimension_values_semantic_repository import MetaDimensionValuesSemanticRepository
-from app.repositories.qdrant.meta_metrics_semantic_repository import MetaMetricsSemanticRepository
-from app.repositories.qdrant.meta_tables_semantic_repository import MetaTablesSemanticRepository
-from app.repositories.qdrant_repository import QdrantRepository
+from app.repositories.es.es_dimension_value_repository import DimensionValueSearch
+from app.repositories.mysql.meta.mysql_meta_catalog_repository import MetaCatalogRepository
+from app.repositories.qdrant.qa_meta_columns_repository import MetaColumnsSemanticRepository
+from app.repositories.qdrant.qa_meta_dimension_values_repository import MetaDimensionValuesSemanticRepository
+from app.repositories.qdrant.qa_meta_metrics_repository import MetaMetricsSemanticRepository
+from app.repositories.qdrant.qa_meta_tables_repository import MetaTablesSemanticRepository
 
 
 class AgentContext(TypedDict):
@@ -19,9 +19,9 @@ class AgentContext(TypedDict):
 
     llm_client: Any
     embedding_client: Any
-    qdrant_repository: QdrantRepository
-    elasticsearch_repository: ElasticsearchRepository
+    dimension_value_search: DimensionValueSearch
     meta_tables_semantic_repository: MetaTablesSemanticRepository
     meta_columns_semantic_repository: MetaColumnsSemanticRepository
     meta_metrics_semantic_repository: MetaMetricsSemanticRepository
     meta_dimension_values_semantic_repository: MetaDimensionValuesSemanticRepository
+    meta_catalog_repository: MetaCatalogRepository

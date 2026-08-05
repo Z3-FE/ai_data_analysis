@@ -13,7 +13,7 @@ from qdrant_client.http.models import PointStruct
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.repositories.meta_repository import list_active_columns_for_embedding
+from app.repositories.meta_build_test_repository import list_active_columns_for_embedding
 from app.repositories.qdrant_repository import QdrantRepository
 
 COLUMN_POINT_NAMESPACE = uuid.UUID("352141de-1c1d-4846-bf45-8e06e5d247a8")
@@ -53,7 +53,6 @@ def build_column_vector_documents(column: dict[str, Any]) -> list[ColumnVectorDo
     payload = {
         "column_id": column["column_id"],
         "table_id": column["table_id"],
-        "table_name": column["table_name"],
         "column_name": column["column_name"],
         "business_name": column["business_name"],
         "data_type": column["data_type"],

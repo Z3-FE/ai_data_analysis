@@ -74,7 +74,8 @@ class QdrantConfig:
 class EmbeddingConfig:
     """Embedding 推理服务配置。"""
 
-    url: str
+    host: str
+    port: int
     model: str
     batch_size: int
     retry_count: int
@@ -96,9 +97,10 @@ class DimensionValueSearchConfig:
     """维度值混合检索的范围、召回数量和融合参数。"""
 
     included_dimensions: tuple[str, ...]
-    es_top_k: int
-    vector_top_k: int
-    final_top_k: int
+    es_top_k_per_term: int
+    vector_top_k_per_term: int
+    term_max_k: int
+    total_max_k: int
     vector_score_threshold: float
     rrf_k: int
 
@@ -171,9 +173,10 @@ def load_settings(path: Path = CONFIG_PATH) -> Settings:
         elasticsearch=ElasticsearchConfig(**raw["elasticsearch"]),
         dimension_value_search=DimensionValueSearchConfig(
             included_dimensions=tuple(search_config["included_dimensions"]),
-            es_top_k=search_config["es_top_k"],
-            vector_top_k=search_config["vector_top_k"],
-            final_top_k=search_config["final_top_k"],
+            es_top_k_per_term=search_config["es_top_k_per_term"],
+            vector_top_k_per_term=search_config["vector_top_k_per_term"],
+            term_max_k=search_config["term_max_k"],
+            total_max_k=search_config["total_max_k"],
             vector_score_threshold=search_config["vector_score_threshold"],
             rrf_k=search_config["rrf_k"],
         ),

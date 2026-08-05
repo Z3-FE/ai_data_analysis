@@ -1,20 +1,20 @@
-"""Qdrant 相关业务类型。"""
+"""Qdrant Point 和命中结果实体。"""
 
-from app.entities.qdrant.base import QdrantPoint, QdrantSearchHit
-from app.entities.qdrant.meta_columns_semantic import MetaColumnsSemantic, MetaColumnsSemanticPayload
-from app.entities.qdrant.meta_dimension_values_semantic import MetaDimensionValuesSemantic, MetaDimensionValuesSemanticPayload
-from app.entities.qdrant.meta_metrics_semantic import MetaMetricsSemantic, MetaMetricsSemanticPayload
-from app.entities.qdrant.meta_tables_semantic import MetaTablesSemantic, MetaTablesSemanticPayload
+from app.entities.qdrant.qd_meta_columns import QdMetaColumns, QdMetaColumnsPayload
+from app.entities.qdrant.qd_meta_dimension_values import (
+    QdMetaDimensionValue,
+    QdMetaDimensionValuePayload,
+)
+from app.entities.qdrant.qd_meta_metrics import QdMetaMetrics, QdMetaMetricsPayload
+from app.entities.qdrant.qd_meta_tables import QdMetaTables, QdMetaTablesPayload
 
 __all__ = [
-    "QdrantPoint",
-    "QdrantSearchHit",
-    "MetaTablesSemantic",
-    "MetaTablesSemanticPayload",
-    "MetaColumnsSemantic",
-    "MetaColumnsSemanticPayload",
-    "MetaMetricsSemantic",
-    "MetaMetricsSemanticPayload",
-    "MetaDimensionValuesSemantic",
-    "MetaDimensionValuesSemanticPayload",
+    "QdMetaTables",
+    "QdMetaTablesPayload",
+    "QdMetaColumns",
+    "QdMetaColumnsPayload",
+    "QdMetaMetrics",
+    "QdMetaMetricsPayload",
+    "QdMetaDimensionValue",
+    "QdMetaDimensionValuePayload",
 ]

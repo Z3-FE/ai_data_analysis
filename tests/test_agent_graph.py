@@ -28,6 +28,35 @@ class FakeSemanticRepository:
         return []
 
 
+class FakeElasticsearchRepository:
+    """提供维度值 ES 异步检索所需的最小接口。"""
+
+    async def search(self, **kwargs) -> list[dict]:
+        return []
+
+
+class FakeMetaCatalogRepository:
+    """提供召回合并节点所需的空 Meta 查询结果。"""
+
+    async def get_columns_by_ids(self, column_ids):
+        return []
+
+    async def get_tables_by_ids(self, table_ids):
+        return []
+
+    async def get_queryable_columns_by_table_ids(self, table_ids):
+        return []
+
+    async def get_relationships_by_table_ids(self, table_ids):
+        return []
+
+    async def get_dimension_ids_by_column_ids(self, column_ids):
+        return []
+
+    async def get_metric_dimension_infos(self, metric_ids, dimension_ids):
+        return []
+
+
 class AgentGraphTest(unittest.TestCase):
     """验证最小 LangGraph 能正常返回结果。"""
 
@@ -35,12 +64,12 @@ class AgentGraphTest(unittest.TestCase):
         result = AgentService(
             llm_client=RunnableLambda(lambda prompt: "[]"),
             embedding_client=SimpleNamespace(aembed_query=lambda text: _fake_aembed_query(text)),
-            qdrant_repository=FakeQdrantRepository(),
-            elasticsearch_repository=object(),
+            dimension_value_search=FakeElasticsearchRepository(),
             meta_tables_semantic_repository=FakeSemanticRepository(),
             meta_columns_semantic_repository=FakeSemanticRepository(),
             meta_metrics_semantic_repository=FakeSemanticRepository(),
             meta_dimension_values_semantic_repository=FakeSemanticRepository(),
+            meta_catalog_repository=FakeMetaCatalogRepository(),
         ).run("你好")
 
         self.assertEqual(result["input_text"], "你好")
@@ -50,11 +79,19 @@ class AgentGraphTest(unittest.TestCase):
         self.assertIn("jieba_keywords", result)
         self.assertIn("column_recall_terms", result)
         self.assertIn("column_candidates", result)
+        self.assertIn("dimension_value_recall_terms", result)
+        self.assertIn("dimension_value_candidates", result)
+        self.assertIn("table_infos", result)
+        self.assertIn("metric_infos", result)
+        self.assertIn("relationship_infos", result)
+        self.assertIn("metric_dimension_infos", result)
         self.assertIsInstance(result["keywords"], list)
         self.assertIsInstance(result["llm_keywords"], list)
         self.assertIsInstance(result["jieba_keywords"], list)
         self.assertIsInstance(result["column_recall_terms"], list)
         self.assertIsInstance(result["column_candidates"], list)
+        self.assertIsInstance(result["dimension_value_recall_terms"], list)
+        self.assertIsInstance(result["dimension_value_candidates"], list)
         self.assertTrue(result["output_text"])
 
 

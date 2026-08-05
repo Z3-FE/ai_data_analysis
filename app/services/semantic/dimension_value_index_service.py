@@ -8,30 +8,21 @@ import json
 import logging
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict
 from typing import Any
 
 from qdrant_client.http.models import PointStruct
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.entities.es.es_dimension_value import EsDimensionValueDocument
+from app.entities.qdrant.qd_meta_dimension_values import QdMetaDimensionValueDocument
 from app.repositories.elasticsearch_repository import ElasticsearchRepository
-from app.repositories.meta_repository import list_active_dimension_values
+from app.repositories.meta_build_test_repository import list_active_dimension_values
 from app.repositories.qdrant_repository import QdrantRepository
 
 DIMENSION_VALUE_POINT_NAMESPACE = uuid.UUID("c8ce956d-88d2-4fe7-a7e7-44548fc0343f")
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class DimensionValueVectorDocument:
-    """一条待写入 Qdrant 的维度值向量文档。"""
-
-    point_id: str
-    point_key: str
-    vector_type: str
-    text: str
-    payload: dict[str, Any]
 
 
 def parse_aliases(raw_aliases: Any) -> list[str]:
@@ -46,26 +37,27 @@ def parse_aliases(raw_aliases: Any) -> list[str]:
 
 def build_es_document(value: dict[str, Any]) -> dict[str, Any]:
     """把一条 MySQL 维度值转换成 ES 文档。"""
-    return {
-        "value_id": value["value_id"],
-        "dimension_id": value["dimension_id"],
-        "dimension_name": value["dimension_name"],
-        "dimension_business_name": value["dimension_business_name"],
-        "column_id": value["column_id"],
-        "column_name": value["column_name"],
-        "table_id": value["table_id"],
-        "table_name": value["table_name"],
-        "database_name": value["database_name"],
-        "data_type": value["data_type"],
-        "raw_value": value["raw_value"],
-        "normalized_value": value["normalized_value"],
-        "display_name": value["display_name"],
-        "aliases": parse_aliases(value.get("aliases")),
-        "description": value["description"],
-        "value_count": int(value["value_count"]),
-        "semantic_enabled": bool(value["semantic_enabled"]),
-        "status": value["status"],
-    }
+    document = EsDimensionValueDocument(
+        value_id=value["value_id"],
+        dimension_id=value["dimension_id"],
+        dimension_name=value["dimension_name"],
+        dimension_business_name=value["dimension_business_name"],
+        column_id=value["column_id"],
+        column_name=value["column_name"],
+        table_id=value["table_id"],
+        table_name=value["table_name"],
+        database_name=value["database_name"],
+        data_type=value["data_type"],
+        raw_value=value["raw_value"],
+        normalized_value=value["normalized_value"],
+        display_name=value["display_name"],
+        aliases=parse_aliases(value.get("aliases")),
+        description=value["description"],
+        value_count=int(value["value_count"]),
+        semantic_enabled=bool(value["semantic_enabled"]),
+        status=value["status"],
+    )
+    return asdict(document)
 
 
 def _stable_point_id(point_key: str) -> str:
@@ -82,7 +74,7 @@ def _has_semantic_text(text: str) -> bool:
 
 def build_dimension_value_vector_documents(
     value: dict[str, Any],
-) -> list[DimensionValueVectorDocument]:
+) -> list[QdMetaDimensionValueDocument]:
     """把一条维度值记录拆成多个独立语义向量文档。"""
     if not bool(value["semantic_enabled"]):
         return []
@@ -122,7 +114,7 @@ def build_dimension_value_vector_documents(
     for vector_type, sequence, text in text_units:
         point_key = f"{value['value_id']}::{vector_type}::{sequence}"
         documents.append(
-            DimensionValueVectorDocument(
+            QdMetaDimensionValueDocument(
                 point_id=_stable_point_id(point_key),
                 point_key=point_key,
                 vector_type=vector_type,
@@ -155,7 +147,7 @@ def _validate_vectors(vectors: list[list[float]], expected_count: int) -> None:
 
 
 def _build_qdrant_dimension_value_vectors(
-    vector_documents: list[DimensionValueVectorDocument],
+    vector_documents: list[QdMetaDimensionValueDocument],
     embedding_client,
     qdrant_repository: QdrantRepository,
 ) -> dict[str, Any]:

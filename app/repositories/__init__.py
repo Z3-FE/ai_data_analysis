@@ -9,7 +9,7 @@
 
 from app.repositories.dw_repository import DwRepository
 from app.repositories.elasticsearch_repository import ElasticsearchRepository
-from app.repositories.meta_repository import (
+from app.repositories.meta_build_test_repository import (
     list_active_columns_for_embedding,
     list_active_dimension_values,
     list_active_metrics_for_embedding,

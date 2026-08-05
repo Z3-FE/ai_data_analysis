@@ -13,7 +13,7 @@ from qdrant_client.http.models import PointStruct
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.repositories.meta_repository import list_active_metrics_for_embedding
+from app.repositories.meta_build_test_repository import list_active_metrics_for_embedding
 from app.repositories.qdrant_repository import QdrantRepository
 
 METRIC_POINT_NAMESPACE = uuid.UUID("94961fdc-adf9-468d-abd8-c88e1503279b")

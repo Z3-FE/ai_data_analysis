@@ -6,11 +6,11 @@
 
 from sqlalchemy.orm import Session
 
-from app.repositories import meta_repository
+from app.repositories import meta_build_test_repository
 from app.schemas.meta import MetaTable
 
 
 def list_meta_tables(db: Session) -> list[MetaTable]:
     """返回经过 Pydantic 校验后的 DW 表元数据。"""
-    rows = meta_repository.list_tables(db)
+    rows = meta_build_test_repository.list_tables(db)
     return [MetaTable.model_validate(row) for row in rows]

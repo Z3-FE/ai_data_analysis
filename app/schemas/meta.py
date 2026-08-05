@@ -41,7 +41,9 @@ class DimensionValueSearchResult(BaseModel):
     value_count: int
     semantic_enabled: bool
     status: str
-    match_types: list[str]
+    match_types: dict[str, str]
+    matched_terms: list[str]
+    exact_priority: int
     exact_match: bool
     rrf_score: float
     es_score: float | None = None

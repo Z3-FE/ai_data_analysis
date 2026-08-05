@@ -42,14 +42,21 @@ dimension_value_search:
     - order_status
     - payment_type
     - is_delayed
-  es_top_k: 20
-  vector_top_k: 20
-  final_top_k: 10
+  # 一个关键词从 ES 最多取 20 条文本候选。
+  es_top_k_per_term: 20
+  # 一个关键词从 Qdrant 最多取 20 条语义候选。
+  vector_top_k_per_term: 20
+  # 一个关键词完成 ES + Qdrant 融合后最多保留 10 条，不足 10 条不会补齐。
+  term_max_k: 10
+  # 所有关键词完成全局去重后最多保留 50 条，防止 Agent State 过大。
+  total_max_k: 50
   vector_score_threshold: 0.55
+  # RRF 排名平滑参数，用排名融合 ES 与 Qdrant 两套不可直接比较的分数。
   rrf_k: 60
 
 embedding:
-  url: http://127.0.0.1:8081
+  host: 127.0.0.1
+  port: 8081
   model: BAAI/bge-large-zh-v1.5
   # cpu-1.8 在当前 macOS Docker 环境中批量请求可能触发内部队列阻塞。
   batch_size: 1

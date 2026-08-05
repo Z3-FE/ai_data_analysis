@@ -16,6 +16,7 @@ from langgraph.runtime import Runtime
 from app.agent.context import AgentContext
 from app.agent.prompts.prompt_loader import load_prompt
 from app.agent.state import AgentState
+from app.agent.utils.terms import dedupe_terms
 
 logger = logging.getLogger(__name__)
 
@@ -50,15 +51,12 @@ _ALLOW_POS = (
 def _dedupe_keywords(values) -> list[str]:
     """清洗、过滤并保持顺序去重。"""
     keywords = []
-    seen = set()
     for value in values:
         keyword = str(value).strip()
         if not keyword or keyword in _STOP_WORDS or len(keyword) <= 1:
             continue
-        if keyword not in seen:
-            seen.add(keyword)
-            keywords.append(keyword)
-    return keywords
+        keywords.append(keyword)
+    return dedupe_terms(keywords)
 
 
 def _merge_keywords(llm_keywords: list[str], jieba_keywords: list[str]) -> list[str]:
@@ -89,6 +87,7 @@ async def extract_keywords_node(
 
 
     logger.info("关键词抽取 LLM 原始输出：%s", llm_keywords)
+    logger.info("关键词抽取 jieba输出：%s", jieba_keywords)
 
     writer(
         {
@@ -115,5 +114,4 @@ async def extract_keywords_node(
             ensure_ascii=False,
         ),
     }
-
 
