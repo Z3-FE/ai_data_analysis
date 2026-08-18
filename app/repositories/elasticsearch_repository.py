@@ -12,13 +12,13 @@ from app.entities.es.es_dimension_value import (
     EsDimensionValueHit,
 )
 
-from elasticsearch import AsyncElasticsearch
+from elasticsearch import AsyncElasticsearch, Elasticsearch
 
 
 class ElasticsearchRepository:
     """封装 Elasticsearch 索引与查询操作。"""
 
-    def __init__(self, client: AsyncElasticsearch) -> None:
+    def __init__(self, client: Elasticsearch | AsyncElasticsearch) -> None:
         self.client = client
 
     @property

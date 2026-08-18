@@ -13,6 +13,7 @@ from app.agent.context import AgentContext
 from app.agent.graph import agent_graph
 from app.agent.state import AgentState
 from app.repositories.es.es_dimension_value_repository import DimensionValueSearch
+from app.repositories.dw_repository import DwRepository
 from app.repositories.mysql.meta.mysql_meta_catalog_repository import MetaCatalogRepository
 from app.repositories.qdrant.qa_meta_columns_repository import MetaColumnsSemanticRepository
 from app.repositories.qdrant.qa_meta_dimension_values_repository import MetaDimensionValuesSemanticRepository
@@ -33,6 +34,7 @@ class AgentService:
         meta_metrics_semantic_repository: MetaMetricsSemanticRepository,
         meta_dimension_values_semantic_repository: MetaDimensionValuesSemanticRepository,
         meta_catalog_repository: MetaCatalogRepository,
+        dw_repository: DwRepository,
     ) -> None:
         self.llm_client = llm_client
         self.embedding_client = embedding_client
@@ -42,6 +44,7 @@ class AgentService:
         self.meta_metrics_semantic_repository = meta_metrics_semantic_repository
         self.meta_dimension_values_semantic_repository = meta_dimension_values_semantic_repository
         self.meta_catalog_repository = meta_catalog_repository
+        self.dw_repository = dw_repository
 
     def _context(self) -> AgentContext:
         """组装本次图执行使用的外部依赖。"""
@@ -54,6 +57,7 @@ class AgentService:
             meta_metrics_semantic_repository=self.meta_metrics_semantic_repository,
             meta_dimension_values_semantic_repository=self.meta_dimension_values_semantic_repository,
             meta_catalog_repository=self.meta_catalog_repository,
+            dw_repository=self.dw_repository,
         )
 
     def _format_result(self, input_text: str, result: AgentState) -> dict:
@@ -78,8 +82,12 @@ class AgentService:
             ),
             "table_infos": result.get("table_infos", []),
             "metric_infos": result.get("metric_infos", []),
+            "dimension_infos": result.get("dimension_infos", []),
             "relationship_infos": result.get("relationship_infos", []),
             "metric_dimension_infos": result.get("metric_dimension_infos", []),
+            "extra_context": result.get("extra_context", {}),
+            "sql": result.get("sql", ""),
+            "sql_result": result.get("sql_result", []),
             "output_text": result.get("output_text", ""),
             "llm_output": result.get("llm_output", ""),
         }

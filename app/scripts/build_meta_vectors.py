@@ -4,16 +4,16 @@
   uv run python -m app.scripts.build_meta_vectors
 """
 
-import asyncio
 import json
 import logging
 from typing import Any
 
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.clients.embedding_client import embedding_client_manager
-from app.clients.mysql_client import meta_mysql_client_manager
 from app.clients.qdrant_client import qdrant_client_manager
+from app.core.config import settings
 from app.core.logging import setup_logging
 from app.repositories.qdrant_repository import QdrantRepository
 from app.services.semantic.column_vector_service import build_meta_column_vectors
@@ -79,7 +79,7 @@ def main() -> None:
     setup_logging()
     embedding_client_manager.init()
     qdrant_client_manager.init()
-    meta_mysql_client_manager.init()
+    engine = create_engine(settings.mysql.meta_database_url)
     try:
         embedding_client = _require_initialized(
             embedding_client_manager.client,
@@ -89,27 +89,16 @@ def main() -> None:
             qdrant_client_manager.client,
             "Qdrant 客户端",
         )
-        session_factory = _require_initialized(
-            meta_mysql_client_manager.session_factory,
-            "Meta MySQL Session 工厂",
-        )
         qdrant_repository = QdrantRepository(client=qdrant_client)
-
-        async def _run() -> dict[str, Any]:
-            async with session_factory() as session:
-                return await session.run_sync(
-                    lambda sync_session: build_all_meta_vectors(
-                        sync_session,
-                        embedding_client=embedding_client,
-                        qdrant_repository=qdrant_repository,
-                    )
-                )
-
-        result = asyncio.run(_run())
+        with Session(engine) as session:
+            result = build_all_meta_vectors(
+                session,
+                embedding_client=embedding_client,
+                qdrant_repository=qdrant_repository,
+            )
         print(json.dumps(result, ensure_ascii=False, indent=2))
     finally:
-        asyncio.run(qdrant_client_manager.close())
-        asyncio.run(meta_mysql_client_manager.close())
+        engine.dispose()
 
 
 if __name__ == "__main__":

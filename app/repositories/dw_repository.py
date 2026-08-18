@@ -5,11 +5,19 @@
 访问，再按场景补充方法。
 """
 
-from sqlalchemy.orm import Session
+from typing import Any
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class DwRepository:
-    """DW 数据访问入口占位。"""
+    """Agent 执行生成 SQL 时使用的 DW 数据仓库。"""
 
-    def __init__(self, db: Session) -> None:
-        self.db = db
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def execute_query(self, sql: str) -> list[dict[str, Any]]:
+        """执行生成的查询 SQL，并返回字典行列表。"""
+        result = await self.session.execute(text(sql))
+        return [dict(row) for row in result.mappings().all()]

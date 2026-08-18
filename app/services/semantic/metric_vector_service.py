@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.repositories.meta_build_test_repository import list_active_metrics_for_embedding
 from app.repositories.qdrant_repository import QdrantRepository
+from app.services.semantic.embedding_batch import embed_documents_in_batches
 
 METRIC_POINT_NAMESPACE = uuid.UUID("94961fdc-adf9-468d-abd8-c88e1503279b")
 
@@ -106,7 +107,11 @@ def build_meta_metric_vectors(
         for metric in metrics
         for document in build_metric_vector_documents(metric)
     ]
-    vectors = embedding_client.embed_documents([document.text for document in documents])
+    vectors = embed_documents_in_batches(
+        embedding_client,
+        [document.text for document in documents],
+        settings.embedding.batch_size,
+    )
 
     if len(vectors) != len(documents):
         raise ValueError("Embedding 返回向量数量与待写入文档数量不一致。")

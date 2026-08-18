@@ -20,6 +20,7 @@ from app.entities.qdrant.qd_meta_dimension_values import QdMetaDimensionValueDoc
 from app.repositories.elasticsearch_repository import ElasticsearchRepository
 from app.repositories.meta_build_test_repository import list_active_dimension_values
 from app.repositories.qdrant_repository import QdrantRepository
+from app.services.semantic.embedding_batch import embed_documents_in_batches
 
 DIMENSION_VALUE_POINT_NAMESPACE = uuid.UUID("c8ce956d-88d2-4fe7-a7e7-44548fc0343f")
 logger = logging.getLogger(__name__)
@@ -187,7 +188,11 @@ def _build_qdrant_dimension_value_vectors(
             start + len(batch),
             len(vector_documents),
         )
-        vectors = embedding_client.embed_documents([document.text for document in pending])
+        vectors = embed_documents_in_batches(
+            embedding_client,
+            [document.text for document in pending],
+            settings.embedding.batch_size,
+        )
         _validate_vectors(vectors, len(pending))
         points = [
             PointStruct(

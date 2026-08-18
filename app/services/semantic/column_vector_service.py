@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.repositories.meta_build_test_repository import list_active_columns_for_embedding
 from app.repositories.qdrant_repository import QdrantRepository
+from app.services.semantic.embedding_batch import embed_documents_in_batches
 
 COLUMN_POINT_NAMESPACE = uuid.UUID("352141de-1c1d-4846-bf45-8e06e5d247a8")
 
@@ -107,7 +108,11 @@ def build_meta_column_vectors(
         for column in columns
         for document in build_column_vector_documents(column)
     ]
-    vectors = embedding_client.embed_documents([document.text for document in documents])
+    vectors = embed_documents_in_batches(
+        embedding_client,
+        [document.text for document in documents],
+        settings.embedding.batch_size,
+    )
 
     if len(vectors) != len(documents):
         raise ValueError("Embedding 返回向量数量与待写入文档数量不一致。")

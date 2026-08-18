@@ -9,6 +9,13 @@ from langchain_core.runnables import RunnableLambda
 from app.services.agent_service import AgentService
 
 
+class FakeDwRepository:
+    """提供 SQL 执行节点所需的最小仓库接口。"""
+
+    async def execute_query(self, sql: str) -> list[dict]:
+        return []
+
+
 async def _fake_aembed_query(text: str) -> list[float]:
     """返回固定查询向量。"""
     return [0.1] * 1024
@@ -50,7 +57,7 @@ class FakeMetaCatalogRepository:
     async def get_relationships_by_table_ids(self, table_ids):
         return []
 
-    async def get_dimension_ids_by_column_ids(self, column_ids):
+    async def get_dimensions_by_column_ids(self, column_ids):
         return []
 
     async def get_metric_dimension_infos(self, metric_ids, dimension_ids):
@@ -70,6 +77,7 @@ class AgentGraphTest(unittest.TestCase):
             meta_metrics_semantic_repository=FakeSemanticRepository(),
             meta_dimension_values_semantic_repository=FakeSemanticRepository(),
             meta_catalog_repository=FakeMetaCatalogRepository(),
+            dw_repository=FakeDwRepository(),
         ).run("你好")
 
         self.assertEqual(result["input_text"], "你好")
@@ -83,6 +91,7 @@ class AgentGraphTest(unittest.TestCase):
         self.assertIn("dimension_value_candidates", result)
         self.assertIn("table_infos", result)
         self.assertIn("metric_infos", result)
+        self.assertIn("dimension_infos", result)
         self.assertIn("relationship_infos", result)
         self.assertIn("metric_dimension_infos", result)
         self.assertIsInstance(result["keywords"], list)

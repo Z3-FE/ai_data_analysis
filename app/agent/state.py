@@ -21,7 +21,13 @@ class AgentState(TypedDict, total=False):
     dimension_value_candidates: list[dict]
     table_infos: list[dict]
     metric_infos: list[dict]
+    dimension_infos: list[dict]
     relationship_infos: list[dict]
     metric_dimension_infos: list[dict]
+    metric_selection: list[str]
+    table_selection: dict[str, list[str]]
+    extra_context: dict
+    sql: str
+    sql_result: list[dict]
     output_text: str
     llm_output: str

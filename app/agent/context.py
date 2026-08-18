@@ -7,6 +7,7 @@ state 合并，避免把连接类、客户端对象塞进业务状态。
 from typing import Any, TypedDict
 
 from app.repositories.es.es_dimension_value_repository import DimensionValueSearch
+from app.repositories.dw_repository import DwRepository
 from app.repositories.mysql.meta.mysql_meta_catalog_repository import MetaCatalogRepository
 from app.repositories.qdrant.qa_meta_columns_repository import MetaColumnsSemanticRepository
 from app.repositories.qdrant.qa_meta_dimension_values_repository import MetaDimensionValuesSemanticRepository
@@ -25,3 +26,4 @@ class AgentContext(TypedDict):
     meta_metrics_semantic_repository: MetaMetricsSemanticRepository
     meta_dimension_values_semantic_repository: MetaDimensionValuesSemanticRepository
     meta_catalog_repository: MetaCatalogRepository
+    dw_repository: DwRepository

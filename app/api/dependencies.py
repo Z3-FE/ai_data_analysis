@@ -12,8 +12,10 @@ from app.clients.embedding_client import embedding_client_manager
 from app.clients.elasticsearch_client import elasticsearch_client_manager
 from app.clients.llm_client import llm_client_manager
 from app.clients.mysql_client import meta_mysql_client_manager
+from app.clients.mysql_client import dw_mysql_client_manager
 from app.clients.qdrant_client import qdrant_client_manager
 from app.repositories.es.es_dimension_value_repository import DimensionValueSearch
+from app.repositories.dw_repository import DwRepository
 from app.repositories.mysql.meta.mysql_meta_catalog_repository import MetaCatalogRepository
 from app.repositories.qdrant.qa_meta_columns_repository import MetaColumnsSemanticRepository
 from app.repositories.qdrant.qa_meta_dimension_values_repository import MetaDimensionValuesSemanticRepository
@@ -56,6 +58,16 @@ async def get_meta_catalog_repository(
 ) -> MetaCatalogRepository:
     """创建 Agent 运行期使用的 Meta MySQL 元数据仓储。"""
     return MetaCatalogRepository(session=session)
+
+
+async def get_dw_repository() -> DwRepository:
+    """创建 Agent 执行 SQL 使用的 DW 仓库。"""
+    session_factory = _require_initialized(
+        dw_mysql_client_manager.session_factory,
+        "DW MySQL Session 工厂",
+    )
+    async with session_factory() as session:
+        yield DwRepository(session=session)
 
 
 async def get_meta_tables_semantic_repository() -> MetaTablesSemanticRepository:
@@ -114,6 +126,7 @@ def get_agent_service(
     meta_catalog_repository: Annotated[
         MetaCatalogRepository, Depends(get_meta_catalog_repository)
     ],
+    dw_repository: Annotated[DwRepository, Depends(get_dw_repository)],
 ) -> AgentService:
     """组装一次 Agent 执行所需的服务。"""
     return AgentService(
@@ -125,4 +138,5 @@ def get_agent_service(
         meta_metrics_semantic_repository=meta_metrics_semantic_repository,
         meta_dimension_values_semantic_repository=meta_dimension_values_semantic_repository,
         meta_catalog_repository=meta_catalog_repository,
+        dw_repository=dw_repository,
     )

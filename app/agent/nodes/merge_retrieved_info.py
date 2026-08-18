@@ -15,21 +15,78 @@ metric_dimension_infos
 
 
 整体流程：
-tables 向量召回 ───────────────┐
-columns → table_id ───────────┤
-metrics → base_table_id ──────┼→ 合并候选 table_id
-dimension values → table_id ──┘
-                              ↓
-                    从 Meta MySQL 补齐表元数据
-                              ↓
-                         table_infos
+步骤1-7 ：
+四路召回结果
+│
+├── table_candidates
+│      └── 直接创建 tables_map
+│
+├── column_candidates
+│      └── 创建 columns_map
+│             └── column.table_id ──────────────┐
+│                                               │
+├── metric_candidates                           │
+│      └── 创建 metrics_map                     │
+│             └── metric.base_table_id ─────────┤
+│                                               │
+└── dimension_value_candidates                  │
+       └── candidate.column_id                  │
+              ├── columns_map 已存在：直接使用   │
+              └── columns_map 不存在：           │
+                    从 Meta MySQL 补齐字段        │
+              └── 将 matched_value 挂到字段      │
+                     └── column.table_id ────────┘
+                                                │
+                                                ▼
+                            full_table_sources_by_id
+                            table_id → matched_sources
+                                                │
+                         ┌───────────────────────┴──────────────────────┐
+                         │                                              │
+                  tables_map 已存在                              tables_map 不存在
+                         │                                              │
+                  合并 matched_sources                     从 Meta MySQL 补齐表实体
+                         │                                              │
+                         └───────────────────────┬──────────────────────┘
+                                                 ▼
+                                            tables_map
+                                                 │
+                      从 Meta MySQL 查询候选表下全部可查询字段
+                                                 │
+                     ┌───────────────────────────┴────────────────────┐
+                     │                                                │
+               已存在于 columns_map                         不存在于 columns_map
+                     │                                                │
+              复用已召回字段及其值                     创建 metadata_completion 字段
+                     │                                                │
+                     └───────────────────────────┬────────────────────┘
+                                                 ▼
+                         将所有 columns_map 字段挂到所属 tables_map
+                                                 │
+                                                 ▼
+                                      table → columns → matched_values
 
 
+合并结果
+├── table_infos
+│   └── table
+│       └── columns
+│           └── matched_values
+├── metric_infos
+├── relationship_infos
+├── metric_dimension_infos
+└── dimension_infos
 可直接消费的表、字段、指标、JOIN 关系和指标维度兼容上下文。
+
+
+metric_infos：算什么
+dimension_infos：按什么分析
+metric_dimension_infos：这个指标是否支持这个分析维度
+table_infos：数据来自哪些表和字段
+relationship_infos：表之间如何 JOIN
 
 """
 
-import json
 import logging
 from dataclasses import asdict, fields
 from typing import Any, TypeVar
@@ -39,6 +96,7 @@ from langgraph.runtime import Runtime
 from app.agent.context import AgentContext
 from app.agent.state import AgentState
 from app.entities.agent.agent_merge_context import (
+    MatchedSource,
     MatchedDimensionValue,
     MergedColumnInfo,
     MergedMetricInfo,
@@ -51,38 +109,13 @@ from app.entities.meta.meta_tables import MetaTables
 logger = logging.getLogger(__name__)
 EntityType = TypeVar("EntityType")
 
-# 召回来源在内部只保存稳定的英文标识，输出到 AgentState/SSE 时再补充中文含义。
-MATCHED_SOURCE_DESCRIPTIONS = {
-    "table_recall": "表语义召回直接命中该表",
-    "column_recall": "字段语义召回命中，字段所属表因此成为候选表",
-    "metric_recall": "指标语义召回命中，指标基础表因此成为候选表",
-    "dimension_value_recall": "维度值召回命中，维度值所属字段和表因此成为候选",
-    "metadata_completion": "根据候选表从 Meta MySQL 补齐的可查询字段",
-}
-
-
-def _parse_aliases(raw_aliases: Any) -> list[str]:
-    """把 MySQL/Qdrant 中可能存在的 JSON 字符串统一转换为字符串列表。"""
-    if raw_aliases is None:
-        return []
-    if isinstance(raw_aliases, list):
-        return [str(alias) for alias in raw_aliases]
-    if isinstance(raw_aliases, str):
-        parsed = json.loads(raw_aliases)
-        if not isinstance(parsed, list):
-            raise ValueError(f"aliases 必须是 JSON 数组，实际是：{raw_aliases!r}")
-        return [str(alias) for alias in parsed]
-    raise TypeError(f"aliases 必须是 list、JSON 字符串或 None，实际类型：{type(raw_aliases).__name__}")
-
 
 def _build_entity(entity_type: type[EntityType], payload: dict[str, Any]) -> EntityType:
     """只取实体声明的字段，把召回 payload 还原为业务实体。"""
-    # fields(entity_type) ->( Field(name="table_id", type=str), 。。。) 元组，然后.name进行获取key
+    # 只保留目标实体声明的业务字段，忽略向量检索产生的辅助字段。
     field_names: set[str] = {field.name for field in fields(entity_type)}
     entity_payload = {key: payload[key] for key in field_names}
     return entity_type(**entity_payload)
-
-
 
 def _build_matched_value(candidate: dict[str, Any]) -> MatchedDimensionValue:
     """把维度值融合结果转换为字段下的真实值实体。"""
@@ -92,7 +125,7 @@ def _build_matched_value(candidate: dict[str, Any]) -> MatchedDimensionValue:
         raw_value=candidate["raw_value"],
         normalized_value=candidate["normalized_value"],
         display_name=candidate["display_name"],
-        aliases=_parse_aliases(candidate["aliases"]),
+        aliases=list(candidate["aliases"]),
         description=candidate["description"],
         exact_match=bool(candidate["exact_match"]),
         exact_priority=int(candidate["exact_priority"]),
@@ -104,11 +137,11 @@ def _build_matched_value(candidate: dict[str, Any]) -> MatchedDimensionValue:
     )
 
 
-def _matched_sources_to_state(sources: set[str]) -> dict[str, str]:
+def _matched_sources_to_state(sources: set[MatchedSource]) -> dict[str, str]:
     """把内部召回来源集合转换为便于查看的“来源标识 -> 中文含义”映射。"""
     return {
-        source: MATCHED_SOURCE_DESCRIPTIONS[source]
-        for source in sorted(sources)
+        source.value: source.description
+        for source in sorted(sources, key=lambda item: item.value)
     }
 
 
@@ -157,25 +190,23 @@ async def merge_retrieved_info(
     # 步骤 1：把 State 中的召回字典还原为内部业务实体，并按业务主键建立 Map。
     tables_map: dict[str, MergedTableInfo] = {}
     for candidate in state.get("table_candidates", []):
-        # 获取Table实体
-        table_entity: MetaTables = _build_entity(MetaTables, candidate['payload'])
-        # 整理Table_map {id: MergedTableInfo }
+        table_entity: MetaTables = _build_entity(MetaTables, candidate["payload"])
         tables_map[table_entity.table_id] = MergedTableInfo(
-            table=table_entity, matched_sources={"table_recall"}
+            table=table_entity, matched_sources={MatchedSource.TABLE_RECALL}
         )
 
     columns_map: dict[str, MergedColumnInfo] = {}
     for candidate in state.get("column_candidates", []):
-        column = _build_entity(MetaColumns, candidate['payload'])
+        column = _build_entity(MetaColumns, candidate["payload"])
         columns_map[column.column_id] = MergedColumnInfo(
-            column=column, matched_sources={"column_recall"}
+            column=column, matched_sources={MatchedSource.COLUMN_RECALL}
         )
 
     metrics_map: dict[str, MergedMetricInfo] = {}
     for candidate in state.get("metrics_candidates", []):
-        metric = _build_entity(MetaMetrics, candidate['payload'])
+        metric = _build_entity(MetaMetrics, candidate["payload"])
         metrics_map[metric.metric_id] = MergedMetricInfo(
-            metric=metric, matched_sources={"metric_recall"}
+            metric=metric, matched_sources={MatchedSource.METRIC_RECALL}
         )
 
     dimension_value_candidates = state.get("dimension_value_candidates", [])
@@ -183,13 +214,17 @@ async def merge_retrieved_info(
     # 记录真正由字段/维度值召回带来的字段。
     # 后面会把候选表下全部 queryable 字段补进 columns_map，
     # 但查询 metric_dimensions 时不能把这些“目录补齐字段”误当成用户召回的维度。
-    recalled_column_ids = set(columns_map)
+    relevant_column_ids = set(columns_map)
 
-    # 步骤 2：维度值必须绑定到真实字段；先批量补齐没有被字段召回命中的字段。
-    value_column_ids = {candidate["column_id"] for candidate in dimension_value_candidates}
+    # 步骤 2：从 Meta MySQL 补齐维度值所属但字段召回未命中的字段。
+    value_column_ids: set[str] = {
+        candidate["column_id"] for candidate in dimension_value_candidates
+    }
+    # 只有维度值对应的字段尚未被字段召回命中时，才从 Meta MySQL 补齐。
     missing_column_ids = value_column_ids.difference(columns_map)
     missing_columns = await repository.get_columns_by_ids(sorted(missing_column_ids))
     loaded_column_ids = {column.column_id for column in missing_columns}
+    # 维度值涉及的字段，但字段召回没有命中
     unresolved_column_ids = missing_column_ids.difference(loaded_column_ids)
     if unresolved_column_ids:
         raise ValueError(
@@ -198,42 +233,51 @@ async def merge_retrieved_info(
         )
     for column in missing_columns:
         columns_map[column.column_id] = MergedColumnInfo(
-            column=column, matched_sources={"dimension_value_recall"}
+            column=column,
+            matched_sources={MatchedSource.DIMENSION_VALUE_COMPLETION},
         )
-        recalled_column_ids.add(column.column_id)
+        relevant_column_ids.add(column.column_id)
 
-    # 步骤 3：把 raw_value、中文展示名和检索证据挂到所属字段。
+    # 步骤 3：把每条维度值及其检索证据挂到对应字段。
     for candidate in dimension_value_candidates:
         column_info = columns_map[candidate["column_id"]]
-        column_info.matched_sources.add("dimension_value_recall")
+        column_info.matched_sources.add(MatchedSource.DIMENSION_VALUE_RECALL)
         column_info.matched_values.append(_build_matched_value(candidate))
 
-    # 步骤 4：候选表来自表召回、字段所属表、指标基础表和维度值所属表。
-    table_sources: dict[str, set[str]] = {
+    # 步骤 4：汇总表召回、字段所属表和指标基础表，形成完整的 table_id 来源映射。
+    # 维度值已经在步骤 2、3 绑定到 columns_map，因此会随字段来源传递到所属表，
+    # 不再重复遍历 dimension_value_candidates。
+    full_table_sources_by_id: dict[str, set[MatchedSource]] = {
         table_id: set(table_info.matched_sources)
         for table_id, table_info in tables_map.items()
     }
     for column_info in columns_map.values():
-        table_sources.setdefault(column_info.column.table_id, set()).update(
+        full_table_sources_by_id.setdefault(column_info.column.table_id, set()).update(
             column_info.matched_sources
         )
     for metric_info in metrics_map.values():
-        table_sources.setdefault(metric_info.metric.base_table_id, set()).add(
-            "metric_recall"
-        )
-    for candidate in dimension_value_candidates:
-        table_sources.setdefault(candidate["table_id"], set()).add(
-            "dimension_value_recall"
+        full_table_sources_by_id.setdefault(
+            metric_info.metric.base_table_id, set()
+        ).add(
+            MatchedSource.METRIC_RECALL
         )
 
     # 步骤 5：批量补齐没有被直接召回的表元数据。
-    missing_table_ids = set(table_sources).difference(tables_map)
+    missing_table_ids = set(full_table_sources_by_id).difference(tables_map)
     missing_tables = await repository.get_tables_by_ids(sorted(missing_table_ids))
+    loaded_table_ids = {table.table_id for table in missing_tables}
+    unresolved_table_ids = missing_table_ids.difference(loaded_table_ids)
+    if unresolved_table_ids:
+        raise ValueError(
+            "召回结果引用了不存在或未启用的 Meta 表："
+            f"{sorted(unresolved_table_ids)}"
+        )
     for table in missing_tables:
         tables_map[table.table_id] = MergedTableInfo(
-            table=table, matched_sources=set(table_sources[table.table_id])
+            table=table,
+            matched_sources=set(full_table_sources_by_id[table.table_id]),
         )
-    for table_id, sources in table_sources.items():
+    for table_id, sources in full_table_sources_by_id.items():
         tables_map[table_id].matched_sources.update(sources)
 
     # 步骤 6：批量补齐候选表下全部启用且可查询字段，供后续表字段过滤使用。
@@ -245,27 +289,35 @@ async def merge_retrieved_info(
         column_info = columns_map.get(column.column_id)
         if column_info is None:
             column_info = MergedColumnInfo(
-                column=column, matched_sources={"metadata_completion"}
+                column=column,
+                matched_sources={MatchedSource.METADATA_COMPLETION},
             )
             columns_map[column.column_id] = column_info
         tables_map[column.table_id].columns[column.column_id] = column_info
 
-    # 步骤 7：补上已召回但不在表字段批量结果中的字段，保持合并结果完整。
-    for column_id, column_info in columns_map.items():
-        tables_map[column_info.column.table_id].columns[column_id] = column_info
+    # 步骤 7：确认所有真正相关的字段都已进入候选表字段目录。
+    # 如果缺失，说明召回结果与 Meta MySQL 的可查询字段不一致，应尽早暴露问题。
+    loaded_column_ids = {
+        column_id
+        for table_info in tables_map.values()
+        for column_id in table_info.columns
+    }
+    unresolved_column_ids = relevant_column_ids.difference(loaded_column_ids)
+    if unresolved_column_ids:
+        raise ValueError(
+            "字段召回结果未能挂载到候选表的可查询字段目录："
+            f"{sorted(unresolved_column_ids)}"
+        )
 
     # 步骤 8：查询候选表之间已登记的 JOIN 关系。
     relationships = await repository.get_relationships_by_table_ids(sorted(tables_map))
 
     # 步骤 9：查询当前候选指标与召回维度之间的兼容关系。
     # 这里只使用字段/维度值真正召回到的字段，避免目录补齐字段扩大维度范围。
-    recalled_dimension_ids = await repository.get_dimension_ids_by_column_ids(
-        sorted(recalled_column_ids)
+    dimensions = await repository.get_dimensions_by_column_ids(
+        sorted(relevant_column_ids)
     )
-    dimension_ids = sorted(
-        set(recalled_dimension_ids)
-        | {candidate["dimension_id"] for candidate in dimension_value_candidates}
-    )
+    dimension_ids = [dimension.dimension_id for dimension in dimensions]
     metric_dimension_infos = await repository.get_metric_dimension_infos(
         metric_ids=sorted(metrics_map),
         dimension_ids=dimension_ids,
@@ -284,6 +336,7 @@ async def merge_retrieved_info(
             metrics_map.values(), key=lambda item: item.metric.metric_id
         )
     ]
+    dimension_infos = [asdict(dimension) for dimension in dimensions]
     relationship_infos = [asdict(relationship) for relationship in relationships]
     metric_dimension_states = [asdict(info) for info in metric_dimension_infos]
 
@@ -292,6 +345,8 @@ async def merge_retrieved_info(
         "table_infos": table_infos,
         # 用户可能要计算的指标
         "metric_infos": metric_infos,
+        # 用户可能用于拆分和筛选指标的业务维度
+        "dimension_infos": dimension_infos,
         # 候选表之间可以使用的 JOIN 关系
         "relationship_infos": relationship_infos,
         # 指标和维度之间的可分析关系
@@ -300,10 +355,13 @@ async def merge_retrieved_info(
     writer({"type": "progress", "step": step, "status": "success"})
     writer({"type": "retrieved_info", "step": step, **result})
     logger.info(
-        "召回合并完成 tables=%s columns=%s metrics=%s relationships=%s",
+        "召回合并完成 tables=%s columns=%s metrics=%s dimensions=%s "
+        "relationships=%s metric_dimensions=%s",
         len(table_infos),
         len(columns_map),
         len(metric_infos),
+        len(dimension_infos),
         len(relationship_infos),
+        len(metric_dimension_states),
     )
     return result

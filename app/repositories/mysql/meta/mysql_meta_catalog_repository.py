@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.entities.agent.agent_merge_context import MetricDimensionInfo, RelationshipInfo
 from app.entities.meta.meta_columns import MetaColumns
+from app.entities.meta.meta_dimensions import MetaDimensions
 from app.entities.meta.meta_tables import MetaTables
 from app.models.meta import (
     MetaColumnModel,
@@ -17,6 +18,7 @@ from app.models.meta import (
 )
 from app.repositories.mysql.meta.mappers.meta_column_mapper import MetaColumnMapper
 from app.repositories.mysql.meta.mappers.meta_context_mapper import MetaContextMapper
+from app.repositories.mysql.meta.mappers.meta_dimension_mapper import MetaDimensionMapper
 from app.repositories.mysql.meta.mappers.meta_table_mapper import MetaTableMapper
 
 
@@ -69,18 +71,21 @@ class MetaCatalogRepository:
         models = (await self.session.scalars(statement)).all()
         return [MetaContextMapper.relationship_to_entity(model) for model in models]
 
-    async def get_dimension_ids_by_column_ids(self, column_ids: Sequence[str]) -> list[str]:
+    async def get_dimensions_by_column_ids(
+        self, column_ids: Sequence[str]
+    ) -> list[MetaDimensions]:
+        """查询召回字段对应的完整业务维度。"""
         if not column_ids:
             return []
         statement = (
-            select(MetaDimensionModel.dimension_id)
+            select(MetaDimensionModel)
             .join(MetaColumnModel, (MetaColumnModel.table_id == MetaDimensionModel.table_id) & (MetaColumnModel.column_name == MetaDimensionModel.column_name))
             .where(MetaColumnModel.column_id.in_(list(column_ids)))
             .distinct()
             .order_by(MetaDimensionModel.dimension_id)
         )
-        result = await self.session.execute(statement)
-        return [str(value) for value in result.scalars().all()]
+        models = (await self.session.scalars(statement)).all()
+        return [MetaDimensionMapper.to_entity(model) for model in models]
 
     async def get_metric_dimension_infos(self, metric_ids: Sequence[str], dimension_ids: Sequence[str]) -> list[MetricDimensionInfo]:
         if not metric_ids or not dimension_ids:

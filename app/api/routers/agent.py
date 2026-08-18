@@ -28,8 +28,11 @@ class AgentRunResponse(BaseModel):
     keywords: list[str]
     column_recall_terms: list[str]
     column_candidates: list[dict]
+    dimension_infos: list[dict]
     output_text: str
     llm_output: str
+    sql: str = ""
+    sql_result: list[dict] = Field(default_factory=list)
 
 
 @router.post("/run", response_model=AgentRunResponse)

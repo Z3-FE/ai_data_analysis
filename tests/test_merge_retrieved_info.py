@@ -6,6 +6,7 @@ import unittest
 from app.agent.nodes.merge_retrieved_info import merge_retrieved_info
 from app.entities.agent.agent_merge_context import MetricDimensionInfo, RelationshipInfo
 from app.entities.meta.meta_columns import MetaColumns
+from app.entities.meta.meta_dimensions import MetaDimensions
 from app.entities.meta.meta_tables import MetaTables
 
 
@@ -90,8 +91,17 @@ class FakeMetaCatalogRepository:
             )
         ]
 
-    async def get_dimension_ids_by_column_ids(self, column_ids):
-        return ["payment_type"]
+    async def get_dimensions_by_column_ids(self, column_ids):
+        return [
+            MetaDimensions(
+                dimension_id="payment_type",
+                dimension_name="payment_type",
+                business_name="支付方式",
+                table_id="dw.dim_payment_type",
+                column_name="payment_type",
+                description="按支付方式分析",
+            )
+        ]
 
     async def get_metric_dimension_infos(self, metric_ids, dimension_ids):
         return [
@@ -108,6 +118,22 @@ class FakeRuntime:
 
     def __init__(self):
         self.context = {"meta_catalog_repository": FakeMetaCatalogRepository()}
+        self.events = []
+        self.stream_writer = self.events.append
+
+
+class MissingQueryableColumnRepository(FakeMetaCatalogRepository):
+    """模拟召回字段未登记在 Meta 可查询字段目录中的异常数据。"""
+
+    async def get_queryable_columns_by_table_ids(self, table_ids):
+        return []
+
+
+class MissingQueryableColumnRuntime(FakeRuntime):
+    def __init__(self):
+        self.context = {
+            "meta_catalog_repository": MissingQueryableColumnRepository()
+        }
         self.events = []
         self.stream_writer = self.events.append
 
@@ -172,22 +198,48 @@ class MergeRetrievedInfoTest(unittest.TestCase):
         self.assertEqual(
             payment_table["matched_sources"],
             {
-                "dimension_value_recall": "维度值召回命中，维度值所属字段和表因此成为候选"
+                "dimension_value_completion": "根据维度值召回结果从 Meta MySQL 补齐的所属字段",
+                "dimension_value_recall": "维度值召回命中，维度值所属字段和表因此成为候选",
             },
         )
         self.assertEqual(
             payment_column["matched_sources"],
             {
-                "dimension_value_recall": "维度值召回命中，维度值所属字段和表因此成为候选"
+                "dimension_value_completion": "根据维度值召回结果从 Meta MySQL 补齐的所属字段",
+                "dimension_value_recall": "维度值召回命中，维度值所属字段和表因此成为候选",
             },
         )
         self.assertEqual(result["metric_infos"][0]["metric_id"], "payment_amount")
+        self.assertEqual(result["dimension_infos"][0]["dimension_id"], "payment_type")
         self.assertEqual(
             result["metric_infos"][0]["matched_sources"],
             {"metric_recall": "指标语义召回命中，指标基础表因此成为候选表"},
         )
         self.assertEqual(len(result["relationship_infos"]), 1)
         self.assertEqual(len(result["metric_dimension_infos"]), 1)
+
+    def test_merge_rejects_recalled_column_outside_queryable_catalog(self):
+        state = {
+            "table_candidates": [],
+            "column_candidates": [
+                {
+                    "payload": {
+                        **make_column(
+                            "dw.fact_payment.payment_value",
+                            "dw.fact_payment",
+                            "payment_value",
+                        ).__dict__
+                    }
+                }
+            ],
+            "metrics_candidates": [],
+            "dimension_value_candidates": [],
+        }
+
+        with self.assertRaisesRegex(ValueError, "未能挂载到候选表"):
+            asyncio.run(
+                merge_retrieved_info(state, MissingQueryableColumnRuntime())
+            )
 
 if __name__ == "__main__":
     unittest.main()
