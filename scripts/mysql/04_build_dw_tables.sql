@@ -126,12 +126,20 @@ SELECT
   COALESCE(t.product_category_name_english, c.product_category_name),
   CASE WHEN t.product_category_name_english IS NULL THEN 0 ELSE 1 END
 FROM (
-  SELECT product_category_name FROM stg_products WHERE product_category_name IS NOT NULL
+  SELECT TRIM(REPLACE(REPLACE(product_category_name, CHAR(13), ''), CHAR(10), '')) AS product_category_name
+  FROM stg_products
+  WHERE product_category_name IS NOT NULL
   UNION
-  SELECT product_category_name FROM stg_product_category_translation WHERE product_category_name IS NOT NULL
+  SELECT TRIM(REPLACE(REPLACE(product_category_name, CHAR(13), ''), CHAR(10), '')) AS product_category_name
+  FROM stg_product_category_translation
+  WHERE product_category_name IS NOT NULL
 ) AS c
-LEFT JOIN stg_product_category_translation AS t
-  ON c.product_category_name = t.product_category_name;
+LEFT JOIN (
+  SELECT
+    TRIM(REPLACE(REPLACE(product_category_name, CHAR(13), ''), CHAR(10), '')) AS product_category_name,
+    TRIM(REPLACE(REPLACE(product_category_name_english, CHAR(13), ''), CHAR(10), '')) AS product_category_name_english
+  FROM stg_product_category_translation
+) AS t ON c.product_category_name = t.product_category_name;
 
 CREATE TABLE dim_location (
   location_key INT AUTO_INCREMENT PRIMARY KEY COMMENT '地理位置代理键',
@@ -271,7 +279,7 @@ INSERT INTO dim_product (
 SELECT
   p.product_id,
   c.category_key,
-  p.product_category_name,
+  TRIM(REPLACE(REPLACE(p.product_category_name, CHAR(13), ''), CHAR(10), '')),
   c.product_category_name_english,
   p.product_name_lenght,
   p.product_description_lenght,
@@ -282,7 +290,7 @@ SELECT
   p.product_width_cm
 FROM stg_products AS p
 LEFT JOIN dim_category AS c
-  ON p.product_category_name = c.product_category_name;
+  ON TRIM(REPLACE(REPLACE(p.product_category_name, CHAR(13), ''), CHAR(10), '')) = c.product_category_name;
 
 CREATE TABLE fact_order (
   order_key BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '订单事实代理键',
