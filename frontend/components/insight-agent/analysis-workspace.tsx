@@ -24,6 +24,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 type JsonValue = string | number | boolean | null | Record<string, unknown> | JsonValue[];
 type Row = Record<string, JsonValue>;
@@ -982,7 +983,7 @@ function TaskDetailPanel({ group }: { group: TaskReturnGroup }) {
         <div className="flex items-start gap-2">
           <TaskStatusIcon status={group.status} />
           <div className="min-w-0 flex-1">
-            <div className="break-all text-xs font-extrabold text-slate-800">{group.taskId}</div>
+            <DialogTitle className="break-all text-xs font-extrabold text-slate-800">{group.taskId}</DialogTitle>
             <div className="mt-1 text-[10px] text-slate-400">{group.steps.length} 个任务步骤 · {group.events.length} 条任务事件</div>
           </div>
           <span className="shrink-0 text-[10px] font-bold text-slate-400">{group.status}</span>
@@ -1026,9 +1027,10 @@ function TaskDetailPanel({ group }: { group: TaskReturnGroup }) {
 }
 
 function TaskExplorer({ tasks }: { tasks: TaskSummary[] }) {
-  // 桌面端用任务索引切换详情，避免把所有任务和所有节点同时嵌套展开。
+  // 桌面端用任务索引打开详情抽屉，避免把任务详情长期占据主列表空间。
   const taskGroups = buildTaskReturnGroups(tasks);
   const [selectedTaskId, setSelectedTaskId] = useState(tasks[0]?.task_id || "");
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   useEffect(() => {
     if (!taskGroups.some((group) => group.taskId === selectedTaskId)) {
@@ -1036,44 +1038,56 @@ function TaskExplorer({ tasks }: { tasks: TaskSummary[] }) {
     }
   }, [selectedTaskId, taskGroups]);
 
-  const selectedGroup = taskGroups.find((group) => group.taskId === selectedTaskId) || taskGroups[0];
-  if (!selectedGroup) return <div className="py-10 text-center text-xs text-slate-400">复杂分析任务返回后，这里会按 task_id 展示</div>;
+  const selectedGroup = taskGroups.find((group) => group.taskId === selectedTaskId);
+  if (!taskGroups.length) return <div className="py-10 text-center text-xs text-slate-400">复杂分析任务返回后，这里会按 task_id 展示</div>;
 
   return (
-    <div className="grid min-h-[420px] grid-cols-[minmax(135px,0.38fr)_minmax(0,1fr)] overflow-hidden rounded-lg border border-slate-200 bg-white">
-      <div className="min-w-0 border-r border-slate-200 bg-slate-50/70">
+    <>
+      <div className="min-h-[420px] overflow-hidden rounded-lg border border-slate-200 bg-white">
         <div className="flex items-center justify-between border-b border-slate-200 px-3 py-3">
           <span className="text-[11px] font-extrabold text-slate-700">任务列表</span>
           <span className="font-mono text-[10px] text-slate-400">{taskGroups.length}</span>
         </div>
-        <div className="max-h-[min(65vh,680px)] overflow-y-auto p-2">
+        <div className="space-y-1 p-2">
           {taskGroups.map((group) => {
-            const selected = group.taskId === selectedGroup.taskId;
             const task = group.task;
             const phase = task?.phase || (group.status === "pending" ? "等待执行" : group.status === "running" ? "执行中" : "已完成");
             return (
               <button
                 key={group.taskId}
                 type="button"
-                onClick={() => setSelectedTaskId(group.taskId)}
-                className={`mb-1 w-full rounded-md border px-2.5 py-2 text-left transition-colors ${selected ? "border-blue-200 bg-blue-50" : "border-transparent hover:border-slate-200 hover:bg-white"}`}
+                onClick={() => {
+                  setSelectedTaskId(group.taskId);
+                  setDrawerOpen(true);
+                }}
+                className="w-full rounded-md border border-slate-200 bg-white px-3 py-3 text-left shadow-sm transition-colors hover:border-blue-300 hover:bg-blue-50/50"
               >
                 <span className="flex items-start gap-2">
                   <TaskStatusIcon status={group.status} />
                   <span className="min-w-0 flex-1">
-                    <span className="block break-all text-[10px] font-extrabold text-slate-700">{group.taskId}</span>
-                    <span className="mt-1 block truncate text-[9px] text-slate-400">{phase}</span>
+                    <span className="block break-all text-[11px] font-extrabold text-slate-700">{group.taskId}</span>
+                    <span className="mt-1 block truncate text-[10px] text-slate-400">{phase} · {group.steps.length} 个步骤</span>
                   </span>
+                  <ChevronRight className="mt-0.5 size-4 shrink-0 text-slate-300" />
                 </span>
               </button>
             );
           })}
         </div>
       </div>
-      <div className="min-w-0">
-        <TaskDetailPanel key={selectedGroup.taskId} group={selectedGroup} />
-      </div>
-    </div>
+      <Dialog open={drawerOpen} onOpenChange={setDrawerOpen}>
+        {selectedGroup && (
+          <DialogContent
+            showCloseButton
+            className="fixed inset-y-0 right-0 left-auto top-0 z-50 grid h-full w-[min(560px,calc(100%-24px))] max-w-none translate-x-0 translate-y-0 gap-0 overflow-hidden rounded-none border-y-0 border-r-0 border-l border-slate-200 bg-slate-50 p-0 shadow-2xl duration-200 data-open:slide-in-from-right data-closed:slide-out-to-right"
+          >
+            <div className="min-h-0 overflow-y-auto">
+              <TaskDetailPanel key={selectedGroup.taskId} group={selectedGroup} />
+            </div>
+          </DialogContent>
+        )}
+      </Dialog>
+    </>
   );
 }
 
