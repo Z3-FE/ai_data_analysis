@@ -1079,7 +1079,8 @@ function TaskExplorer({ tasks }: { tasks: TaskSummary[] }) {
         {selectedGroup && (
           <DialogContent
             showCloseButton
-            className="fixed inset-y-0 right-0 left-auto top-0 z-50 grid h-full w-[min(720px,calc(100%-24px))] max-w-none translate-x-0 translate-y-0 gap-0 overflow-hidden rounded-none border-y-0 border-r-0 border-l border-slate-200 bg-slate-50 p-0 shadow-2xl duration-200 data-open:slide-in-from-right data-closed:slide-out-to-right"
+            style={{ width: "720px", maxWidth: "calc(100% - 24px)" }}
+            className="fixed inset-y-0 right-0 left-auto top-0 z-50 grid h-full max-w-none translate-x-0 translate-y-0 gap-0 overflow-hidden rounded-none border-y-0 border-r-0 border-l border-slate-200 bg-slate-50 p-0 shadow-2xl duration-200 data-open:slide-in-from-right data-closed:slide-out-to-right"
           >
             <div className="min-h-0 overflow-y-auto">
               <TaskDetailPanel key={selectedGroup.taskId} group={selectedGroup} />
