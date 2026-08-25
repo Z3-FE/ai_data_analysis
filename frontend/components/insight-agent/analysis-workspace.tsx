@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import {
   AlertCircle,
   BarChart3,
@@ -830,6 +831,48 @@ function DebugEventDetails({ event, defaultOpen = false, title }: { event: Debug
   );
 }
 
+function ReturnDrawer({
+  title,
+  subtitle,
+  status,
+  children,
+  trigger,
+}: {
+  title: string;
+  subtitle?: string;
+  status?: TaskStatus;
+  children: ReactNode;
+  trigger: (open: () => void) => ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      {trigger(() => setOpen(true))}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent
+          showCloseButton={false}
+          style={{ width: "720px", maxWidth: "calc(100% - 24px)" }}
+          className="fixed inset-y-0 right-0 left-auto top-0 z-50 grid h-full max-w-none translate-x-0 translate-y-0 gap-0 overflow-hidden rounded-none border-y-0 border-r-0 border-l border-slate-200 bg-slate-50 p-0 shadow-2xl duration-200 data-open:slide-in-from-right data-closed:slide-out-to-right"
+        >
+          <div className="min-h-0 overflow-y-auto">
+            <div className="sticky top-0 z-20 border-b border-slate-200 bg-white px-4 py-3 shadow-[0_4px_12px_-10px_rgba(15,23,42,0.35)]">
+              <div className="flex items-start gap-2">
+                {status && <TaskStatusIcon status={status} />}
+                <div className="min-w-0 flex-1">
+                  <DialogTitle className="break-words text-sm font-extrabold text-slate-800">{title}</DialogTitle>
+                  {subtitle && <div className="mt-1 break-words text-[10px] text-slate-400">{subtitle}</div>}
+                </div>
+                {status && <span className="shrink-0 text-[10px] font-bold text-slate-400">{status}</span>}
+              </div>
+            </div>
+            <div className="space-y-3 p-4">{children}</div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 function ExecutionSteps({ steps }: { steps: RunStep[] }) {
   return (
     <div className="space-y-3">
@@ -880,32 +923,44 @@ function StepReturnCard({ group }: { group: StepReturnGroup }) {
 
 function StepTaskDetail({ group }: { group: TaskReturnGroup }) {
   const task = group.task;
-  const [open, setOpen] = useState(group.status === "running" || group.status === "failed");
-  useEffect(() => {
-    setOpen(group.status === "running" || group.status === "failed");
-  }, [group.status]);
+  const phase = task?.node ? "当前节点：" + task.node : (task?.phase || (group.status === "pending" ? "等待执行" : "执行中"));
   return (
-    <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)} className="rounded-lg border border-slate-200 bg-slate-50/50">
-      <summary className="flex cursor-pointer list-none items-start gap-2 px-3 py-3">
-        <ChevronRight className="mt-0.5 size-3.5 shrink-0 text-slate-400 transition-transform group-open:rotate-90" />
-        <TaskStatusIcon status={group.status} />
-        <span className="min-w-0 flex-1">
-          <span className="block break-all text-xs font-bold text-slate-700">{group.taskId}</span>
-          <span className="mt-1 block text-[10px] text-slate-500">{group.steps.length} 个任务步骤 · {task?.node ? `当前节点：${task.node}` : (task?.phase || (group.status === "pending" ? "等待执行" : "执行中"))}</span>
-        </span>
-        <span className="shrink-0 text-[10px] text-slate-400">{group.status}</span>
-      </summary>
-      <div className="space-y-3 border-t border-slate-200 px-3 pb-3 pt-3">
-        <TaskMetadata task={task} />
-        {group.steps.length
-          ? <div className="space-y-2">{group.steps.map((step) => <StepTaskStep key={step.step} step={step} />)}</div>
-          : <div className="py-3 text-center text-xs text-slate-400">该任务暂无详细返回</div>}
-      </div>
-    </details>
+    <ReturnDrawer
+      title={group.taskId}
+      subtitle={group.steps.length + " 个任务步骤 · " + phase}
+      status={group.status}
+      trigger={(open) => (
+        <button type="button" onClick={open} className="group w-full rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-3 text-left transition-colors hover:border-blue-300 hover:bg-blue-50/60">
+          <span className="flex items-start gap-2">
+            <ChevronRight className="mt-0.5 size-3.5 shrink-0 text-slate-400" />
+            <TaskStatusIcon status={group.status} />
+            <span className="min-w-0 flex-1">
+              <span className="block break-all text-xs font-bold text-slate-700">{group.taskId}</span>
+              <span className="mt-1 block text-[10px] text-slate-500">{group.steps.length} 个任务步骤 · {phase}</span>
+            </span>
+            <span className="shrink-0 text-[10px] text-slate-400">查看详情</span>
+          </span>
+        </button>
+      )}
+    >
+      <TaskDetailBody group={group} />
+    </ReturnDrawer>
   );
 }
 
-function StepTaskStep({ step }: { step: TaskReturnStep }) {
+function TaskDetailBody({ group }: { group: TaskReturnGroup }) {
+  const task = group.task;
+  return (
+    <>
+      <TaskMetadata task={task} />
+      {group.steps.length
+        ? <div className="space-y-2">{group.steps.map((step) => <StepTaskStepTree key={step.step} step={step} />)}</div>
+        : <div className="py-3 text-center text-xs text-slate-400">该任务暂无详细返回</div>}
+    </>
+  );
+}
+
+function StepTaskStepTree({ step }: { step: TaskReturnStep }) {
   const [open, setOpen] = useState(step.status === "running" || step.status === "failed");
   useEffect(() => {
     setOpen(step.status === "running" || step.status === "failed");
@@ -923,14 +978,14 @@ function StepTaskStep({ step }: { step: TaskReturnStep }) {
       </summary>
       <div className="space-y-2 border-t border-slate-100 px-3 pb-3 pt-2">
         {step.nodeGroups.length
-          ? step.nodeGroups.map((nodeGroup) => <NodeReturnCard key={nodeGroup.node} group={nodeGroup} />)
+          ? step.nodeGroups.map((nodeGroup) => <NodeReturnTree key={nodeGroup.node} group={nodeGroup} />)
           : step.displayGroups.map((item) => <DebugEventDetails key={item.key} event={item.event} title={item.label} />)}
       </div>
     </details>
   );
 }
 
-function NodeReturnCard({ group }: { group: NodeReturnGroup }) {
+function NodeReturnTree({ group }: { group: NodeReturnGroup }) {
   const [open, setOpen] = useState(group.status === "running" || group.status === "failed");
   useEffect(() => {
     setOpen(group.status === "running" || group.status === "failed");
@@ -953,6 +1008,31 @@ function NodeReturnCard({ group }: { group: NodeReturnGroup }) {
   );
 }
 
+function NodeReturnCard({ group }: { group: NodeReturnGroup }) {
+  return (
+    <ReturnDrawer
+      title={"节点：" + group.node}
+      subtitle={group.displayGroups.length + " 个返回项 · 最新：" + displayEventLabel(group.latest)}
+      status={group.status}
+      trigger={(open) => (
+        <button type="button" onClick={open} className="group w-full rounded-md border border-blue-100 bg-blue-50/30 px-3 py-2.5 text-left transition-colors hover:border-blue-300 hover:bg-blue-50">
+          <span className="flex items-start gap-2">
+            <ChevronRight className="mt-0.5 size-3.5 shrink-0 text-slate-400" />
+            <StepStatusIcon status={group.status} />
+            <span className="min-w-0 flex-1">
+              <span className="block break-all text-[11px] font-bold text-slate-700">节点：{group.node}</span>
+              <span className="mt-0.5 block text-[10px] text-slate-400">{group.displayGroups.length} 个返回项 · 最新：{displayEventLabel(group.latest)}</span>
+            </span>
+            <span className="shrink-0 text-[10px] text-slate-400">查看详情</span>
+          </span>
+        </button>
+      )}
+    >
+      {group.displayGroups.map((item) => <DebugEventDetails key={item.key} event={item.event} title={item.label} />)}
+    </ReturnDrawer>
+  );
+}
+
 function TaskMetadata({ task }: { task?: TaskSummary }) {
   if (!task) return null;
   return (
@@ -969,14 +1049,6 @@ function TaskMetadata({ task }: { task?: TaskSummary }) {
 }
 
 function TaskDetailPanel({ group }: { group: TaskReturnGroup }) {
-  const task = group.task;
-  const [openStep, setOpenStep] = useState("");
-
-  useEffect(() => {
-    const firstStep = group.steps.find((step) => step.status === "running" || step.status === "failed") || group.steps[0];
-    setOpenStep(firstStep?.step || "");
-  }, [group]);
-
   return (
     <div className="min-w-0">
       <div className="sticky top-0 z-20 border-b border-slate-200 bg-white px-4 py-3 shadow-[0_4px_12px_-10px_rgba(15,23,42,0.35)]">
@@ -990,37 +1062,7 @@ function TaskDetailPanel({ group }: { group: TaskReturnGroup }) {
         </div>
       </div>
       <div className="space-y-3 p-3">
-        <TaskMetadata task={task} />
-        {group.steps.length
-          ? <div className="space-y-2">
-              {group.steps.map((step) => {
-                const open = openStep === step.step;
-                return (
-                  <details
-                    key={step.step}
-                    open={open}
-                    onToggle={(event) => setOpenStep(event.currentTarget.open ? step.step : "")}
-                    className="group rounded-md border border-slate-200 bg-white"
-                  >
-                    <summary className="flex cursor-pointer list-none items-start gap-2 px-3 py-2.5">
-                      <ChevronRight className="mt-0.5 size-3.5 shrink-0 text-slate-400 transition-transform group-open:rotate-90" />
-                      <StepStatusIcon status={step.status} />
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-[11px] font-bold text-slate-700">{step.step}</span>
-                        <span className="mt-0.5 block text-[10px] text-slate-400">{step.nodeGroups.length} 个 Agent 节点 · 最新：{displayEventLabel(step.latest)}</span>
-                      </span>
-                      <span className="shrink-0 text-[10px] text-slate-400">{step.status}</span>
-                    </summary>
-                    <div className="space-y-2 border-t border-slate-100 px-3 pb-3 pt-2">
-                      {step.nodeGroups.length
-                        ? step.nodeGroups.map((nodeGroup) => <NodeReturnCard key={nodeGroup.node} group={nodeGroup} />)
-                        : step.displayGroups.map((item) => <DebugEventDetails key={item.key} event={item.event} title={item.label} />)}
-                    </div>
-                  </details>
-                );
-              })}
-            </div>
-          : <div className="py-6 text-center text-xs text-slate-400">该任务暂无详细返回</div>}
+        <TaskDetailBody group={group} />
       </div>
     </div>
   );
