@@ -979,7 +979,7 @@ function TaskDetailPanel({ group }: { group: TaskReturnGroup }) {
 
   return (
     <div className="min-w-0">
-      <div className="border-b border-slate-200 bg-white px-4 py-3">
+      <div className="sticky top-0 z-20 border-b border-slate-200 bg-white px-4 py-3 shadow-[0_4px_12px_-10px_rgba(15,23,42,0.35)]">
         <div className="flex items-start gap-2">
           <TaskStatusIcon status={group.status} />
           <div className="min-w-0 flex-1">
@@ -1078,7 +1078,7 @@ function TaskExplorer({ tasks }: { tasks: TaskSummary[] }) {
       <Dialog open={drawerOpen} onOpenChange={setDrawerOpen}>
         {selectedGroup && (
           <DialogContent
-            showCloseButton
+            showCloseButton={false}
             style={{ width: "720px", maxWidth: "calc(100% - 24px)" }}
             className="fixed inset-y-0 right-0 left-auto top-0 z-50 grid h-full max-w-none translate-x-0 translate-y-0 gap-0 overflow-hidden rounded-none border-y-0 border-r-0 border-l border-slate-200 bg-slate-50 p-0 shadow-2xl duration-200 data-open:slide-in-from-right data-closed:slide-out-to-right"
           >
