@@ -27,8 +27,13 @@ class AgentState(TypedDict, total=False):
     analysis_task_results: list[dict]
     # 从完整任务结果提取的精简可信证据，服务结论总结器。
     analysis_evidence: dict
-    # 最终报告节点生成并绑定真实数据后的唯一前端报告。
-    final_report: dict
+    # LLM 生成的报告规划，只包含文字、组件引用和布局意图。
+    report_plan: dict
+    # 报告规划节点的状态和错误说明，供渲染节点决定是否返回失败报告。
+    report_plan_status: str
+    report_plan_error: str
+    # 后端绑定真实 TaskResult 后生成的唯一前端报告。
+    rendered_report: dict
 
     # Query Agent 的关键词、召回候选和结构化 SQL 上下文。
     llm_keywords: list[str]

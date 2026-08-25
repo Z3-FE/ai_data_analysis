@@ -39,13 +39,25 @@ interface ReportColumn {
 
 interface ReportComponent {
   component_id: string;
-  component_type: "text" | "kpi" | "table" | "line_chart" | "bar_chart";
+  component_type: "text" | "kpi" | "table" | "chart";
+  chart_type?: "line" | "bar" | null;
   title: string;
   content: string;
   source_task_id: string;
-  dimension: string;
-  metrics: string[];
+  dimension_field: string;
+  metric_fields: string[];
   value_field: string;
+  presentation?: {
+    orientation?: "horizontal" | "vertical";
+    sort?: "asc" | "desc" | "none";
+    top_n?: number | null;
+    show_labels?: boolean;
+    show_legend?: boolean;
+    color_scheme?: string;
+  };
+  span?: number;
+  binding_status: "bound" | "failed";
+  binding_error?: string;
   value: JsonValue;
   columns: ReportColumn[];
   data: Row[];
@@ -55,10 +67,14 @@ interface ReportComponent {
 
 interface ReportSection {
   title: string;
+  layout: {
+    type: "stack" | "grid";
+    columns: number;
+  };
   components: ReportComponent[];
 }
 
-interface FinalReport {
+interface RenderedReport {
   status: "success" | "partial" | "failed";
   title: string;
   summary: string;
@@ -139,7 +155,8 @@ interface StreamEvent {
   node: string;
   status?: string;
   message?: string;
-  report?: FinalReport;
+  rendered_report?: RenderedReport;
+  report_plan?: Record<string, unknown>;
   chunk?: string;
   [key: string]: unknown;
 }
@@ -179,10 +196,11 @@ const DEBUG_STEP_ORDER = [
   "增强查询结果",
   "执行分析任务",
   "汇总全部分析证据",
-  "生成最终报告",
+  "生成报告规划",
+  "渲染最终报告",
 ];
 
-const STREAM_EVENT_TYPES = new Set(["reasoning_chunk", "llm_chunk", "report_text_delta"]);
+const STREAM_EVENT_TYPES = new Set(["reasoning_chunk", "llm_chunk"]);
 
 function mainStepName(sourceStep: string, type = "") {
   // 后端允许更细的节点名，前端将其归入用户约定的 17 个主步骤。
@@ -196,6 +214,7 @@ function mainStepName(sourceStep: string, type = "") {
   if (sourceStep.startsWith("过滤表")) return "过滤表";
   if (sourceStep.startsWith("补全过滤后的上下文") || sourceStep.startsWith("补充 SQL 生成上下文")) return "整理 SQL 上下文";
   if (sourceStep.startsWith("执行分析任务") || type === "analysis_task_result" || type === "analysis_task_resolved") return "执行分析任务";
+  if (sourceStep === "生成最终报告") return "渲染最终报告";
   return sourceStep;
 }
 
@@ -277,7 +296,7 @@ function upsertDebugEvent(events: DebugEvent[], event: StreamEvent) {
   if (index === -1) return [...events, nextEvent];
   const next = [...events];
   const previous = next[index];
-  if (["reasoning_chunk", "llm_chunk", "report_text_delta"].includes(nextEvent.type)) {
+  if (["reasoning_chunk", "llm_chunk"].includes(nextEvent.type)) {
     const previousChunk = typeof previous.payload.chunk === "string" ? previous.payload.chunk : "";
     const currentChunk = typeof nextEvent.payload.chunk === "string" ? nextEvent.payload.chunk : "";
     next[index] = {
@@ -533,7 +552,8 @@ function displayEventLabel(event: DebugEvent) {
   if (event.type === "analysis_task_result") return "分析任务结果";
   if (event.type === "analysis_task_resolved") return "依赖结果解析";
   if (event.type === "error") return "错误信息";
-  if (event.type === "final_report") return "最终报告";
+  if (event.type === "report_plan_result") return "报告规划结果";
+  if (event.type === "rendered_report") return "最终报告";
   if (event.status === "success") return event.step + "结果";
   if (event.status === "failed") return event.step + "失败信息";
   if (event.status === "partial") return event.step + "部分结果";
@@ -555,7 +575,6 @@ function buildDisplayEventGroups(events: DebugEvent[]) {
   // 业务视图合并同一节点的内部返回；全部事件视图不调用此函数。
   const hasReasoningResult = events.some((event) => event.type === "reasoning_result");
   const hasLlmResult = events.some((event) => event.type === "llm_result");
-  const hasFinalReport = events.some((event) => event.type === "final_report");
   const hasNodeResult = events.some((event) => event.type !== "progress");
   const groups = new Map<string, DisplayEventGroup>();
 
@@ -563,7 +582,6 @@ function buildDisplayEventGroups(events: DebugEvent[]) {
     if (hasNodeResult && event.type === "progress") continue;
     if (hasReasoningResult && event.type === "reasoning_chunk") continue;
     if (hasLlmResult && event.type === "llm_chunk") continue;
-    if (hasFinalReport && event.type === "report_text_delta") continue;
     const label = displayEventLabel(event);
     const current = groups.get(label);
     groups.set(label, current
@@ -714,6 +732,9 @@ function StatusBadge({ status }: { status: string }) {
 
 function DynamicTable({ component }: { component: ReportComponent }) {
   // 只渲染后端绑定到组件的真实行，不假设任何固定业务字段。
+  if (component.binding_status === "failed") {
+    return <ReportBindingError component={component} />;
+  }
   const rows = component.data || [];
   return (
     <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
@@ -736,33 +757,57 @@ function DynamicTable({ component }: { component: ReportComponent }) {
 
 function DynamicChart({ component }: { component: ReportComponent }) {
   // 用白名单图表类型和真实字段绘制图表，LLM 不参与生成图形代码。
-  const dimension = component.columns.find((column) => column.result_name === component.dimension);
-  const metric = component.columns.find((column) => column.result_name === component.metrics[0]);
+  if (component.binding_status === "failed") {
+    return <ReportBindingError component={component} />;
+  }
+  const dimension = component.columns.find((column) => column.result_name === component.dimension_field);
+  const metric = component.columns.find((column) => column.result_name === component.metric_fields[0]);
   if (!dimension || !metric || !component.data.length) return null;
-  const values = component.data.map((row) => Number(row[metric.result_name]) || 0);
+  const presentation = component.presentation || {};
+  const preparedRows = [...component.data]
+    .sort((left, right) => {
+      if (!presentation.sort || presentation.sort === "none") return 0;
+      const leftValue = Number(left[metric.result_name]) || 0;
+      const rightValue = Number(right[metric.result_name]) || 0;
+      return presentation.sort === "asc" ? leftValue - rightValue : rightValue - leftValue;
+    })
+    .slice(0, presentation.top_n || undefined);
+  const values = preparedRows.map((row) => Number(row[metric.result_name]) || 0);
   const max = Math.max(...values, 1);
   const width = 720;
   const height = 220;
-  const isLine = component.component_type === "line_chart";
+  const isLine = component.chart_type === "line";
+  const isHorizontal = component.chart_type === "bar" && presentation.orientation === "horizontal";
   const points = values.map((value, index) => {
     const x = values.length === 1 ? width / 2 : 28 + (index * (width - 56)) / (values.length - 1);
     const y = height - 28 - (value / max) * (height - 56);
-    return { x, y, label: textValue(component.data[index][dimension.result_name]) };
+    return { x, y, value, label: textValue(preparedRows[index][dimension.result_name]) };
   });
   return (
     <section className="rounded-xl border border-slate-200 bg-white p-4">
       <div className="mb-3 flex items-center justify-between gap-3"><div className="flex min-w-0 items-center gap-2"><BarChart3 className="size-4 shrink-0 text-blue-600" /><h3 className="truncate text-sm font-extrabold text-slate-800">{component.title}</h3></div><span className="text-[11px] text-slate-400">{displayName(metric, metric.result_name)}</span></div>
       <div className="overflow-x-auto"><svg viewBox={`0 0 ${width} ${height + 34}`} className="h-auto min-w-[520px] w-full" role="img" aria-label={component.title}>
         <line x1="28" y1={height - 28} x2={width - 28} y2={height - 28} stroke="#cbd5e1" />
-        {isLine ? <><polyline fill="none" stroke="#2563eb" strokeWidth="3" points={points.map((point) => `${point.x},${point.y}`).join(" ")} />{points.map((point) => <circle key={`${point.x}-${point.y}`} cx={point.x} cy={point.y} r="4" fill="#2563eb" />)}</> : points.map((point) => { const barWidth = Math.max(12, Math.min(42, (width - 56) / Math.max(points.length, 1) - 8)); return <rect key={point.x} x={point.x - barWidth / 2} y={point.y} width={barWidth} height={height - 28 - point.y} rx="3" fill="#2563eb" />; })}
-        {points.map((point) => <text key={`label-${point.x}`} x={point.x} y={height + 1} textAnchor="middle" fontSize="10" fill="#64748b">{point.label.length > 12 ? `${point.label.slice(0, 12)}…` : point.label}</text>)}
+        {isLine ? <><polyline fill="none" stroke="#2563eb" strokeWidth="3" points={points.map((point) => `${point.x},${point.y}`).join(" ")} />{points.map((point) => <circle key={`${point.x}-${point.y}`} cx={point.x} cy={point.y} r="4" fill="#2563eb" />)}</> : points.map((point, index) => { const barWidth = Math.max(12, Math.min(42, (width - 56) / Math.max(points.length, 1) - 8)); const barHeight = Math.max(2, (point.value / max) * (height - 56)); const horizontalBarWidth = Math.max(2, (point.value / max) * (width - 150)); const horizontalY = 34 + index * Math.max(24, (height - 48) / Math.max(points.length, 1)); return isHorizontal ? <rect key={point.x} x={130} y={horizontalY} width={horizontalBarWidth} height="16" rx="3" fill="#2563eb" /> : <rect key={point.x} x={point.x - barWidth / 2} y={height - 28 - barHeight} width={barWidth} height={barHeight} rx="3" fill="#2563eb" />; })}
+        {points.map((point, index) => isHorizontal ? <text key={`label-${point.x}`} x="124" y={40 + index * Math.max(24, (height - 48) / Math.max(points.length, 1))} textAnchor="end" fontSize="10" fill="#64748b">{point.label.length > 18 ? `${point.label.slice(0, 18)}…` : point.label}</text> : <text key={`label-${point.x}`} x={point.x} y={height + 1} textAnchor="middle" fontSize="10" fill="#64748b">{point.label.length > 12 ? `${point.label.slice(0, 12)}…` : point.label}</text>)}
       </svg></div>
     </section>
   );
 }
 
-function ReportView({ report }: { report: FinalReport }) {
+function ReportBindingError({ component }: { component: ReportComponent }) {
+  return <section className="border border-rose-200 bg-rose-50/70 px-4 py-3"><div className="flex items-center gap-2 text-sm font-bold text-rose-700"><AlertCircle className="size-4" />{component.title}</div><p className="mt-2 text-xs leading-5 text-rose-700">{component.binding_error || "组件数据绑定失败。"}</p></section>;
+}
+
+function ReportView({ report }: { report: RenderedReport }) {
   // 按 LLM 规划的章节和组件顺序渲染最终报告。
+  const renderComponent = (component: ReportComponent) => {
+    if (component.binding_status === "failed") return <ReportBindingError key={component.component_id} component={component} />;
+    if (component.component_type === "text") return <article key={component.component_id} className="border-l-2 border-blue-500 pl-4 text-sm leading-7 text-slate-700">{component.content}</article>;
+    if (component.component_type === "kpi") return component.binding_status === "failed" ? <ReportBindingError key={component.component_id} component={component} /> : <div key={component.component_id} className="rounded-xl border border-slate-200 bg-white px-4 py-4"><div className="text-xs font-bold text-slate-500">{component.title}</div><div className="mt-2 break-words text-2xl font-extrabold text-slate-900">{textValue(component.value)}</div></div>;
+    if (component.component_type === "table") return <DynamicTable key={component.component_id} component={component} />;
+    return <DynamicChart key={component.component_id} component={component} />;
+  };
   return (
     <section className="space-y-6">
       <div className="border-b border-slate-200 pb-4">
@@ -770,12 +815,11 @@ function ReportView({ report }: { report: FinalReport }) {
         <h2 className="text-xl font-extrabold text-slate-900">{report.title}</h2>
         <p className="mt-2 max-w-4xl text-base font-semibold leading-7 text-slate-700">{report.summary}</p>
       </div>
-      {report.sections.map((section, sectionIndex) => <section key={`${section.title}-${sectionIndex}`} className="space-y-4"><h3 className="text-sm font-extrabold text-slate-900">{section.title}</h3>{section.components.map((component) => {
-        if (component.component_type === "text") return <article key={component.component_id} className="border-l-2 border-blue-500 pl-4 text-sm leading-7 text-slate-700">{component.content}</article>;
-        if (component.component_type === "kpi") return <div key={component.component_id} className="rounded-xl border border-slate-200 bg-white px-4 py-4"><div className="text-xs font-bold text-slate-500">{component.title}</div><div className="mt-2 break-words text-2xl font-extrabold text-slate-900">{textValue(component.value)}</div></div>;
-        if (component.component_type === "table") return <DynamicTable key={component.component_id} component={component} />;
-        return <DynamicChart key={component.component_id} component={component} />;
-      })}</section>)}
+      {report.sections.map((section, sectionIndex) => {
+        const columns = Math.max(1, Math.min(section.layout?.columns || 1, 4));
+        const isGrid = section.layout?.type === "grid" && columns > 1;
+        return <section key={`${section.title}-${sectionIndex}`} className="space-y-4"><h3 className="text-sm font-extrabold text-slate-900">{section.title}</h3><div className={isGrid ? "grid items-start gap-4" : "space-y-4"} style={isGrid ? { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` } : undefined}>{section.components.map((component) => <div key={component.component_id} style={isGrid ? { gridColumn: `span ${Math.min(Math.max(component.span || 1, 1), columns)}` } : undefined}>{renderComponent(component)}</div>)}</div></section>;
+      })}
       {report.limitations.length > 0 && <div className="border-t border-amber-200 bg-amber-50/70 px-4 py-3"><div className="mb-2 flex items-center gap-2 text-xs font-extrabold text-amber-800"><AlertCircle className="size-4" />分析边界</div><ul className="space-y-1 text-xs leading-5 text-amber-900">{report.limitations.map((limitation, index) => <li key={`${limitation}-${index}`}>• {limitation}</li>)}</ul></div>}
     </section>
   );
@@ -1154,7 +1198,7 @@ function ExecutionPanel({ running, debugEvents }: { running: boolean; debugEvent
   const progressPercent = taskSummaries.length ? (completedTaskCount / taskSummaries.length) * 100 : 0;
 
   return (
-    <aside className="flex min-h-0 flex-col border-l border-slate-200 bg-white xl:w-[430px] 2xl:w-[500px]">
+    <aside className="flex min-h-0 w-full shrink-0 flex-col border-l border-slate-200 bg-white xl:w-[430px] 2xl:w-[500px]">
       <div className="border-b border-slate-200 px-5 py-4">
         <div className="flex items-center gap-2 text-sm font-extrabold text-slate-800"><ClipboardList className="size-4 text-blue-600" />执行过程</div>
         <p className="mt-1 text-[11px] text-slate-400">实时展示本次分析的任务进度与节点返回</p>
@@ -1192,8 +1236,7 @@ export default function AnalysisWorkspace() {
   const [sessionId, setSessionId] = useState("");
   const [sessionStatus, setSessionStatus] = useState("初始化会话");
   const [running, setRunning] = useState(false);
-  const [report, setReport] = useState<FinalReport | null>(null);
-  const [reportDraftText, setReportDraftText] = useState("");
+  const [report, setReport] = useState<RenderedReport | null>(null);
   const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
   const [error, setError] = useState("");
   const abortRef = useRef<AbortController | null>(null);
@@ -1216,13 +1259,12 @@ export default function AnalysisWorkspace() {
   const resetOutput = useCallback(() => {
     // 开始新一轮分析前清理当前会话的运行态和最终报告。
     setReport(null);
-    setReportDraftText("");
     setDebugEvents([]);
     setError("");
   }, []);
 
   const runQuestion = useCallback(async () => {
-    // 提交问题并消费主流程事件，最终只接受 final_report 作为正式产物。
+    // 提交问题并消费主流程事件，最终只接受 rendered_report 作为正式产物。
     const normalizedQuestion = question.trim();
     if (!normalizedQuestion || running || !sessionId) return;
     resetOutput();
@@ -1232,8 +1274,7 @@ export default function AnalysisWorkspace() {
     try {
       for await (const event of streamAgent(normalizedQuestion, sessionId, controller.signal)) {
         setDebugEvents((current) => upsertDebugEvent(current, event));
-        if (event.type === "report_text_delta") setReportDraftText((current) => current + String(event.chunk || ""));
-        if (event.type === "final_report" && event.report) setReport(event.report);
+        if (event.type === "rendered_report" && event.rendered_report) setReport(event.rendered_report);
         if (event.type === "error") setError(String(event.message || event.error || "分析失败"));
       }
     } catch (cause) {
@@ -1251,16 +1292,15 @@ export default function AnalysisWorkspace() {
   };
 
   const status = report?.status || (running ? "running" : error ? "failed" : debugEvents.length ? "partial" : "");
-  const hasOutput = Boolean(report || reportDraftText || error);
+  const hasOutput = Boolean(report || error);
 
   return (
-    <div className="flex h-full min-h-0 flex-col xl:flex-row">
+    <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col xl:flex-row">
       <section className="flex min-w-0 flex-1 flex-col">
         <div className="border-b border-slate-200 bg-white px-5 py-4 lg:px-8"><div className="mx-auto flex max-w-[1400px] items-start justify-between gap-4"><div className="min-w-0"><div className="flex items-center gap-2"><MessageSquare className="size-4 text-blue-600" /><h1 className="truncate text-base font-extrabold text-slate-900">{report?.title || "当前分析会话"}</h1><StatusBadge status={status} /></div><p className="mt-1 truncate text-xs text-slate-400">{sessionStatus} · 会话 ID：{sessionId || "初始化中"}</p></div>{hasOutput && <Button type="button" variant="ghost" size="icon" onClick={() => { setQuestion(""); resetOutput(); }} title="新建当前会话"><RotateCcw className="size-4" /></Button>}</div></div>
         <div className="min-h-0 flex-1 overflow-y-auto"><div className="mx-auto max-w-[1400px] space-y-6 px-5 py-6 lg:px-8">
           {!hasOutput && !running && <div className="flex min-h-[min(46vh,520px)] flex-col items-center justify-center text-center"><div className="mb-5 flex size-16 items-center justify-center rounded-2xl bg-blue-50 text-blue-600"><FileBarChart className="size-8" /></div><h2 className="text-2xl font-extrabold tracking-tight text-slate-900">用自然语言开始数据分析</h2><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">输入一个问数或分析问题，系统会在当前会话中展示执行过程与最终报告。</p><Button type="button" variant="outline" className="mt-5 gap-2" onClick={() => setQuestion(DEFAULT_QUESTION)}><Play className="size-3.5" />填入示例问题</Button></div>}
-          {running && !report && <div className="border-l-2 border-blue-500 px-4 py-3 text-sm font-semibold text-slate-600">正在生成最终报告：{question}</div>}
-          {reportDraftText && !report && <details open className="border border-slate-200 bg-slate-50 px-4 py-3"><summary className="cursor-pointer text-xs font-bold text-slate-500">报告生成过程</summary><pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap text-xs leading-6 text-slate-600">{reportDraftText}</pre></details>}
+          {running && !report && <div className="border-l-2 border-blue-500 px-4 py-3 text-sm font-semibold text-slate-600">正在生成报告：{question}</div>}
           {report && <ReportView report={report} />}
           {error && <div className="flex items-start gap-3 border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"><AlertCircle className="mt-0.5 size-4 shrink-0" /><span>{error}</span></div>}
         </div></div>

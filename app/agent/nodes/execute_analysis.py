@@ -17,6 +17,7 @@
 import asyncio
 import json
 import logging
+import re
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -427,6 +428,51 @@ async def _stream_structured_llm(
     return raw
 
 
+def _parse_structured_output(parser: Any, raw: str) -> Any:
+    """从模型混合输出中提取结构化 JSON，再交给 LangChain Parser 校验。
+
+    思考型模型偶尔会把解释文字、Python 代码块和最终 JSON 一起放进
+    content。直接调用 PydanticOutputParser 时，它可能优先尝试第一个
+    Python 代码块，导致本来存在的最终 JSON 也无法被解析。
+    """
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add_candidate(value: str) -> None:
+        candidate = value.strip()
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            candidates.append(candidate)
+
+    add_candidate(raw)
+
+    fenced_blocks = re.findall(r"```([^\n`]*)\n(.*?)```", raw, flags=re.DOTALL)
+    fenced_blocks.sort(
+        key=lambda item: 0 if item[0].strip().lower().startswith("json") else 1
+    )
+    for _, body in fenced_blocks:
+        add_candidate(body)
+
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", raw):
+        try:
+            _, end = decoder.raw_decode(raw[match.start() :])
+        except json.JSONDecodeError:
+            continue
+        add_candidate(raw[match.start() : match.start() + end])
+
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            return parser.parse(candidate)
+        except Exception as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    raise ValueError("结构化 LLM 输出为空，无法解析")
+
+
 async def _execute_task(
     task: dict[str, Any],
     state: AgentState,
@@ -516,7 +562,7 @@ async def _execute_task(
                 task_id=task["task_id"],
                 phase=current_phase,
             )
-            resolved = parser.parse(resolved_raw)
+            resolved = _parse_structured_output(parser, resolved_raw)
             resolved_question = resolved.question
             writer(
                 {
@@ -594,7 +640,7 @@ async def _execute_task(
             task_id=task["task_id"],
             phase=current_phase,
         )
-        calculation = parser.parse(calculation_raw)
+        calculation = _parse_structured_output(parser, calculation_raw)
         # LLM 只生成计算程序；数值比较、排名和差值由沙箱中的 Python 完成。
         calculation_code = calculation.code
         calculation_description = calculation.result_description

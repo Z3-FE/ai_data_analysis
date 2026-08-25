@@ -11,8 +11,9 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agent.context import AgentContext
 from app.agent.nodes.execute_analysis import execute_analysis
-from app.agent.nodes.generate_final_report import generate_final_report
+from app.agent.nodes.generate_report_plan import generate_report_plan
 from app.agent.nodes.plan_analysis import plan_analysis
+from app.agent.nodes.render_report import render_report
 from app.agent.nodes.route_question import route_question
 from app.agent.query_graph import add_query_flow
 from app.agent.state import AgentState
@@ -59,10 +60,11 @@ execute_analysis 负责，不在 LangGraph 中为每个动态任务创建节点�
     graph.add_node("route_question", route_question)
     graph.add_node("plan_analysis", plan_analysis)
     graph.add_node("execute_analysis", execute_analysis)
-    graph.add_node("generate_final_report", generate_final_report)
+    graph.add_node("generate_report_plan", generate_report_plan)
+    graph.add_node("render_report", render_report)
     graph.add_node("clarification_route_boundary", _clarification_route_boundary)
-    # 普通问数和复杂分析最终都进入同一个报告生成节点。
-    add_query_flow(graph, terminal_node="generate_final_report")
+    # 普通问数和复杂分析都先生成报告规划，再绑定真实数据。
+    add_query_flow(graph, terminal_node="generate_report_plan")
 
     graph.add_edge(START, "route_question")
     # 路由结果决定进入现有问数链、分析链或澄清边界。
@@ -76,9 +78,10 @@ execute_analysis 负责，不在 LangGraph 中为每个动态任务创建节点�
         },
     )
     graph.add_edge("plan_analysis", "execute_analysis")
-    # 分析证据完成后直接由最终报告节点组织文字和展示组件。
-    graph.add_edge("execute_analysis", "generate_final_report")
-    graph.add_edge("generate_final_report", END)
+    # 分析证据完成后由 LLM 生成规划，再由后端渲染最终报告。
+    graph.add_edge("execute_analysis", "generate_report_plan")
+    graph.add_edge("generate_report_plan", "render_report")
+    graph.add_edge("render_report", END)
     graph.add_edge("clarification_route_boundary", END)
     return graph.compile()
 

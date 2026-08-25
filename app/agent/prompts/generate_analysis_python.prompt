@@ -26,3 +26,9 @@
 10. 查找“下降最多”时，只允许在 decrease_amount > 0 的候选中更新最大值；如果没有任何真实下降，必须返回包含 error 字段的结果，不要返回下降金额为 0 的维度。
 
 {format_instructions}
+
+最终输出要求（必须遵守）：
+- 只输出一个 JSON 对象，禁止输出分析过程、解释文字、Markdown、```python、```json 或 </think>。
+- JSON 对象只能包含 code 和 result_description 两个字段。
+- code 字段的值必须是字符串，内容只包含 calculate(rows) 函数源码。
+- 先在内部完成分析，最终响应的第一个字符必须是 {{，最后一个字符必须是 }}。

@@ -33,7 +33,10 @@ class AgentRunResponse(BaseModel):
     analysis_plan: dict = Field(default_factory=dict)
     analysis_task_results: list[dict] = Field(default_factory=list)
     analysis_evidence: dict = Field(default_factory=dict)
-    final_report: dict = Field(default_factory=dict)
+    report_plan: dict = Field(default_factory=dict)
+    report_plan_status: str = ""
+    report_plan_error: str = ""
+    rendered_report: dict = Field(default_factory=dict)
     llm_keywords: list[str]
     jieba_keywords: list[str]
     keywords: list[str]
