@@ -967,31 +967,113 @@ function TaskMetadata({ task }: { task?: TaskSummary }) {
   );
 }
 
-function TaskCard({ task }: { task: TaskSummary }) {
-  const terminalCount = task.events.filter((event) => isTerminalStatus(event.status)).length;
-  const phase = task.phase || (task.status === "pending" ? "等待执行" : "执行中");
-  const [open, setOpen] = useState(task.status === "running" || task.status === "failed");
+function TaskDetailPanel({ group }: { group: TaskReturnGroup }) {
+  const task = group.task;
+  const [openStep, setOpenStep] = useState("");
+
   useEffect(() => {
-    setOpen(task.status === "running" || task.status === "failed");
-  }, [task.status]);
+    const firstStep = group.steps.find((step) => step.status === "running" || step.status === "failed") || group.steps[0];
+    setOpenStep(firstStep?.step || "");
+  }, [group]);
+
   return (
-    <details open={open} onToggle={(event) => setOpen(event.currentTarget.open)} className="group rounded-lg border border-slate-200 bg-white">
-      <summary className="flex cursor-pointer list-none items-start gap-2 px-3 py-3">
-        <ChevronRight className="mt-0.5 size-3.5 shrink-0 text-slate-400 transition-transform group-open:rotate-90" />
-        <TaskStatusIcon status={task.status} />
-        <span className="min-w-0 flex-1">
-          <span className="block break-all text-xs font-bold text-slate-700">{task.task_id}</span>
-          <span className="mt-1 block break-words text-[10px] text-slate-400">{phase} · {task.events.length} 条任务事件</span>
-        </span>
-        <span className="shrink-0 text-[10px] text-slate-400">{task.status}</span>
-      </summary>
-      <div className="space-y-3 border-t border-slate-100 px-3 pb-3 pt-3">
-        <TaskMetadata task={task} />
-        <div className="flex items-center justify-between border-t border-slate-100 pt-2 text-[10px] text-slate-400"><span>任务事件</span><span>{terminalCount ? "已收到最终结果" : "仍在执行"}</span></div>
-        {task.error && <div className="rounded bg-rose-50 px-2 py-1.5 text-[10px] leading-4 text-rose-700">{task.error}</div>}
-        <div className="text-[10px] text-slate-400">详细节点返回请查看“步骤返回”中的 {task.task_id}。</div>
+    <div className="min-w-0">
+      <div className="border-b border-slate-200 bg-white px-4 py-3">
+        <div className="flex items-start gap-2">
+          <TaskStatusIcon status={group.status} />
+          <div className="min-w-0 flex-1">
+            <div className="break-all text-xs font-extrabold text-slate-800">{group.taskId}</div>
+            <div className="mt-1 text-[10px] text-slate-400">{group.steps.length} 个任务步骤 · {group.events.length} 条任务事件</div>
+          </div>
+          <span className="shrink-0 text-[10px] font-bold text-slate-400">{group.status}</span>
+        </div>
       </div>
-    </details>
+      <div className="space-y-3 p-3">
+        <TaskMetadata task={task} />
+        {group.steps.length
+          ? <div className="space-y-2">
+              {group.steps.map((step) => {
+                const open = openStep === step.step;
+                return (
+                  <details
+                    key={step.step}
+                    open={open}
+                    onToggle={(event) => setOpenStep(event.currentTarget.open ? step.step : "")}
+                    className="group rounded-md border border-slate-200 bg-white"
+                  >
+                    <summary className="flex cursor-pointer list-none items-start gap-2 px-3 py-2.5">
+                      <ChevronRight className="mt-0.5 size-3.5 shrink-0 text-slate-400 transition-transform group-open:rotate-90" />
+                      <StepStatusIcon status={step.status} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[11px] font-bold text-slate-700">{step.step}</span>
+                        <span className="mt-0.5 block text-[10px] text-slate-400">{step.nodeGroups.length} 个 Agent 节点 · 最新：{displayEventLabel(step.latest)}</span>
+                      </span>
+                      <span className="shrink-0 text-[10px] text-slate-400">{step.status}</span>
+                    </summary>
+                    <div className="space-y-2 border-t border-slate-100 px-3 pb-3 pt-2">
+                      {step.nodeGroups.length
+                        ? step.nodeGroups.map((nodeGroup) => <NodeReturnCard key={nodeGroup.node} group={nodeGroup} />)
+                        : step.displayGroups.map((item) => <DebugEventDetails key={item.key} event={item.event} title={item.label} />)}
+                    </div>
+                  </details>
+                );
+              })}
+            </div>
+          : <div className="py-6 text-center text-xs text-slate-400">该任务暂无详细返回</div>}
+      </div>
+    </div>
+  );
+}
+
+function TaskExplorer({ tasks }: { tasks: TaskSummary[] }) {
+  // 桌面端用任务索引切换详情，避免把所有任务和所有节点同时嵌套展开。
+  const taskGroups = buildTaskReturnGroups(tasks);
+  const [selectedTaskId, setSelectedTaskId] = useState(tasks[0]?.task_id || "");
+
+  useEffect(() => {
+    if (!taskGroups.some((group) => group.taskId === selectedTaskId)) {
+      setSelectedTaskId(taskGroups[0]?.taskId || "");
+    }
+  }, [selectedTaskId, taskGroups]);
+
+  const selectedGroup = taskGroups.find((group) => group.taskId === selectedTaskId) || taskGroups[0];
+  if (!selectedGroup) return <div className="py-10 text-center text-xs text-slate-400">复杂分析任务返回后，这里会按 task_id 展示</div>;
+
+  return (
+    <div className="grid min-h-[420px] grid-cols-[minmax(135px,0.38fr)_minmax(0,1fr)] overflow-hidden rounded-lg border border-slate-200 bg-white">
+      <div className="min-w-0 border-r border-slate-200 bg-slate-50/70">
+        <div className="flex items-center justify-between border-b border-slate-200 px-3 py-3">
+          <span className="text-[11px] font-extrabold text-slate-700">任务列表</span>
+          <span className="font-mono text-[10px] text-slate-400">{taskGroups.length}</span>
+        </div>
+        <div className="max-h-[min(65vh,680px)] overflow-y-auto p-2">
+          {taskGroups.map((group) => {
+            const selected = group.taskId === selectedGroup.taskId;
+            const task = group.task;
+            const phase = task?.phase || (group.status === "pending" ? "等待执行" : group.status === "running" ? "执行中" : "已完成");
+            return (
+              <button
+                key={group.taskId}
+                type="button"
+                onClick={() => setSelectedTaskId(group.taskId)}
+                className={`mb-1 w-full rounded-md border px-2.5 py-2 text-left transition-colors ${selected ? "border-blue-200 bg-blue-50" : "border-transparent hover:border-slate-200 hover:bg-white"}`}
+              >
+                <span className="flex items-start gap-2">
+                  <TaskStatusIcon status={group.status} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block break-all text-[10px] font-extrabold text-slate-700">{group.taskId}</span>
+                    <span className="mt-1 block truncate text-[9px] text-slate-400">{phase}</span>
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="min-w-0">
+        <TaskDetailPanel key={selectedGroup.taskId} group={selectedGroup} />
+      </div>
+    </div>
   );
 }
 
@@ -1020,14 +1102,14 @@ function ExecutionPanel({ running, debugEvents }: { running: boolean; debugEvent
         <div className="flex items-center gap-2 text-sm font-extrabold text-slate-800"><ClipboardList className="size-4 text-blue-600" />执行过程</div>
         <p className="mt-1 text-[11px] text-slate-400">实时展示本次分析的任务进度与节点返回</p>
       </div>
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
-        <Tabs value={activeTab} onValueChange={handleTabChange} className="min-h-0 gap-0">
-          <TabsList variant="line" className="sticky top-0 z-20 -mt-px grid h-12 w-full grid-cols-4 justify-stretch overflow-x-auto rounded-none border-b border-slate-200 bg-white px-5 py-0 shadow-[0_4px_10px_-8px_rgba(15,23,42,0.35)] backdrop-blur supports-[backdrop-filter]:bg-white/90">
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="min-h-0 flex-1 gap-0">
+        <TabsList variant="line" className="relative z-20 grid h-12 w-full shrink-0 grid-cols-4 justify-stretch overflow-x-auto rounded-none border-b border-slate-200 bg-white px-5 py-0 shadow-[0_4px_10px_-8px_rgba(15,23,42,0.35)]">
             <TabsTrigger value="steps" className="gap-1.5 text-[11px]"><ClipboardList className="size-3.5" />进度</TabsTrigger>
             <TabsTrigger value="returns" className="gap-1.5 text-[11px]"><Braces className="size-3.5" />步骤返回{stepReturnGroups.length ? " " + stepReturnGroups.length : ""}</TabsTrigger>
             <TabsTrigger value="tasks" className="gap-1.5 text-[11px]"><Layers3 className="size-3.5" />分析任务{taskSummaries.length ? " " + taskSummaries.length : ""}</TabsTrigger>
             <TabsTrigger value="all" className="gap-1.5 text-[11px]"><Braces className="size-3.5" />全部事件{allEvents.length ? " " + allEvents.length : ""}</TabsTrigger>
-          </TabsList>
+        </TabsList>
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
           <TabsContent value="steps" className="mt-4 space-y-4 px-5 pb-5">
             <ExecutionSteps steps={progressSteps} />
             {taskSummaries.length > 0 && <div className="border-t border-slate-100 pt-4"><div className="mb-2 flex items-center justify-between text-[11px] font-bold text-slate-400"><span>分析任务总进度</span><span>{completedTaskCount} / {taskSummaries.length}</span></div><div className="h-1.5 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: progressPercent + "%" }} /></div></div>}
@@ -1037,12 +1119,11 @@ function ExecutionPanel({ running, debugEvents }: { running: boolean; debugEvent
             {stepReturnGroups.map((group) => <StepReturnCard key={group.step} group={group} />)}
           </TabsContent>
           <TabsContent value="tasks" className="mt-4 space-y-3 px-5 pb-5">
-            {!taskSummaries.length && <div className="py-10 text-center text-xs text-slate-400">复杂分析任务返回后，这里会按 task_id 展示</div>}
-            {taskSummaries.map((task) => <TaskCard key={task.task_id} task={task} />)}
+            <TaskExplorer tasks={taskSummaries} />
           </TabsContent>
           <TabsContent value="all" className="mt-4 px-5 pb-5"><DebugEventsList events={allEvents} emptyText="收到 SSE 事件后，这里会显示全部 JSON" /></TabsContent>
-        </Tabs>
-      </div>
+        </div>
+      </Tabs>
       <div className="border-t border-slate-200 px-5 py-3"><div className="flex items-center gap-2 text-[11px] font-semibold text-slate-400"><Timer className="size-3.5" />{running ? "正在执行" : debugEvents.length ? "本次执行已结束" : "等待提问"}</div></div>
     </aside>
   );
