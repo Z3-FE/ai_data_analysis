@@ -71,7 +71,7 @@ async def extract_keywords_node(
     """调用 LLM 和 jieba 从用户问题中抽取关键词。"""
     writer = runtime.stream_writer
     step = "抽取关键词"
-    writer({"type": "progress", "step": step, "status": "running"})
+    writer({"type": "progress", "step": step, "node": "extract_keywords", "status": "running"})
 
     question = state.get("input_text", "")
     prompt = PromptTemplate(
@@ -93,6 +93,7 @@ async def extract_keywords_node(
         {
             "type": "keywords",
             "step": step,
+            "node": "extract_keywords",
             "status": "success",
             "keywords": keywords,
             "llm_keywords": llm_keywords,
@@ -114,4 +115,3 @@ async def extract_keywords_node(
             ensure_ascii=False,
         ),
     }
-

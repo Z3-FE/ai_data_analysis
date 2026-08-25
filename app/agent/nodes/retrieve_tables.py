@@ -40,7 +40,7 @@ async def retrieve_tables(
     """召回和用户问题相关的字段tables信息。"""
     writer = runtime.stream_writer
     step = "召回tables字段信息"
-    writer({"type": "progress", "step": step, "status": "running"})
+    writer({"type": "progress", "step": step, "node": "retrieve_tables", "status": "running"})
 
     question = state.get("input_text", "")
     recall_terms: list[str] = build_recall_terms(state.get("keywords", []), [question])
@@ -53,6 +53,7 @@ async def retrieve_tables(
         {
             "type": "tables",
             "step": step,
+            "node": "retrieve_tables",
             "status": "success",
             "table_recall_terms": recall_terms,
             "table_candidates": table_candidates,

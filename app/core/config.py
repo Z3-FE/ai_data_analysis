@@ -109,9 +109,15 @@ class DimensionValueSearchConfig:
 class LlmConfig:
     """LLM 调用配置。"""
 
+    provider: str
     model_name: str
     api_key: str
     base_url: str
+    timeout_seconds: float
+    max_tokens: int | None
+    request_options: dict[str, Any]
+    include_usage: bool
+    stream_only: bool
 
 
 @dataclass(frozen=True)

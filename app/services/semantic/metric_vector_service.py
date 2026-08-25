@@ -13,7 +13,9 @@ from qdrant_client.http.models import PointStruct
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.repositories.meta_build_test_repository import list_active_metrics_for_embedding
+from app.repositories.meta_build_test_repository import (
+    list_active_metrics_for_embedding,
+)
 from app.repositories.qdrant_repository import QdrantRepository
 from app.services.semantic.embedding_batch import embed_documents_in_batches
 
@@ -58,6 +60,8 @@ def build_metric_vector_documents(metric: dict[str, Any]) -> list[MetricVectorDo
         "base_table_id": metric["base_table_id"],
         "expression_sql": metric["expression_sql"],
         "aggregation_type": metric["aggregation_type"],
+        "calculation_grain": metric.get("calculation_grain", ""),
+        "aggregation_rule": metric.get("aggregation_rule", ""),
         "unit": metric["unit"],
         "description": metric["description"],
         "aliases": aliases,
@@ -67,7 +71,12 @@ def build_metric_vector_documents(metric: dict[str, Any]) -> list[MetricVectorDo
     text_units = [
         ("metric_name", f"指标物理名称：{metric['metric_name']}"),
         ("business_name", f"指标业务名称：{metric['business_name']}"),
-        ("description", f"指标业务口径：{metric['description']}"),
+        (
+            "description",
+            "指标业务口径："
+            f"{metric['description']}；计算粒度：{metric.get('calculation_grain', '')}；"
+            f"聚合规则：{metric.get('aggregation_rule', '')}",
+        ),
     ]
     if aliases:
         text_units.append(("aliases", f"指标别名：{'、'.join(aliases)}"))

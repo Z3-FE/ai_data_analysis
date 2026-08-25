@@ -91,6 +91,8 @@ def list_active_metrics_for_embedding(db: Session) -> list[dict[str, Any]]:
                 base_table_id,
                 expression_sql,
                 aggregation_type,
+                calculation_grain,
+                aggregation_rule,
                 unit,
                 description,
                 aliases,

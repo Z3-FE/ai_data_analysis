@@ -112,7 +112,7 @@ async def retrieve_dimension_values(
     """逐个召回关键词，再汇总为最终维度真实值候选。"""
     writer = runtime.stream_writer
     step = "召回dimension_values字段信息"
-    writer({"type": "progress", "step": step, "status": "running"})
+    writer({"type": "progress", "step": step, "node": "retrieve_dimension_values", "status": "running"})
 
     # 步骤 1：使用 LLM 扩展适合维度真实值检索的表达。
     question = state.get("input_text", "")
@@ -148,6 +148,7 @@ async def retrieve_dimension_values(
         {
             "type": "dimension_values",
             "step": step,
+            "node": "retrieve_dimension_values",
             "status": "success",
             "dimension_value_recall_terms": recall_terms,
             "dimension_value_candidates": dimension_value_candidates,

@@ -8,19 +8,28 @@ from typing import Annotated, Any, TypeVar
 
 from fastapi import Depends
 
-from app.clients.embedding_client import embedding_client_manager
 from app.clients.elasticsearch_client import elasticsearch_client_manager
+from app.clients.embedding_client import embedding_client_manager
 from app.clients.llm_client import llm_client_manager
-from app.clients.mysql_client import meta_mysql_client_manager
-from app.clients.mysql_client import dw_mysql_client_manager
+from app.clients.mysql_client import dw_mysql_client_manager, meta_mysql_client_manager
 from app.clients.qdrant_client import qdrant_client_manager
-from app.repositories.es.es_dimension_value_repository import DimensionValueSearch
 from app.repositories.dw_repository import DwRepository
-from app.repositories.mysql.meta.mysql_meta_catalog_repository import MetaCatalogRepository
-from app.repositories.qdrant.qa_meta_columns_repository import MetaColumnsSemanticRepository
-from app.repositories.qdrant.qa_meta_dimension_values_repository import MetaDimensionValuesSemanticRepository
-from app.repositories.qdrant.qa_meta_metrics_repository import MetaMetricsSemanticRepository
-from app.repositories.qdrant.qa_meta_tables_repository import MetaTablesSemanticRepository
+from app.repositories.es.es_dimension_value_repository import DimensionValueSearch
+from app.repositories.mysql.meta.mysql_meta_catalog_repository import (
+    MetaCatalogRepository,
+)
+from app.repositories.qdrant.qa_meta_columns_repository import (
+    MetaColumnsSemanticRepository,
+)
+from app.repositories.qdrant.qa_meta_dimension_values_repository import (
+    MetaDimensionValuesSemanticRepository,
+)
+from app.repositories.qdrant.qa_meta_metrics_repository import (
+    MetaMetricsSemanticRepository,
+)
+from app.repositories.qdrant.qa_meta_tables_repository import (
+    MetaTablesSemanticRepository,
+)
 from app.services.agent_service import AgentService
 
 T = TypeVar("T")

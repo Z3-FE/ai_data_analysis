@@ -35,7 +35,7 @@ async def search_metrics_by_terms(recall_terms: list[str], runtime: Runtime) -> 
 async def retrieve_metrics(state:AgentState, runtime:Runtime[AgentContext]):
     writer = runtime.stream_writer
     step = "召回metrics字段信息"
-    writer({"type": "progress", "step": step, "status": "running"})
+    writer({"type": "progress", "step": step, "node": "retrieve_metrics", "status": "running"})
 
     question = state.get("input_text", "")
     keywords = state["keywords"]
@@ -53,6 +53,7 @@ async def retrieve_metrics(state:AgentState, runtime:Runtime[AgentContext]):
         {
             "type": "metrics",
             "step": step,
+            "node": "retrieve_metrics",
             "status": "success",
             "metrics_recall_terms": recall_terms,
             "metrics_candidates": metrics_candidates,

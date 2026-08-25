@@ -21,10 +21,19 @@ async def filter_table(
     """让 LLM 选择表和字段 ID，程序在后续节点完成裁剪和补全。"""
     writer = runtime.stream_writer
     step = "过滤表字段信息"
-    writer({"type": "progress", "step": step, "status": "running"})
+    writer({"type": "progress", "step": step, "node": "filter_table", "status": "running"})
 
     table_infos = state.get("table_infos", [])
     if not table_infos:
+        writer(
+            {
+                "type": "filter_table",
+                "step": step,
+                "node": "filter_table",
+                "status": "success",
+                "selected_tables": {},
+            }
+        )
         return {"table_selection": {}}
     prompt = PromptTemplate(
         template=load_prompt("filter_table_info"),
@@ -58,6 +67,7 @@ async def filter_table(
         {
             "type": "filter_table",
             "step": step,
+            "node": "filter_table",
             "status": "success",
             "selected_tables": selected_tables,
         }

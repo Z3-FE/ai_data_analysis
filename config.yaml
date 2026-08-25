@@ -68,6 +68,26 @@ logging:
   format: "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 
 llm:
-  model_name: Pro/zai-org/GLM-5.1
-  api_key: ${oc.env:LLM_API_KEY}
-  base_url: https://api.siliconflow.cn/v1
+  # Agent 只依赖 AutoLLM；切换兼容服务时修改本段配置，不修改业务节点。
+  provider: openai-compatible
+  # 当前使用阿里云百炼的 OpenAI 兼容接口；API Key 不写入配置文件。
+  model_name: ${oc.env:DASHSCOPE_MODEL,qwen3.7-plus}
+  api_key: ${oc.env:DASHSCOPE_API_KEY,""}
+  base_url: ${oc.env:DASHSCOPE_BASE_URL,https://dashscope.aliyuncs.com/compatible-mode/v1}
+  # LLM 响应连续 30 分钟没有返回时超时；流式收到事件后重新计时。
+  timeout_seconds: 1800
+  # null 和空对象表示采用当前模型服务的默认输出长度与思考参数。
+  max_tokens: null
+  request_options: {}
+  include_usage: true
+  stream_only: false
+
+  # 原 SiliconFlow 配置先保留在这里，后续切回时只需取消注释并注释上面的百炼配置。
+  # model_name: Pro/zai-org/GLM-5.1
+  # api_key: ${oc.env:LLM_API_KEY}
+  # base_url: https://api.siliconflow.cn/v1
+  # timeout_seconds: 1800
+  # max_tokens: null
+  # request_options: {}
+  # include_usage: true
+  # stream_only: false
