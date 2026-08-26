@@ -1565,6 +1565,17 @@ function ConversationMessage() {
           {messageText}
         </div>
         {meta?.data_blocks && <SimpleDataBlocks blocks={meta.data_blocks} />}
+        {meta?.response_type === "simple_data" && (
+          <button
+            type="button"
+            disabled
+            className="mt-5 inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-400"
+            title="查询过程将在后端查询链路接入后开放"
+          >
+            查看查询过程
+            <ChevronRight className="size-3.5" />
+          </button>
+        )}
         {meta?.response_type === "analysis" && (
           <button
             type="button"
