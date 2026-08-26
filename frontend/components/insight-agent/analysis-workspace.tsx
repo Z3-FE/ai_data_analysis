@@ -685,6 +685,21 @@ function formatNumber(value: number, unit?: string | null) {
   return formatted;
 }
 
+function formatAxisValue(value: number, unit?: string | null) {
+  // 坐标轴使用紧凑单位，避免完整金额把 SVG 的可视区域挤出卡片。
+  if (unit === "percent") {
+    return `${(value * 100).toLocaleString("zh-CN", { maximumFractionDigits: 1 })}%`;
+  }
+  const absolute = Math.abs(value);
+  if (unit === "currency" && absolute >= 100000000) {
+    return `${(value / 100000000).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} 亿`;
+  }
+  if (unit === "currency" && absolute >= 10000) {
+    return `${(value / 10000).toLocaleString("zh-CN", { maximumFractionDigits: 1 })} 万`;
+  }
+  return value.toLocaleString("zh-CN", { maximumFractionDigits: 1 });
+}
+
 function formatCell(value: JsonValue | undefined, column?: ReportColumn) {
   // 数字字符串也按数值处理，单位优先使用后端字段元数据。
   const number = numericValue(value);
@@ -850,7 +865,8 @@ function DynamicChart({ component }: { component: ReportComponent }) {
   const valueRange = maxValue - minValue || 1;
   const width = 760;
   const height = isHorizontal ? Math.max(250, preparedRows.length * 30 + 42) : 260;
-  const left = isHorizontal ? 148 : 54;
+  // 垂直图表的 Y 轴标签位于绘图区外侧，预留空间避免被 SVG 裁切。
+  const left = isHorizontal ? 148 : 78;
   const right = 24;
   const top = 24;
   const bottom = isHorizontal ? 22 : 48;
@@ -868,17 +884,17 @@ function DynamicChart({ component }: { component: ReportComponent }) {
   return (
     <section className="overflow-hidden rounded-lg border border-slate-200/90 bg-white shadow-[0_8px_24px_-20px_rgba(15,23,42,0.65)]">
       <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4"><div className="flex min-w-0 items-start gap-2.5"><BarChart3 className="mt-0.5 size-4 shrink-0 text-blue-700" /><div className="min-w-0"><h3 className="break-words text-sm font-extrabold leading-5 text-slate-800">{component.title}</h3><p className="mt-1 text-[11px] text-slate-400">{displayName(metric, metric.result_name)} · {chartRowsLabel}</p></div></div><span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400">{isLine ? "趋势" : "对比"}</span></div>
-      <div className="overflow-x-auto px-3 pb-3 pt-2"><svg viewBox={`0 0 ${width} ${height}`} className="h-auto min-w-[560px] w-full" role="img" aria-label={component.title}>
+      <div className="min-w-0 overflow-hidden px-3 pb-3 pt-2"><svg viewBox={`0 0 ${width} ${height}`} className="block h-auto w-full max-w-full" role="img" aria-label={component.title}>
         {isHorizontal
           ? [0, 0.5, 1].map((ratio) => {
               const value = minValue + ratio * valueRange;
               const x = left + ratio * plotWidth;
-              return <g key={ratio}><line x1={x} y1={top} x2={x} y2={height - bottom} stroke="#e2e8f0" strokeDasharray="3 4" /><text x={x} y={height - 7} textAnchor="middle" fontSize="10" fill="#94a3b8">{formatNumber(value, metric.unit)}</text></g>;
+              return <g key={ratio}><line x1={x} y1={top} x2={x} y2={height - bottom} stroke="#e2e8f0" strokeDasharray="3 4" /><text x={x} y={height - 7} textAnchor="middle" fontSize="10" fill="#94a3b8">{formatAxisValue(value, metric.unit)}</text></g>;
             })
           : [0, 0.5, 1].map((ratio) => {
               const value = maxValue - ratio * valueRange;
               const y = top + ratio * (height - top - bottom);
-              return <g key={ratio}><line x1={left} y1={y} x2={width - right} y2={y} stroke="#e2e8f0" strokeDasharray="3 4" /><text x={left - 8} y={y + 4} textAnchor="end" fontSize="10" fill="#94a3b8">{formatNumber(value, metric.unit)}</text></g>;
+              return <g key={ratio}><line x1={left} y1={y} x2={width - right} y2={y} stroke="#e2e8f0" strokeDasharray="3 4" /><text x={left - 8} y={y + 4} textAnchor="end" fontSize="10" fill="#94a3b8">{formatAxisValue(value, metric.unit)}</text></g>;
             })}
         {!isLine && (isHorizontal ? <line x1={zeroX} y1={top} x2={zeroX} y2={height - bottom} stroke="#94a3b8" /> : <line x1={left} y1={baseline} x2={width - right} y2={baseline} stroke="#94a3b8" />)}
         {isLine ? <><polyline fill="none" stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" points={points.map((point) => `${point.x},${point.y}`).join(" ")} />{points.map((point, index) => <circle key={`${point.x}-${index}`} cx={point.x} cy={point.y} r="4" fill="white" stroke={color} strokeWidth="2"><title>{point.label}: {formatNumber(point.value, metric.unit)}</title></circle>)}</> : points.map((point, index) => { const valueX = left + ((point.value - minValue) / valueRange) * plotWidth; const barWidth = Math.max(12, Math.min(46, plotWidth / Math.max(points.length, 1) - 8)); const barHeight = Math.max(2, Math.abs(point.y - baseline)); const horizontalY = top + index * ((height - top - bottom) / Math.max(points.length, 1)) + 6; const horizontalX = Math.min(zeroX, valueX); const horizontalWidth = Math.max(2, Math.abs(valueX - zeroX)); return isHorizontal ? <rect key={`${point.label}-${index}`} x={horizontalX} y={horizontalY} width={horizontalWidth} height="17" rx="3" fill={color}><title>{point.label}: {formatNumber(point.value, metric.unit)}</title></rect> : <rect key={`${point.label}-${index}`} x={point.x - barWidth / 2} y={point.value >= 0 ? point.y : baseline} width={barWidth} height={barHeight} rx="3" fill={color}><title>{point.label}: {formatNumber(point.value, metric.unit)}</title></rect>; })}
