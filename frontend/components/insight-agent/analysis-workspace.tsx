@@ -664,16 +664,62 @@ function orderedDebugEvents(events: DebugEvent[]) {
 function textValue(value: JsonValue | undefined) {
   // 统一格式化报告中的动态值，不依赖固定字段名或固定数据类型。
   if (value === null || value === undefined) return "--";
-  if (typeof value === "object") return JSON.stringify(value, null, 2);
+  if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 }
 
-function formatCell(value: JsonValue | undefined) {
-  // 数字使用本地化格式，字符串和映射后的维度值保持原样展示。
-  if (typeof value === "number") {
-    return value.toLocaleString("zh-CN", { maximumFractionDigits: 6 });
+function numericValue(value: JsonValue | undefined) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
   }
+  return null;
+}
+
+function formatNumber(value: number, unit?: string | null) {
+  const maximumFractionDigits = unit === "currency" || unit === "percent" ? 2 : 4;
+  const formatted = value.toLocaleString("zh-CN", { maximumFractionDigits });
+  if (unit === "currency") return `${formatted} 元`;
+  if (unit === "percent") return `${(value * 100).toLocaleString("zh-CN", { maximumFractionDigits: 2 })}%`;
+  return formatted;
+}
+
+function formatCell(value: JsonValue | undefined, column?: ReportColumn) {
+  // 数字字符串也按数值处理，单位优先使用后端字段元数据。
+  const number = numericValue(value);
+  const isNumericColumn = typeof value === "number" || column?.field_role === "metric" || column?.field_role === "derived_metric" || Boolean(column?.unit);
+  if (number !== null && isNumericColumn) return formatNumber(number, column?.unit);
   return textValue(value);
+}
+
+function inferMetricUnit(title: string, valueField = "") {
+  // 报告协议目前没有强制 KPI 单位，展示层根据标题和结果键补充最小的格式语义。
+  const hint = title + " " + valueField;
+  if (hint.includes("变化率") || hint.includes("降幅") || hint.includes("率") || valueField === "change_rate") return "percent";
+  if (hint.includes("金额") || hint.includes("销售额") || hint.includes("价格") || valueField === "decrease_amount") return "currency";
+  return undefined;
+}
+
+function metricValue(value: JsonValue | undefined, title: string, valueField?: string) {
+  // 计算结果可能是对象。根据组件已有的 value_field 或标题语义取一个标量，
+  // 让报告展示层不把完整计算对象当成 KPI 内容打印出来。
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "object" || Array.isArray(value)) return value;
+  const objectValue = value as Record<string, JsonValue>;
+  const candidates = [
+    valueField,
+    title.includes("变化率") || title.includes("降幅") ? "change_rate" : "",
+    title.includes("下降金额") ? "decrease_amount" : "",
+    title.includes("销售额") ? "target_value" : "",
+    "value",
+    "result",
+  ].filter(Boolean) as string[];
+  for (const key of candidates) {
+    if (key in objectValue && objectValue[key] !== null && objectValue[key] !== undefined) return objectValue[key];
+  }
+  const firstScalar = Object.values(objectValue).find((item) => numericValue(item) !== null);
+  return firstScalar ?? null;
 }
 
 function displayName(column: ReportColumn | undefined, fallback: string) {
@@ -730,27 +776,50 @@ function StatusBadge({ status }: { status: string }) {
   return <Badge variant="outline" className={config.className}>{config.label}</Badge>;
 }
 
+function ReportMetric({ component }: { component: ReportComponent }) {
+  if (component.binding_status === "failed") return <ReportBindingError component={component} />;
+  const value = metricValue(component.value, component.title, component.value_field);
+  const number = numericValue(value);
+  const unit = inferMetricUnit(component.title, component.value_field);
+  return (
+    <section className="min-w-0 rounded-lg border border-slate-200/90 bg-white px-5 py-4 shadow-[0_8px_24px_-20px_rgba(15,23,42,0.65)]">
+      <div className="min-w-0">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-400">关键数值</div>
+        <h4 className="mt-1 break-words text-sm font-bold leading-5 text-slate-700">{component.title}</h4>
+      </div>
+      <div className={"mt-3 break-words text-2xl font-extrabold tracking-tight " + (number !== null && number < 0 ? "text-rose-700" : "text-slate-950")}>
+        {number !== null ? formatNumber(number, unit) : textValue(value)}
+      </div>
+    </section>
+  );
+}
+
 function DynamicTable({ component }: { component: ReportComponent }) {
   // 只渲染后端绑定到组件的真实行，不假设任何固定业务字段。
+  const [expanded, setExpanded] = useState(false);
   if (component.binding_status === "failed") {
     return <ReportBindingError component={component} />;
   }
   const rows = component.data || [];
+  const previewRows = expanded ? rows : rows.slice(0, 10);
   return (
-    <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-      <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-        <div className="flex min-w-0 items-center gap-2"><Table2 className="size-4 shrink-0 text-blue-600" /><h3 className="truncate text-sm font-extrabold text-slate-800">{component.title}</h3></div>
-        <span className="shrink-0 text-[11px] font-mono text-slate-400">{component.row_count} 行</span>
+    <section className="overflow-hidden rounded-lg border border-slate-200/90 bg-white shadow-[0_8px_24px_-20px_rgba(15,23,42,0.65)]">
+      <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4">
+        <div className="flex min-w-0 items-start gap-2.5"><Table2 className="mt-0.5 size-4 shrink-0 text-teal-700" /><div className="min-w-0"><h3 className="break-words text-sm font-extrabold leading-5 text-slate-800">{component.title}</h3><p className="mt-1 text-[11px] text-slate-400">明细数据</p></div></div>
+        <span className="shrink-0 text-[11px] font-semibold text-slate-400">共 {component.row_count} 行</span>
       </div>
-      <div className="overflow-x-auto">
+      <div className="max-h-[380px] overflow-auto">
         <table className="min-w-full text-left text-xs">
-          <thead className="bg-slate-50 text-[11px] font-bold text-slate-500"><tr>{component.columns.map((column) => <th key={column.result_name} className="whitespace-nowrap px-4 py-3">{displayName(column, column.result_name)}</th>)}</tr></thead>
+          <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] font-bold text-slate-500 shadow-[0_1px_0_#e2e8f0]"><tr>{component.columns.map((column) => <th key={column.result_name} className="whitespace-nowrap px-5 py-3">{displayName(column, column.result_name)}</th>)}</tr></thead>
           <tbody className="divide-y divide-slate-100">
-            {rows.map((row, rowIndex) => <tr key={rowIndex} className="hover:bg-slate-50">{component.columns.map((column) => <td key={column.result_name} className="whitespace-nowrap px-4 py-2.5 text-slate-700">{formatCell(row[column.result_name])}</td>)}</tr>)}
+            {previewRows.map((row, rowIndex) => <tr key={rowIndex} className="hover:bg-slate-50/80">{component.columns.map((column) => <td key={column.result_name} className="whitespace-nowrap px-5 py-2.5 text-slate-700">{formatCell(row[column.result_name], column)}</td>)}</tr>)}
           </tbody>
         </table>
       </div>
-      {component.truncated && <div className="border-t border-slate-100 px-4 py-2 text-[11px] text-slate-400">仅展示前 {rows.length} 行，完整结果由后端保留。</div>}
+      {(rows.length > 10 || component.truncated) && <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">
+        <span>{expanded ? "当前展示 " + rows.length + " 行" : "报告先展示前 " + Math.min(rows.length, 10) + " 行"}{component.truncated ? "，完整结果由后端保留" : ""}</span>
+        {rows.length > 10 && <button type="button" onClick={() => setExpanded((current) => !current)} className="inline-flex shrink-0 items-center gap-1 font-bold text-teal-700 hover:text-teal-900">{expanded ? "收起明细" : "展开全部 " + rows.length + " 行"}<ChevronRight className={"size-3.5 transition-transform " + (expanded ? "rotate-90" : "")} /></button>}
+      </div>}
     </section>
   );
 }
@@ -762,34 +831,64 @@ function DynamicChart({ component }: { component: ReportComponent }) {
   }
   const dimension = component.columns.find((column) => column.result_name === component.dimension_field);
   const metric = component.columns.find((column) => column.result_name === component.metric_fields[0]);
-  if (!dimension || !metric || !component.data.length) return null;
+  if (!dimension || !metric) return <ReportBindingError component={{ ...component, binding_error: "图表缺少有效的维度或指标字段。" }} />;
+  if (!component.data.length) return <section className="rounded-lg border border-dashed border-slate-300 bg-slate-50/70 px-5 py-10 text-center text-xs text-slate-400">暂无可展示的图表数据</section>;
   const presentation = component.presentation || {};
-  const preparedRows = [...component.data]
-    .sort((left, right) => {
-      if (!presentation.sort || presentation.sort === "none") return 0;
-      const leftValue = Number(left[metric.result_name]) || 0;
-      const rightValue = Number(right[metric.result_name]) || 0;
-      return presentation.sort === "asc" ? leftValue - rightValue : rightValue - leftValue;
-    })
-    .slice(0, presentation.top_n || undefined);
-  const values = preparedRows.map((row) => Number(row[metric.result_name]) || 0);
-  const max = Math.max(...values, 1);
-  const width = 720;
-  const height = 220;
   const isLine = component.chart_type === "line";
   const isHorizontal = component.chart_type === "bar" && presentation.orientation === "horizontal";
+  const preparedRows = [...component.data]
+    .sort((left, right) => {
+      if (isLine || !presentation.sort || presentation.sort === "none") return 0;
+      const leftValue = numericValue(left[metric.result_name]) ?? 0;
+      const rightValue = numericValue(right[metric.result_name]) ?? 0;
+      return presentation.sort === "asc" ? leftValue - rightValue : rightValue - leftValue;
+    })
+    .slice(0, presentation.top_n || (isHorizontal || !isLine ? 12 : 24));
+  const values = preparedRows.map((row) => numericValue(row[metric.result_name]) ?? 0);
+  const minValue = Math.min(0, ...values);
+  const maxValue = Math.max(0, ...values);
+  const valueRange = maxValue - minValue || 1;
+  const width = 760;
+  const height = isHorizontal ? Math.max(250, preparedRows.length * 30 + 42) : 260;
+  const left = isHorizontal ? 148 : 54;
+  const right = 24;
+  const top = 24;
+  const bottom = isHorizontal ? 22 : 48;
+  const color = presentation.color_scheme === "teal" ? "#0f766e" : presentation.color_scheme === "amber" ? "#d97706" : "#2563eb";
+  const baseline = top + ((maxValue - 0) / valueRange) * (height - top - bottom);
+  const plotWidth = width - left - right;
+  const zeroX = left + ((0 - minValue) / valueRange) * plotWidth;
   const points = values.map((value, index) => {
-    const x = values.length === 1 ? width / 2 : 28 + (index * (width - 56)) / (values.length - 1);
-    const y = height - 28 - (value / max) * (height - 56);
+    const x = values.length === 1 ? (width + left - right) / 2 : left + (index * (width - left - right)) / (values.length - 1);
+    const y = top + ((maxValue - value) / valueRange) * (height - top - bottom);
     return { x, y, value, label: textValue(preparedRows[index][dimension.result_name]) };
   });
+  const labelStep = Math.max(1, Math.ceil(points.length / 8));
+  const chartRowsLabel = preparedRows.length < component.row_count ? "展示 " + preparedRows.length + " / " + component.row_count + " 个数据点" : component.row_count + " 个数据点";
   return (
-    <section className="rounded-xl border border-slate-200 bg-white p-4">
-      <div className="mb-3 flex items-center justify-between gap-3"><div className="flex min-w-0 items-center gap-2"><BarChart3 className="size-4 shrink-0 text-blue-600" /><h3 className="truncate text-sm font-extrabold text-slate-800">{component.title}</h3></div><span className="text-[11px] text-slate-400">{displayName(metric, metric.result_name)}</span></div>
-      <div className="overflow-x-auto"><svg viewBox={`0 0 ${width} ${height + 34}`} className="h-auto min-w-[520px] w-full" role="img" aria-label={component.title}>
-        <line x1="28" y1={height - 28} x2={width - 28} y2={height - 28} stroke="#cbd5e1" />
-        {isLine ? <><polyline fill="none" stroke="#2563eb" strokeWidth="3" points={points.map((point) => `${point.x},${point.y}`).join(" ")} />{points.map((point) => <circle key={`${point.x}-${point.y}`} cx={point.x} cy={point.y} r="4" fill="#2563eb" />)}</> : points.map((point, index) => { const barWidth = Math.max(12, Math.min(42, (width - 56) / Math.max(points.length, 1) - 8)); const barHeight = Math.max(2, (point.value / max) * (height - 56)); const horizontalBarWidth = Math.max(2, (point.value / max) * (width - 150)); const horizontalY = 34 + index * Math.max(24, (height - 48) / Math.max(points.length, 1)); return isHorizontal ? <rect key={point.x} x={130} y={horizontalY} width={horizontalBarWidth} height="16" rx="3" fill="#2563eb" /> : <rect key={point.x} x={point.x - barWidth / 2} y={height - 28 - barHeight} width={barWidth} height={barHeight} rx="3" fill="#2563eb" />; })}
-        {points.map((point, index) => isHorizontal ? <text key={`label-${point.x}`} x="124" y={40 + index * Math.max(24, (height - 48) / Math.max(points.length, 1))} textAnchor="end" fontSize="10" fill="#64748b">{point.label.length > 18 ? `${point.label.slice(0, 18)}…` : point.label}</text> : <text key={`label-${point.x}`} x={point.x} y={height + 1} textAnchor="middle" fontSize="10" fill="#64748b">{point.label.length > 12 ? `${point.label.slice(0, 12)}…` : point.label}</text>)}
+    <section className="overflow-hidden rounded-lg border border-slate-200/90 bg-white shadow-[0_8px_24px_-20px_rgba(15,23,42,0.65)]">
+      <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4"><div className="flex min-w-0 items-start gap-2.5"><BarChart3 className="mt-0.5 size-4 shrink-0 text-blue-700" /><div className="min-w-0"><h3 className="break-words text-sm font-extrabold leading-5 text-slate-800">{component.title}</h3><p className="mt-1 text-[11px] text-slate-400">{displayName(metric, metric.result_name)} · {chartRowsLabel}</p></div></div><span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400">{isLine ? "趋势" : "对比"}</span></div>
+      <div className="overflow-x-auto px-3 pb-3 pt-2"><svg viewBox={`0 0 ${width} ${height}`} className="h-auto min-w-[560px] w-full" role="img" aria-label={component.title}>
+        {isHorizontal
+          ? [0, 0.5, 1].map((ratio) => {
+              const value = minValue + ratio * valueRange;
+              const x = left + ratio * plotWidth;
+              return <g key={ratio}><line x1={x} y1={top} x2={x} y2={height - bottom} stroke="#e2e8f0" strokeDasharray="3 4" /><text x={x} y={height - 7} textAnchor="middle" fontSize="10" fill="#94a3b8">{formatNumber(value, metric.unit)}</text></g>;
+            })
+          : [0, 0.5, 1].map((ratio) => {
+              const value = maxValue - ratio * valueRange;
+              const y = top + ratio * (height - top - bottom);
+              return <g key={ratio}><line x1={left} y1={y} x2={width - right} y2={y} stroke="#e2e8f0" strokeDasharray="3 4" /><text x={left - 8} y={y + 4} textAnchor="end" fontSize="10" fill="#94a3b8">{formatNumber(value, metric.unit)}</text></g>;
+            })}
+        {!isLine && (isHorizontal ? <line x1={zeroX} y1={top} x2={zeroX} y2={height - bottom} stroke="#94a3b8" /> : <line x1={left} y1={baseline} x2={width - right} y2={baseline} stroke="#94a3b8" />)}
+        {isLine ? <><polyline fill="none" stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" points={points.map((point) => `${point.x},${point.y}`).join(" ")} />{points.map((point, index) => <circle key={`${point.x}-${index}`} cx={point.x} cy={point.y} r="4" fill="white" stroke={color} strokeWidth="2"><title>{point.label}: {formatNumber(point.value, metric.unit)}</title></circle>)}</> : points.map((point, index) => { const valueX = left + ((point.value - minValue) / valueRange) * plotWidth; const barWidth = Math.max(12, Math.min(46, plotWidth / Math.max(points.length, 1) - 8)); const barHeight = Math.max(2, Math.abs(point.y - baseline)); const horizontalY = top + index * ((height - top - bottom) / Math.max(points.length, 1)) + 6; const horizontalX = Math.min(zeroX, valueX); const horizontalWidth = Math.max(2, Math.abs(valueX - zeroX)); return isHorizontal ? <rect key={`${point.label}-${index}`} x={horizontalX} y={horizontalY} width={horizontalWidth} height="17" rx="3" fill={color}><title>{point.label}: {formatNumber(point.value, metric.unit)}</title></rect> : <rect key={`${point.label}-${index}`} x={point.x - barWidth / 2} y={point.value >= 0 ? point.y : baseline} width={barWidth} height={barHeight} rx="3" fill={color}><title>{point.label}: {formatNumber(point.value, metric.unit)}</title></rect>; })}
+        {points.map((point, index) => {
+          if (index % labelStep !== 0 && index !== points.length - 1) return null;
+          const rowHeight = (height - top - bottom) / Math.max(points.length, 1);
+          return isHorizontal
+            ? <text key={`label-${point.x}`} x={left - 10} y={top + index * rowHeight + rowHeight / 2 + 4} textAnchor="end" fontSize="10" fill="#64748b">{point.label.length > 20 ? `${point.label.slice(0, 20)}…` : point.label}</text>
+            : <text key={`label-${point.x}`} x={point.x} y={height - 16} textAnchor="middle" fontSize="10" fill="#64748b">{point.label.length > 13 ? `${point.label.slice(0, 13)}…` : point.label}</text>;
+        })}
       </svg></div>
     </section>
   );
@@ -800,27 +899,36 @@ function ReportBindingError({ component }: { component: ReportComponent }) {
 }
 
 function ReportView({ report }: { report: RenderedReport }) {
-  // 按 LLM 规划的章节和组件顺序渲染最终报告。
+  // 由前端统一组织报告层级，LLM 只提供内容和组件意图。
   const renderComponent = (component: ReportComponent) => {
     if (component.binding_status === "failed") return <ReportBindingError key={component.component_id} component={component} />;
-    if (component.component_type === "text") return <article key={component.component_id} className="border-l-2 border-blue-500 pl-4 text-sm leading-7 text-slate-700">{component.content}</article>;
-    if (component.component_type === "kpi") return component.binding_status === "failed" ? <ReportBindingError key={component.component_id} component={component} /> : <div key={component.component_id} className="rounded-xl border border-slate-200 bg-white px-4 py-4"><div className="text-xs font-bold text-slate-500">{component.title}</div><div className="mt-2 break-words text-2xl font-extrabold text-slate-900">{textValue(component.value)}</div></div>;
+    if (component.component_type === "text") return <article key={component.component_id} className="rounded-lg border-l-4 border-teal-600 bg-slate-50/80 px-5 py-4 text-sm leading-7 text-slate-700">{component.content}</article>;
+    if (component.component_type === "kpi") return <ReportMetric key={component.component_id} component={component} />;
     if (component.component_type === "table") return <DynamicTable key={component.component_id} component={component} />;
     return <DynamicChart key={component.component_id} component={component} />;
   };
   return (
-    <section className="space-y-6">
-      <div className="border-b border-slate-200 pb-4">
-        <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-[0.14em] text-blue-600"><FileBarChart className="size-4" />最终分析报告</div>
-        <h2 className="text-xl font-extrabold text-slate-900">{report.title}</h2>
-        <p className="mt-2 max-w-4xl text-base font-semibold leading-7 text-slate-700">{report.summary}</p>
-      </div>
+    <section className="space-y-10">
+      <header className="border-b border-slate-200 pb-8">
+        <div className="mb-3 flex items-center justify-between gap-3"><div className="flex min-w-0 items-center gap-2 text-[11px] font-bold uppercase tracking-[0.14em] text-teal-700"><FileBarChart className="size-4 shrink-0" />数据分析报告</div><StatusBadge status={report.status} /></div>
+        <h2 className="max-w-5xl break-words text-2xl font-extrabold leading-tight tracking-tight text-slate-950">{report.title}</h2>
+        <p className="mt-4 max-w-5xl border-l-2 border-slate-300 pl-4 text-base font-medium leading-7 text-slate-600">{report.summary}</p>
+      </header>
       {report.sections.map((section, sectionIndex) => {
-        const columns = Math.max(1, Math.min(section.layout?.columns || 1, 4));
+        const columns = Math.max(1, Math.min(section.layout?.columns || 1, 3));
         const isGrid = section.layout?.type === "grid" && columns > 1;
-        return <section key={`${section.title}-${sectionIndex}`} className="space-y-4"><h3 className="text-sm font-extrabold text-slate-900">{section.title}</h3><div className={isGrid ? "grid items-start gap-4" : "space-y-4"} style={isGrid ? { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` } : undefined}>{section.components.map((component) => <div key={component.component_id} style={isGrid ? { gridColumn: `span ${Math.min(Math.max(component.span || 1, 1), columns)}` } : undefined}>{renderComponent(component)}</div>)}</div></section>;
+        return <section key={section.title + "-" + sectionIndex} className="space-y-5">
+         <div className="flex items-center gap-3"><span className="font-mono text-[11px] font-bold text-teal-700">{String(sectionIndex + 1).padStart(2, "0")}</span><h3 className="text-lg font-extrabold tracking-tight text-slate-900">{section.title}</h3><div className="h-px flex-1 bg-slate-200" /></div>
+         <div className={isGrid ? "grid items-start gap-5" : "space-y-5"} style={isGrid ? { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` } : undefined}>
+           {section.components.map((component) => {
+             const defaultSpan = component.component_type === "text" || component.component_type === "table" ? columns : 1;
+             const span = Math.max(1, Math.min(component.span || defaultSpan, columns));
+             return <div key={component.component_id} className="min-w-0" style={isGrid ? { gridColumn: `span ${span} / span ${span}` } : undefined}>{renderComponent(component)}</div>;
+           })}
+         </div>
+       </section>;
       })}
-      {report.limitations.length > 0 && <div className="border-t border-amber-200 bg-amber-50/70 px-4 py-3"><div className="mb-2 flex items-center gap-2 text-xs font-extrabold text-amber-800"><AlertCircle className="size-4" />分析边界</div><ul className="space-y-1 text-xs leading-5 text-amber-900">{report.limitations.map((limitation, index) => <li key={`${limitation}-${index}`}>• {limitation}</li>)}</ul></div>}
+      {report.limitations.length > 0 && <div className="border-t border-amber-200 pt-5"><div className="mb-2 flex items-center gap-2 text-xs font-extrabold text-amber-800"><AlertCircle className="size-4" />分析边界</div><ul className="space-y-1 text-xs leading-5 text-amber-900">{report.limitations.map((limitation, index) => <li key={limitation + "-" + index}>• {limitation}</li>)}</ul></div>}
     </section>
   );
 }
