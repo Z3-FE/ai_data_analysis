@@ -199,6 +199,254 @@ interface DebugEvent {
 }
 
 const DEFAULT_QUESTION = "找出2017年销售额下降最明显的月份，并分析该月份下降最多的商品类别和卖家地区。";
+// 页面渲染调试阶段直接使用固定报告，不请求后端，也不触发 LLM。
+const FIXED_REPORT_MODE = true;
+const FIXED_RENDERED_REPORT: RenderedReport = {
+  status: "success",
+  title: "2017年销售额下降最明显月份及归因分析报告",
+  summary: "2017年12月是全年销售额下降最明显的月份，环比下降26.36%。其中，“床上浴室与餐桌用品”类别和“圣保罗州”地区的销售额下降最为显著，分别环比下降43.51%和23.51%。",
+  sections: [
+    {
+      title: "2017年销售额整体趋势与下降最明显月份",
+      layout: { type: "stack", columns: 1 },
+      components: [
+        {
+          component_id: "月份趋势分析",
+          component_type: "text",
+          chart_type: null,
+          title: "月份趋势分析",
+          content: "2017年销售额在12月出现显著下滑。与11月相比，12月总销售额下降了266,357.20，环比降幅达26.36%，是2017年下降最明显的月份。",
+          source_task_id: "",
+          dimension_field: "",
+          metric_fields: [],
+          value_field: "",
+          presentation: { orientation: "vertical", sort: "none", top_n: null, show_labels: true, show_legend: false, color_scheme: "blue" },
+          span: 1,
+          binding_status: "bound",
+          binding_error: "",
+          value: null,
+          columns: [],
+          data: [],
+          row_count: 0,
+          truncated: false,
+        },
+        {
+          component_id: "12月销售额下降金额",
+          component_type: "kpi",
+          chart_type: null,
+          title: "12月销售额下降金额",
+          content: "",
+          source_task_id: "monthly_sales_2016_2017",
+          dimension_field: "",
+          metric_fields: [],
+          value_field: "decrease_amount",
+          presentation: { orientation: "vertical", sort: "none", top_n: null, show_labels: true, show_legend: false, color_scheme: "blue" },
+          span: 1,
+          binding_status: "bound",
+          binding_error: "",
+          value: 266357.2,
+          columns: [],
+          data: [],
+          row_count: 0,
+          truncated: false,
+        },
+        {
+          component_id: "12月销售额环比变化率",
+          component_type: "kpi",
+          chart_type: null,
+          title: "12月销售额环比变化率",
+          content: "",
+          source_task_id: "monthly_sales_2016_2017",
+          dimension_field: "",
+          metric_fields: [],
+          value_field: "change_rate",
+          presentation: { orientation: "vertical", sort: "none", top_n: null, show_labels: true, show_legend: false, color_scheme: "blue" },
+          span: 1,
+          binding_status: "bound",
+          binding_error: "",
+          value: -0.263649,
+          columns: [],
+          data: [],
+          row_count: 0,
+          truncated: false,
+        },
+        {
+          component_id: "2016年12月至2017年12月销售额趋势",
+          component_type: "chart",
+          chart_type: "line",
+          title: "2016年12月至2017年12月销售额趋势",
+          content: "",
+          source_task_id: "monthly_sales_2016_2017",
+          dimension_field: "year_month_value",
+          metric_fields: ["gmv"],
+          value_field: "",
+          presentation: { orientation: "vertical", sort: "asc", top_n: null, show_labels: true, show_legend: false, color_scheme: "blue" },
+          span: 1,
+          binding_status: "bound",
+          binding_error: "",
+          value: null,
+          columns: [
+            { result_name: "year_month_value", display_name: "下单月份", field_role: "dimension", unit: null },
+            { result_name: "gmv", display_name: "销售额", field_role: "metric", unit: "currency" },
+          ],
+          data: [
+            { year_month_value: "2016-12", gmv: "10.90" },
+            { year_month_value: "2017-01", gmv: "120312.87" },
+            { year_month_value: "2017-02", gmv: "247303.02" },
+            { year_month_value: "2017-03", gmv: "374344.30" },
+            { year_month_value: "2017-04", gmv: "359927.23" },
+            { year_month_value: "2017-05", gmv: "506071.14" },
+            { year_month_value: "2017-06", gmv: "433038.60" },
+            { year_month_value: "2017-07", gmv: "498031.48" },
+            { year_month_value: "2017-08", gmv: "573971.68" },
+            { year_month_value: "2017-09", gmv: "624401.69" },
+            { year_month_value: "2017-10", gmv: "664219.43" },
+            { year_month_value: "2017-11", gmv: "1010271.37" },
+            { year_month_value: "2017-12", gmv: "743914.17" },
+          ],
+          row_count: 13,
+          truncated: false,
+        },
+      ],
+    },
+    {
+      title: "12月销售额下降最多的商品类别",
+      layout: { type: "stack", columns: 1 },
+      components: [
+        {
+          component_id: "商品类别分析",
+          component_type: "text",
+          chart_type: null,
+          title: "商品类别分析",
+          content: "在2017年12月，销售额下降最多的商品类别是“床上浴室与餐桌用品”。该类别销售额从11月的89,412.54下降至12月的50,505.85，环比下降43.51%，下降金额达38,906.69。",
+          source_task_id: "",
+          dimension_field: "",
+          metric_fields: [],
+          value_field: "",
+          presentation: { orientation: "vertical", sort: "none", top_n: null, show_labels: true, show_legend: false, color_scheme: "blue" },
+          span: 1,
+          binding_status: "bound",
+          binding_error: "",
+          value: null,
+          columns: [],
+          data: [],
+          row_count: 0,
+          truncated: false,
+        },
+        {
+          component_id: "该类别下降金额",
+          component_type: "kpi",
+          chart_type: null,
+          title: "该类别下降金额",
+          content: "",
+          source_task_id: "category_sales_target_month",
+          dimension_field: "",
+          metric_fields: [],
+          value_field: "decrease_amount",
+          presentation: { orientation: "vertical", sort: "none", top_n: null, show_labels: true, show_legend: false, color_scheme: "blue" },
+          span: 1,
+          binding_status: "bound",
+          binding_error: "",
+          value: 38906.69,
+          columns: [],
+          data: [],
+          row_count: 0,
+          truncated: false,
+        },
+        {
+          component_id: "该类别环比变化率",
+          component_type: "kpi",
+          chart_type: null,
+          title: "该类别环比变化率",
+          content: "",
+          source_task_id: "category_sales_target_month",
+          dimension_field: "",
+          metric_fields: [],
+          value_field: "change_rate",
+          presentation: { orientation: "vertical", sort: "none", top_n: null, show_labels: true, show_legend: false, color_scheme: "blue" },
+          span: 1,
+          binding_status: "bound",
+          binding_error: "",
+          value: -0.435137,
+          columns: [],
+          data: [],
+          row_count: 0,
+          truncated: false,
+        },
+      ],
+    },
+    {
+      title: "12月销售额下降最多的卖家地区",
+      layout: { type: "stack", columns: 1 },
+      components: [
+        {
+          component_id: "卖家地区分析",
+          component_type: "text",
+          chart_type: null,
+          title: "卖家地区分析",
+          content: "从卖家地区来看，圣保罗州在12月的销售额下降最为明显。其销售额从11月的622,301.92降至12月的475,972.40，环比下降23.51%，下降金额为146,329.52。",
+          source_task_id: "",
+          dimension_field: "",
+          metric_fields: [],
+          value_field: "",
+          presentation: { orientation: "vertical", sort: "none", top_n: null, show_labels: true, show_legend: false, color_scheme: "blue" },
+          span: 1,
+          binding_status: "bound",
+          binding_error: "",
+          value: null,
+          columns: [],
+          data: [],
+          row_count: 0,
+          truncated: false,
+        },
+        {
+          component_id: "该地区下降金额",
+          component_type: "kpi",
+          chart_type: null,
+          title: "该地区下降金额",
+          content: "",
+          source_task_id: "region_sales_target_month",
+          dimension_field: "",
+          metric_fields: [],
+          value_field: "decrease_amount",
+          presentation: { orientation: "vertical", sort: "none", top_n: null, show_labels: true, show_legend: false, color_scheme: "blue" },
+          span: 1,
+          binding_status: "bound",
+          binding_error: "",
+          value: 146329.52,
+          columns: [],
+          data: [],
+          row_count: 0,
+          truncated: false,
+        },
+        {
+          component_id: "该地区环比变化率",
+          component_type: "kpi",
+          chart_type: null,
+          title: "该地区环比变化率",
+          content: "",
+          source_task_id: "region_sales_target_month",
+          dimension_field: "",
+          metric_fields: [],
+          value_field: "change_rate",
+          presentation: { orientation: "vertical", sort: "none", top_n: null, show_labels: true, show_legend: false, color_scheme: "blue" },
+          span: 1,
+          binding_status: "bound",
+          binding_error: "",
+          value: -0.235142,
+          columns: [],
+          data: [],
+          row_count: 0,
+          truncated: false,
+        },
+      ],
+    },
+  ],
+  limitations: [
+    "分析仅基于销售额的环比变化，未考虑订单量、客单价或退货率等其他业务指标的影响。",
+    "商品类别和卖家地区的分析仅针对下降最明显的月份（2017年12月）进行，未涵盖全年其他月份的波动情况。",
+  ],
+};
 const DEBUG_ROW_LIMIT = 1000;
 const DEBUG_ARRAY_FIELDS = new Set(["rows", "data", "display_sql_result", "preview_rows"]);
 
@@ -1553,15 +1801,16 @@ function ExecutionPanel({ running, debugEvents }: { running: boolean; debugEvent
 export default function AnalysisWorkspace() {
   // 当前会话工作台：提交问题、接收执行事件并渲染唯一的最终报告。
   const [question, setQuestion] = useState("");
-  const [sessionId, setSessionId] = useState("");
-  const [sessionStatus, setSessionStatus] = useState("初始化会话");
+  const [sessionId, setSessionId] = useState(FIXED_REPORT_MODE ? "fixed-report-debug" : "");
+  const [sessionStatus, setSessionStatus] = useState(FIXED_REPORT_MODE ? "固定报告渲染调试" : "初始化会话");
   const [running, setRunning] = useState(false);
-  const [report, setReport] = useState<RenderedReport | null>(null);
+  const [report, setReport] = useState<RenderedReport | null>(FIXED_REPORT_MODE ? FIXED_RENDERED_REPORT : null);
   const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
   const [error, setError] = useState("");
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
+    if (FIXED_REPORT_MODE) return;
     // 初始化当前浏览器会话，并通过 GET 读取工作台状态。
     const storageKey = "insight-agent:session-id";
     const currentSessionId = sessionStorage.getItem(storageKey) || crypto.randomUUID();
@@ -1577,6 +1826,12 @@ export default function AnalysisWorkspace() {
   }, []);
 
   const resetOutput = useCallback(() => {
+    if (FIXED_REPORT_MODE) {
+      setReport(FIXED_RENDERED_REPORT);
+      setDebugEvents([]);
+      setError("");
+      return;
+    }
     // 开始新一轮分析前清理当前会话的运行态和最终报告。
     setReport(null);
     setDebugEvents([]);
@@ -1584,6 +1839,7 @@ export default function AnalysisWorkspace() {
   }, []);
 
   const runQuestion = useCallback(async () => {
+    if (FIXED_REPORT_MODE) return;
     // 提交问题并消费主流程事件，最终只接受 rendered_report 作为正式产物。
     const normalizedQuestion = question.trim();
     if (!normalizedQuestion || running || !sessionId) return;
@@ -1624,7 +1880,7 @@ export default function AnalysisWorkspace() {
           {report && <ReportView report={report} />}
           {error && <div className="flex items-start gap-3 border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"><AlertCircle className="mt-0.5 size-4 shrink-0" /><span>{error}</span></div>}
         </div></div>
-        <div className="border-t border-slate-200 bg-white px-5 py-4 lg:px-8"><div className="mx-auto flex max-w-[1400px] gap-3"><Textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void runQuestion(); } }} placeholder="例如：找出2017年销售额下降最明显的月份，并分析该月份下降最多的商品类别和卖家地区。" className="min-h-12 max-h-32 resize-none bg-slate-50 text-sm focus-visible:bg-white" /><Button type="button" disabled={!question.trim() || running || !sessionId} onClick={() => void runQuestion()} className="h-12 w-12 shrink-0 p-0" title="发送问题">{running ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}</Button>{running && <Button type="button" variant="outline" onClick={cancelQuestion} className="h-12 w-12 shrink-0 p-0" title="停止分析"><XCircle className="size-4" /></Button>}</div></div>
+          <div className="border-t border-slate-200 bg-white px-5 py-4 lg:px-8"><div className="mx-auto flex max-w-[1400px] gap-3"><Textarea value={question} readOnly={FIXED_REPORT_MODE} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void runQuestion(); } }} placeholder={FIXED_REPORT_MODE ? "当前为固定报告渲染调试模式" : "例如：找出2017年销售额下降最明显的月份，并分析该月份下降最多的商品类别和卖家地区。"} className="min-h-12 max-h-32 resize-none bg-slate-50 text-sm focus-visible:bg-white" /><Button type="button" disabled={FIXED_REPORT_MODE || !question.trim() || running || !sessionId} onClick={() => void runQuestion()} className="h-12 w-12 shrink-0 p-0" title="发送问题">{running ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}</Button>{running && <Button type="button" variant="outline" onClick={cancelQuestion} className="h-12 w-12 shrink-0 p-0" title="停止分析"><XCircle className="size-4" /></Button>}</div></div>
       </section>
       <ExecutionPanel running={running} debugEvents={debugEvents} />
     </div>
