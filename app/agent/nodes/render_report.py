@@ -26,6 +26,7 @@ from app.agent.state import AgentState
 
 logger = logging.getLogger(__name__)
 MAX_REPORT_ROWS = 200
+_MISSING = object()
 
 
 def _rows(task: dict[str, Any]) -> list[dict[str, Any]]:
@@ -86,6 +87,62 @@ def _get_path(value: Any, path: str) -> Any:
         else:
             return None
     return current
+
+
+def _resolve_calculation_value(
+    calculation: Any,
+    ref: ReportDataRef,
+    value_field: str,
+) -> Any:
+    """按报告引用读取计算结果，避免路径层级错误丢失真实字段。"""
+    field = value_field.strip()
+    if ref.path:
+        scoped_value = _get_path(calculation, ref.path)
+        if scoped_value is not None:
+            if not field:
+                return scoped_value
+            nested_value = _get_path(scoped_value, field)
+            if nested_value is not None:
+                return nested_value
+
+    # path 是可选的定位提示；如果模型多写了一层路径，字段仍可能在根结果中。
+    if field:
+        root_value = _get_path(calculation, field)
+        if root_value is not None:
+            return root_value
+        nested_matches = _find_calculation_field(calculation, field)
+        if len(nested_matches) == 1:
+            return nested_matches[0][1]
+    elif not ref.path and calculation is not None:
+        return calculation
+    return _MISSING
+
+
+def _calculation_available_fields(calculation: Any) -> list[str]:
+    """返回计算结果根部字段，帮助定位报告规划引用错误。"""
+    if isinstance(calculation, dict):
+        return [str(key) for key in calculation]
+    return []
+
+
+def _find_calculation_field(
+    value: Any,
+    field: str,
+    path: str = "",
+) -> list[tuple[str, Any]]:
+    """递归查找精确字段名，并保留完整路径。"""
+    matches: list[tuple[str, Any]] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            current_path = f"{path}.{key}" if path else str(key)
+            if str(key) == field:
+                matches.append((current_path, item))
+            matches.extend(_find_calculation_field(item, field, current_path))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            current_path = f"{path}.{index}" if path else str(index)
+            matches.extend(_find_calculation_field(item, field, current_path))
+    return matches
 
 
 def _render_columns(columns: list[dict[str, Any]], names: list[str]) -> list[RenderedReportColumn]:
@@ -151,11 +208,22 @@ def _bind_component(
 
     if ref.source == "calculation_result":
         calculation = task.get("calculation_result")
-        value = _get_path(calculation, ref.path) if ref.path else calculation
-        if plan.value_field:
-            value = _get_path(value, plan.value_field)
-        if value is None:
-            error = f"组件“{plan.title}”引用了不存在的计算结果字段。"
+        value = _resolve_calculation_value(calculation, ref, plan.value_field)
+        if value is _MISSING:
+            requested = ref.path or plan.value_field or "根结果"
+            available = _calculation_available_fields(calculation)
+            available_text = "、".join(available) if available else "无可用根字段"
+            nested_matches = (
+                _find_calculation_field(calculation, plan.value_field.strip())
+                if plan.value_field.strip()
+                else []
+            )
+            if len(nested_matches) > 1:
+                available_text = "、".join(path for path, _ in nested_matches)
+            error = (
+                f"组件“{plan.title}”引用了不存在的计算结果字段“{requested}”。"
+                f"当前可用根字段：{available_text}。"
+            )
             return _failed_component(plan, error), error
         if plan.component_type != "kpi":
             error = f"组件“{plan.title}”不能使用 calculation_result 作为 {plan.component_type} 数据源。"
@@ -298,4 +366,3 @@ async def render_report(
         "rendered_report": result,
         "output_text": json.dumps(result, ensure_ascii=False, default=str),
     }
-

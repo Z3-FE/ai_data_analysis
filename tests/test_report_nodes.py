@@ -223,6 +223,137 @@ class ReportNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(component["binding_status"], "bound")
         self.assertEqual(component["value"], 20)
 
+    async def test_render_report_resolves_nested_calculation_field(self) -> None:
+        state = {
+            "input_text": "分析销售额下降月份",
+            "execution_mode": "analysis",
+            "analysis_evidence": {"status": "success"},
+            "analysis_task_results": [
+                {
+                    "task_id": "monthly_sales",
+                    "status": "success",
+                    "calculation_result": {
+                        "top_decline": {
+                            "target_period": "2017-12",
+                            "decrease_amount": 20,
+                        }
+                    },
+                }
+            ],
+            "report_plan": {
+                "title": "销售额下降报告",
+                "summary": "12 月销售额下降。",
+                "sections": [
+                    {
+                        "title": "核心指标",
+                        "components": [
+                            {
+                                "component_type": "kpi",
+                                "title": "下降月份",
+                                "data_ref": {
+                                    "source_task_id": "monthly_sales",
+                                    "source": "calculation_result",
+                                    "path": "top_decline",
+                                },
+                                "value_field": "target_period",
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+
+        result = await render_report(state, _runtime(None, []))
+
+        component = result["rendered_report"]["sections"][0]["components"][0]
+        self.assertEqual(component["binding_status"], "bound")
+        self.assertEqual(component["value"], "2017-12")
+
+    async def test_render_report_falls_back_when_path_is_wrong(self) -> None:
+        state = {
+            "input_text": "分析销售额下降金额",
+            "execution_mode": "analysis",
+            "analysis_evidence": {"status": "success"},
+            "analysis_task_results": [
+                {
+                    "task_id": "monthly_sales",
+                    "status": "success",
+                    "calculation_result": {"decrease_amount": 20},
+                }
+            ],
+            "report_plan": {
+                "title": "销售额下降报告",
+                "summary": "销售额下降。",
+                "sections": [
+                    {
+                        "title": "核心指标",
+                        "components": [
+                            {
+                                "component_type": "kpi",
+                                "title": "下降金额",
+                                "data_ref": {
+                                    "source_task_id": "monthly_sales",
+                                    "source": "calculation_result",
+                                    "path": "wrong_path",
+                                },
+                                "value_field": "decrease_amount",
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+
+        result = await render_report(state, _runtime(None, []))
+
+        component = result["rendered_report"]["sections"][0]["components"][0]
+        self.assertEqual(component["binding_status"], "bound")
+        self.assertEqual(component["value"], 20)
+
+    async def test_render_report_rejects_ambiguous_nested_calculation_field(self) -> None:
+        state = {
+            "input_text": "分析销售额下降金额",
+            "execution_mode": "analysis",
+            "analysis_evidence": {"status": "success"},
+            "analysis_task_results": [
+                {
+                    "task_id": "monthly_sales",
+                    "status": "success",
+                    "calculation_result": {
+                        "category": {"decrease_amount": 20},
+                        "region": {"decrease_amount": 30},
+                    },
+                }
+            ],
+            "report_plan": {
+                "title": "销售额下降报告",
+                "summary": "销售额下降。",
+                "sections": [
+                    {
+                        "title": "核心指标",
+                        "components": [
+                            {
+                                "component_type": "kpi",
+                                "title": "下降金额",
+                                "data_ref": {
+                                    "source_task_id": "monthly_sales",
+                                    "source": "calculation_result",
+                                },
+                                "value_field": "decrease_amount",
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+
+        result = await render_report(state, _runtime(None, []))
+
+        component = result["rendered_report"]["sections"][0]["components"][0]
+        self.assertEqual(component["binding_status"], "failed")
+        self.assertIn("category.decrease_amount", component["binding_error"])
+        self.assertIn("region.decrease_amount", component["binding_error"])
+
     async def test_render_report_truncates_large_rows(self) -> None:
         state = _single_query_state(row_count=201)
         state["report_plan"] = _report_plan()
