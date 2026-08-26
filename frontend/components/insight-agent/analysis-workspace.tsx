@@ -2,6 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import {
+  AssistantRuntimeProvider,
+  ComposerPrimitive,
+  MessagePrimitive,
+  ThreadPrimitive,
+  type ThreadMessage,
+  type ThreadMessageLike,
+  useExternalStoreRuntime,
+  useMessage,
+} from "@assistant-ui/react";
 import * as echarts from "echarts/core";
 import type { EChartsOption, SeriesOption } from "echarts/types/dist/shared";
 import { BarChart, LineChart } from "echarts/charts";
@@ -104,6 +114,23 @@ interface RenderedReport {
   summary: string;
   sections: ReportSection[];
   limitations: string[];
+}
+
+type ConversationResponseType = "chat" | "simple_data" | "analysis";
+
+interface SimpleDataBlock {
+  type: "value";
+  label: string;
+  value: string;
+  unit?: string;
+}
+
+interface ConversationTurnMeta {
+  response_type: ConversationResponseType;
+  assistant_text: string;
+  elapsed_seconds: number;
+  data_blocks?: SimpleDataBlock[];
+  rendered_report?: RenderedReport;
 }
 
 type TaskStatus = "pending" | "running" | "success" | "partial" | "failed";
@@ -447,6 +474,104 @@ const FIXED_RENDERED_REPORT: RenderedReport = {
     "商品类别和卖家地区的分析仅针对下降最明显的月份（2017年12月）进行，未涵盖全年其他月份的波动情况。",
   ],
 };
+
+// 固定会话只用于检查连续消息和富内容报告的前端排版，不调用后端或 LLM。
+const FIXED_CONVERSATION_MESSAGES: ThreadMessageLike[] = [
+  {
+    id: "demo-user-1",
+    role: "user",
+    content: [{ type: "text", text: "先介绍一下你现在能做什么？" }],
+    createdAt: new Date("2026-08-26T16:20:00"),
+  },
+  {
+    id: "demo-assistant-1",
+    role: "assistant",
+    content: [{ type: "text", text: "我可以帮助你进行日常问答、简单问数和数据分析。日常问题直接用文字回答，简单问数可以返回数值或表格，复杂分析则会生成包含文字、表格和图表的分析报告。" }],
+    createdAt: new Date("2026-08-26T16:20:03"),
+    status: { type: "complete", reason: "stop" },
+    metadata: {
+      custom: {
+        conversation: {
+          response_type: "chat",
+          assistant_text: "我可以帮助你进行日常问答、简单问数和数据分析。日常问题直接用文字回答，简单问数可以返回数值或表格，复杂分析则会生成包含文字、表格和图表的分析报告。",
+          elapsed_seconds: 3,
+        } satisfies ConversationTurnMeta,
+      },
+    },
+  },
+  {
+    id: "demo-user-2",
+    role: "user",
+    content: [{ type: "text", text: "2017 年 12 月的销售额是多少？" }],
+    createdAt: new Date("2026-08-26T16:21:00"),
+  },
+  {
+    id: "demo-assistant-2",
+    role: "assistant",
+    content: [{ type: "text", text: "2017 年 12 月的销售额为 743,914.17 元。" }],
+    createdAt: new Date("2026-08-26T16:21:05"),
+    status: { type: "complete", reason: "stop" },
+    metadata: {
+      custom: {
+        conversation: {
+          response_type: "simple_data",
+          assistant_text: "2017 年 12 月的销售额为 743,914.17 元。",
+          elapsed_seconds: 5,
+          data_blocks: [
+            { type: "value", label: "2017 年 12 月销售额", value: "743,914.17", unit: "元" },
+          ],
+        } satisfies ConversationTurnMeta,
+      },
+    },
+  },
+  {
+    id: "demo-user-3",
+    role: "user",
+    content: [{ type: "text", text: DEFAULT_QUESTION }],
+    createdAt: new Date("2026-08-26T16:22:00"),
+  },
+  {
+    id: "demo-assistant-3",
+    role: "assistant",
+    content: [{ type: "text", text: "2017 年 12 月是销售额下降最明显的月份，下面是详细分析。" }],
+    createdAt: new Date("2026-08-26T16:22:34"),
+    status: { type: "complete", reason: "stop" },
+    metadata: {
+      custom: {
+        conversation: {
+          response_type: "analysis",
+          assistant_text: "2017 年 12 月是销售额下降最明显的月份，下面是详细分析。",
+          elapsed_seconds: 34,
+          rendered_report: FIXED_RENDERED_REPORT,
+        } satisfies ConversationTurnMeta,
+      },
+    },
+  },
+];
+
+function conversationMeta(message: ThreadMessage | ThreadMessageLike) {
+  const value = message.metadata?.custom?.conversation;
+  if (!value || typeof value !== "object") return undefined;
+  return value as ConversationTurnMeta;
+}
+
+function conversationMessageText(message: ThreadMessage | ThreadMessageLike) {
+  if (typeof message.content === "string") return message.content;
+  return message.content
+    .map((part) => (part.type === "text" && "text" in part && typeof part.text === "string" ? part.text : ""))
+    .join("");
+}
+
+function formatElapsed(elapsedSeconds: number) {
+  if (!Number.isFinite(elapsedSeconds) || elapsedSeconds <= 0) return "";
+  if (elapsedSeconds >= 60) {
+    const minutes = Math.floor(elapsedSeconds / 60);
+    const seconds = Math.round(elapsedSeconds % 60);
+    return seconds ? minutes + " 分 " + seconds + " 秒" : minutes + " 分钟";
+  }
+  return Math.round(elapsedSeconds) + " 秒";
+}
+
 const DEBUG_ROW_LIMIT = 1000;
 const DEBUG_ARRAY_FIELDS = new Set(["rows", "data", "display_sql_result", "preview_rows"]);
 
@@ -1393,6 +1518,101 @@ function ReportView({ report }: { report: RenderedReport }) {
   );
 }
 
+function SimpleDataBlocks({ blocks }: { blocks: SimpleDataBlock[] }) {
+  if (!blocks.length) return null;
+  return (
+    <div className="mt-4 space-y-2 border-l-2 border-blue-200 pl-4">
+      {blocks.map((block) => (
+        <div key={block.label} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
+          <span className="font-semibold text-slate-500">{block.label}</span>
+          <span className="font-mono font-bold text-slate-900">{block.value}</span>
+          {block.unit && <span className="text-slate-500">{block.unit}</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ConversationMessage() {
+  const message = useMessage();
+  const isUser = message.role === "user";
+  const meta = conversationMeta(message);
+  const messageText = meta?.assistant_text || conversationMessageText(message);
+
+  if (isUser) {
+    return (
+      <MessagePrimitive.Root className="flex justify-end">
+        <div className="max-w-[78%] rounded-2xl bg-slate-100 px-5 py-3 text-sm leading-7 text-slate-800 shadow-sm">
+          {conversationMessageText(message)}
+        </div>
+      </MessagePrimitive.Root>
+    );
+  }
+
+  const elapsedSeconds = meta?.elapsed_seconds ?? 0;
+  const showElapsed = elapsedSeconds > 7;
+
+  return (
+    <MessagePrimitive.Root className="flex justify-start">
+      <div className="w-full min-w-0">
+        {showElapsed && (
+          <div className="mb-6">
+            <div className="mb-3 text-xs font-medium text-slate-400">耗时 {formatElapsed(elapsedSeconds)}</div>
+            <div className="border-t border-slate-200" />
+          </div>
+        )}
+        <div className="text-[15px] leading-8 text-slate-800">
+          {messageText}
+        </div>
+        {meta?.data_blocks && <SimpleDataBlocks blocks={meta.data_blocks} />}
+        {meta?.rendered_report && (
+          <div className="mt-8">
+            <ReportView report={meta.rendered_report} />
+          </div>
+        )}
+      </div>
+    </MessagePrimitive.Root>
+  );
+}
+
+function ConversationThread() {
+  const runtimeStore = useMemo(
+    () => ({
+      messages: FIXED_CONVERSATION_MESSAGES,
+      isRunning: false,
+      onNew: async () => {},
+      onCancel: async () => {},
+      convertMessage: (message: ThreadMessageLike) => message as ThreadMessage,
+    }),
+    [],
+  );
+  const runtime = useExternalStoreRuntime<ThreadMessageLike>(runtimeStore);
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
+        <ThreadPrimitive.Viewport className="flex-1 overflow-y-auto px-5 py-8 lg:px-8">
+          <div className="mx-auto max-w-[1040px] space-y-10">
+            <ThreadPrimitive.Messages components={{ Message: ConversationMessage }} />
+          </div>
+        </ThreadPrimitive.Viewport>
+        <div className="border-t border-slate-200 bg-white px-5 py-4 lg:px-8">
+          <ComposerPrimitive.Root className="mx-auto flex max-w-[1040px] gap-3">
+            <ComposerPrimitive.Input
+              readOnly
+              placeholder="当前为固定会话渲染调试模式"
+              className="min-h-12 max-h-32 flex-1 resize-none rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500 outline-none"
+            />
+            <ComposerPrimitive.Send disabled className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-slate-200 p-0 text-slate-400">
+              <Send className="size-4" />
+            </ComposerPrimitive.Send>
+          </ComposerPrimitive.Root>
+        </div>
+      </ThreadPrimitive.Root>
+    </AssistantRuntimeProvider>
+  );
+}
+
 function StepStatusIcon({ status }: { status: RunStep["status"] }) {
   if (status === "success") return <CheckCircle2 className="relative z-10 size-4 shrink-0 text-emerald-500" />;
   if (status === "failed") return <XCircle className="relative z-10 size-4 shrink-0 text-rose-500" />;
@@ -1873,14 +2093,34 @@ export default function AnalysisWorkspace() {
   return (
     <div className="flex h-full min-h-0 w-full min-w-0 flex-1 flex-col xl:flex-row">
       <section className="flex min-w-0 flex-1 flex-col">
-        <div className="border-b border-slate-200 bg-white px-5 py-4 lg:px-8"><div className="mx-auto flex max-w-[1400px] items-start justify-between gap-4"><div className="min-w-0"><div className="flex items-center gap-2"><MessageSquare className="size-4 text-blue-600" /><h1 className="truncate text-base font-extrabold text-slate-900">{report?.title || "当前分析会话"}</h1><StatusBadge status={status} /></div><p className="mt-1 truncate text-xs text-slate-400">{sessionStatus} · 会话 ID：{sessionId || "初始化中"}</p></div>{hasOutput && <Button type="button" variant="ghost" size="icon" onClick={() => { setQuestion(""); resetOutput(); }} title="新建当前会话"><RotateCcw className="size-4" /></Button>}</div></div>
-        <div className="min-h-0 flex-1 overflow-y-auto"><div className="mx-auto max-w-[1400px] space-y-6 px-5 py-6 lg:px-8">
-          {!hasOutput && !running && <div className="flex min-h-[min(46vh,520px)] flex-col items-center justify-center text-center"><div className="mb-5 flex size-16 items-center justify-center rounded-2xl bg-blue-50 text-blue-600"><FileBarChart className="size-8" /></div><h2 className="text-2xl font-extrabold tracking-tight text-slate-900">用自然语言开始数据分析</h2><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">输入一个问数或分析问题，系统会在当前会话中展示执行过程与最终报告。</p><Button type="button" variant="outline" className="mt-5 gap-2" onClick={() => setQuestion(DEFAULT_QUESTION)}><Play className="size-3.5" />填入示例问题</Button></div>}
-          {running && !report && <div className="border-l-2 border-blue-500 px-4 py-3 text-sm font-semibold text-slate-600">正在生成报告：{question}</div>}
-          {report && <ReportView report={report} />}
-          {error && <div className="flex items-start gap-3 border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"><AlertCircle className="mt-0.5 size-4 shrink-0" /><span>{error}</span></div>}
-        </div></div>
-          <div className="border-t border-slate-200 bg-white px-5 py-4 lg:px-8"><div className="mx-auto flex max-w-[1400px] gap-3"><Textarea value={question} readOnly={FIXED_REPORT_MODE} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void runQuestion(); } }} placeholder={FIXED_REPORT_MODE ? "当前为固定报告渲染调试模式" : "例如：找出2017年销售额下降最明显的月份，并分析该月份下降最多的商品类别和卖家地区。"} className="min-h-12 max-h-32 resize-none bg-slate-50 text-sm focus-visible:bg-white" /><Button type="button" disabled={FIXED_REPORT_MODE || !question.trim() || running || !sessionId} onClick={() => void runQuestion()} className="h-12 w-12 shrink-0 p-0" title="发送问题">{running ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}</Button>{running && <Button type="button" variant="outline" onClick={cancelQuestion} className="h-12 w-12 shrink-0 p-0" title="停止分析"><XCircle className="size-4" /></Button>}</div></div>
+        <div className="border-b border-slate-200 bg-white px-5 py-4 lg:px-8">
+          <div className="mx-auto flex max-w-[1400px] items-start justify-between gap-4">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <MessageSquare className="size-4 text-blue-600" />
+                <h1 className="truncate text-base font-extrabold text-slate-900">当前分析会话</h1>
+                {!FIXED_REPORT_MODE && <StatusBadge status={status} />}
+              </div>
+              <p className="mt-1 truncate text-xs text-slate-400">
+                {FIXED_REPORT_MODE ? "连续消息与报告富内容渲染调试" : sessionStatus + " · 会话 ID：" + (sessionId || "初始化中")}
+              </p>
+            </div>
+            {!FIXED_REPORT_MODE && hasOutput && <Button type="button" variant="ghost" size="icon" onClick={() => { setQuestion(""); resetOutput(); }} title="新建当前会话"><RotateCcw className="size-4" /></Button>}
+          </div>
+        </div>
+        {FIXED_REPORT_MODE ? (
+          <ConversationThread />
+        ) : (
+          <>
+            <div className="min-h-0 flex-1 overflow-y-auto"><div className="mx-auto max-w-[1400px] space-y-6 px-5 py-6 lg:px-8">
+              {!hasOutput && !running && <div className="flex min-h-[min(46vh,520px)] flex-col items-center justify-center text-center"><div className="mb-5 flex size-16 items-center justify-center rounded-2xl bg-blue-50 text-blue-600"><FileBarChart className="size-8" /></div><h2 className="text-2xl font-extrabold tracking-tight text-slate-900">用自然语言开始数据分析</h2><p className="mt-2 max-w-md text-sm leading-6 text-slate-500">输入一个问数或分析问题，系统会在当前会话中展示执行过程与最终报告。</p><Button type="button" variant="outline" className="mt-5 gap-2" onClick={() => setQuestion(DEFAULT_QUESTION)}><Play className="size-3.5" />填入示例问题</Button></div>}
+              {running && !report && <div className="border-l-2 border-blue-500 px-4 py-3 text-sm font-semibold text-slate-600">正在生成报告：{question}</div>}
+              {report && <ReportView report={report} />}
+              {error && <div className="flex items-start gap-3 border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"><AlertCircle className="mt-0.5 size-4 shrink-0" /><span>{error}</span></div>}
+            </div></div>
+            <div className="border-t border-slate-200 bg-white px-5 py-4 lg:px-8"><div className="mx-auto flex max-w-[1400px] gap-3"><Textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void runQuestion(); } }} placeholder="例如：找出2017年销售额下降最明显的月份，并分析该月份下降最多的商品类别和卖家地区。" className="min-h-12 max-h-32 resize-none bg-slate-50 text-sm focus-visible:bg-white" /><Button type="button" disabled={!question.trim() || running || !sessionId} onClick={() => void runQuestion()} className="h-12 w-12 shrink-0 p-0" title="发送问题">{running ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}</Button>{running && <Button type="button" variant="outline" onClick={cancelQuestion} className="h-12 w-12 shrink-0 p-0" title="停止分析"><XCircle className="size-4" /></Button>}</div></div>
+          </>
+        )}
       </section>
       <ExecutionPanel running={running} debugEvents={debugEvents} />
     </div>
