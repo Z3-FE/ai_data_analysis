@@ -5,7 +5,14 @@ import type { ReactNode } from "react";
 import * as echarts from "echarts/core";
 import type { EChartsOption, SeriesOption } from "echarts/types/dist/shared";
 import { BarChart, LineChart } from "echarts/charts";
-import { AriaComponent, GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
+import {
+  AriaComponent,
+  DataZoomInsideComponent,
+  DataZoomSliderComponent,
+  GridComponent,
+  LegendComponent,
+  TooltipComponent,
+} from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import {
   AlertCircle,
@@ -36,6 +43,8 @@ echarts.use([
   AriaComponent,
   BarChart,
   CanvasRenderer,
+  DataZoomInsideComponent,
+  DataZoomSliderComponent,
   GridComponent,
   LegendComponent,
   LineChart,
@@ -812,10 +821,9 @@ function ReportMetric({ component }: { component: ReportComponent }) {
   const number = numericValue(value);
   const unit = inferMetricUnit(component.title, component.value_field);
   return (
-    <section className="min-w-0 rounded-lg border border-slate-200/90 bg-white px-5 py-4 shadow-[0_8px_24px_-20px_rgba(15,23,42,0.65)]">
+    <section className="h-full min-w-0 rounded-lg border border-slate-200/90 bg-white px-5 py-4 shadow-[0_8px_24px_-20px_rgba(15,23,42,0.65)]">
       <div className="min-w-0">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-slate-400">关键数值</div>
-        <h4 className="mt-1 break-words text-sm font-bold leading-5 text-slate-700">{component.title}</h4>
+        <h4 className="break-words text-sm font-bold leading-5 text-slate-700">{component.title}</h4>
       </div>
       <div className={"mt-3 break-words text-2xl font-extrabold tracking-tight " + (number !== null && number < 0 ? "text-rose-700" : "text-slate-950")}>
         {number !== null ? formatNumber(number, unit) : textValue(value)}
@@ -981,9 +989,38 @@ function EChartsReportChart({
         left: isHorizontal ? 132 : 62,
         right: 24,
         top: presentation.show_legend ? 42 : 20,
-        bottom: isHorizontal ? 28 : 52,
+        bottom: isLine ? 88 : isHorizontal ? 28 : 52,
         containLabel: true,
       },
+      dataZoom: isLine
+        ? [
+            {
+              type: "inside",
+              xAxisIndex: 0,
+              filterMode: "none",
+              start: 0,
+              end: 100,
+            },
+            {
+              type: "slider",
+              xAxisIndex: 0,
+              filterMode: "none",
+              start: 0,
+              end: 100,
+              bottom: 10,
+              height: 18,
+              showDetail: false,
+              borderColor: "#cbd5e1",
+              fillerColor: "rgba(37, 99, 235, 0.12)",
+              handleStyle: { color: "#2563eb", borderColor: "#2563eb" },
+              moveHandleStyle: { color: "#94a3b8" },
+              dataBackground: {
+                lineStyle: { color: "#94a3b8" },
+                areaStyle: { color: "#e2e8f0" },
+              },
+            },
+          ]
+        : undefined,
       tooltip: {
         trigger: "axis",
         axisPointer: { type: isLine ? "cross" : "shadow" },
@@ -1024,7 +1061,7 @@ function EChartsReportChart({
   }, [option]);
   const chartHeight = isHorizontal
     ? Math.max(300, Math.min(620, preparedRows.length * 32 + 64))
-    : 320;
+    : isLine ? 360 : 320;
   return (
     <section className="overflow-hidden rounded-lg border border-slate-200/90 bg-white shadow-[0_8px_24px_-20px_rgba(15,23,42,0.65)]">
       <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4"><div className="flex min-w-0 items-start gap-2.5"><BarChart3 className="mt-0.5 size-4 shrink-0 text-blue-700" /><div className="min-w-0"><h3 className="break-words text-sm font-extrabold leading-5 text-slate-800">{component.title}</h3><p className="mt-1 text-[11px] text-slate-400">{metricColumns.map((column) => displayName(column, column.result_name)).join("、")} · {chartRowsLabel}</p></div></div><span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400">{isLine ? "趋势" : "对比"}</span></div>
@@ -1035,6 +1072,35 @@ function EChartsReportChart({
 
 function ReportBindingError({ component }: { component: ReportComponent }) {
   return <section className="border border-rose-200 bg-rose-50/70 px-4 py-3"><div className="flex items-center gap-2 text-sm font-bold text-rose-700"><AlertCircle className="size-4" />{component.title}</div><p className="mt-2 text-xs leading-5 text-rose-700">{component.binding_error || "组件数据绑定失败。"}</p></section>;
+}
+
+type ReportBlock =
+  | { kind: "component"; component: ReportComponent }
+  | { kind: "kpi-row"; components: ReportComponent[] };
+
+function groupReportComponents(components: ReportComponent[]): ReportBlock[] {
+  // 连续的两个及以上 KPI 组成独立一行，避免每个 KPI 占满整行。
+  const blocks: ReportBlock[] = [];
+  let kpiGroup: ReportComponent[] = [];
+  const flushKpiGroup = () => {
+    if (kpiGroup.length >= 2) {
+      blocks.push({ kind: "kpi-row", components: kpiGroup });
+    } else if (kpiGroup.length === 1) {
+      blocks.push({ kind: "component", component: kpiGroup[0] });
+    }
+    kpiGroup = [];
+  };
+
+  for (const component of components) {
+    if (component.component_type === "kpi") {
+      kpiGroup.push(component);
+    } else {
+      flushKpiGroup();
+      blocks.push({ kind: "component", component });
+    }
+  }
+  flushKpiGroup();
+  return blocks;
 }
 
 function ReportView({ report }: { report: RenderedReport }) {
@@ -1056,10 +1122,17 @@ function ReportView({ report }: { report: RenderedReport }) {
       {report.sections.map((section, sectionIndex) => {
         const columns = Math.max(1, Math.min(section.layout?.columns || 1, 3));
         const isGrid = section.layout?.type === "grid" && columns > 1;
+        const blocks = groupReportComponents(section.components);
         return <section key={section.title + "-" + sectionIndex} className="space-y-5">
          <div className="flex items-center gap-3"><span className="font-mono text-[11px] font-bold text-teal-700">{String(sectionIndex + 1).padStart(2, "0")}</span><h3 className="text-lg font-extrabold tracking-tight text-slate-900">{section.title}</h3><div className="h-px flex-1 bg-slate-200" /></div>
          <div className={isGrid ? "grid items-start gap-5" : "space-y-5"} style={isGrid ? { gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` } : undefined}>
-           {section.components.map((component) => {
+           {blocks.map((block, blockIndex) => {
+             if (block.kind === "kpi-row") {
+               return <div key={`kpi-row-${blockIndex}`} className="grid min-w-0 items-stretch gap-5" style={{ gridTemplateColumns: `repeat(${block.components.length}, minmax(0, 1fr))`, ...(isGrid ? { gridColumn: "1 / -1" } : undefined) }}>
+                 {block.components.map((component) => <div key={component.component_id} className="min-w-0">{renderComponent(component)}</div>)}
+               </div>;
+             }
+             const component = block.component;
              const defaultSpan = component.component_type === "text" || component.component_type === "table" ? columns : 1;
              const span = Math.max(1, Math.min(component.span || defaultSpan, columns));
              return <div key={component.component_id} className="min-w-0" style={isGrid ? { gridColumn: `span ${span} / span ${span}` } : undefined}>{renderComponent(component)}</div>;
