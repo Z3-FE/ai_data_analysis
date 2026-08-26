@@ -1,7 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import * as echarts from "echarts/core";
+import type { EChartsOption, SeriesOption } from "echarts/types/dist/shared";
+import { BarChart, LineChart } from "echarts/charts";
+import { AriaComponent, GridComponent, LegendComponent, TooltipComponent } from "echarts/components";
+import { CanvasRenderer } from "echarts/renderers";
 import {
   AlertCircle,
   BarChart3,
@@ -26,6 +31,16 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+
+echarts.use([
+  AriaComponent,
+  BarChart,
+  CanvasRenderer,
+  GridComponent,
+  LegendComponent,
+  LineChart,
+  TooltipComponent,
+]);
 
 type JsonValue = string | number | boolean | null | Record<string, unknown> | JsonValue[];
 type Row = Record<string, JsonValue>;
@@ -686,7 +701,7 @@ function formatNumber(value: number, unit?: string | null) {
 }
 
 function formatAxisValue(value: number, unit?: string | null) {
-  // 坐标轴使用紧凑单位，避免完整金额把 SVG 的可视区域挤出卡片。
+  // 坐标轴使用紧凑单位，避免完整金额把图表的可视区域挤出卡片。
   if (unit === "percent") {
     return `${(value * 100).toLocaleString("zh-CN", { maximumFractionDigits: 1 })}%`;
   }
@@ -839,73 +854,181 @@ function DynamicTable({ component }: { component: ReportComponent }) {
   );
 }
 
-function DynamicChart({ component }: { component: ReportComponent }) {
-  // 用白名单图表类型和真实字段绘制图表，LLM 不参与生成图形代码。
+function chartCategoryLabel(value: unknown) {
+  const label = String(value ?? "");
+  return label.length > 14 ? `${label.slice(0, 14)}…` : label;
+}
+
+function ReportChart({ component }: { component: ReportComponent }) {
+  // 先确认报告组件已绑定真实字段，再交给 ECharts 组件绘制。
   if (component.binding_status === "failed") {
     return <ReportBindingError component={component} />;
   }
+  if (component.chart_type !== "line" && component.chart_type !== "bar") {
+    return <ReportBindingError component={{ ...component, binding_error: "图表缺少有效的图表类型。" }} />;
+  }
   const dimension = component.columns.find((column) => column.result_name === component.dimension_field);
-  const metric = component.columns.find((column) => column.result_name === component.metric_fields[0]);
-  if (!dimension || !metric) return <ReportBindingError component={{ ...component, binding_error: "图表缺少有效的维度或指标字段。" }} />;
-  if (!component.data.length) return <section className="rounded-lg border border-dashed border-slate-300 bg-slate-50/70 px-5 py-10 text-center text-xs text-slate-400">暂无可展示的图表数据</section>;
+  const metricColumns = component.metric_fields
+    .map((field) => component.columns.find((column) => column.result_name === field))
+    .filter((column): column is ReportColumn => Boolean(column));
+  if (!dimension || !metricColumns.length || metricColumns.length !== component.metric_fields.length) {
+    return <ReportBindingError component={{ ...component, binding_error: "图表缺少有效的维度或指标字段。" }} />;
+  }
+  if (!component.data.length) {
+    return <section className="rounded-lg border border-dashed border-slate-300 bg-slate-50/70 px-5 py-10 text-center text-xs text-slate-400">暂无可展示的图表数据</section>;
+  }
+  return <EChartsReportChart component={component} dimension={dimension} metricColumns={metricColumns} />;
+}
+
+function escapeTooltipText(value: unknown) {
+  // tooltip 使用 HTML 字符串，报告中的动态字段不能直接插入 HTML。
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('\"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function EChartsReportChart({
+  component,
+  dimension,
+  metricColumns,
+}: {
+  component: ReportComponent;
+  dimension: ReportColumn;
+  metricColumns: ReportColumn[];
+}) {
+  // ECharts 只接收报告协议中的字段和真实行数据，不接收 LLM 生成的 option。
+  const chartRef = useRef<HTMLDivElement>(null);
+  const chartInstanceRef = useRef<ReturnType<typeof echarts.init> | null>(null);
   const presentation = component.presentation || {};
   const isLine = component.chart_type === "line";
   const isHorizontal = component.chart_type === "bar" && presentation.orientation === "horizontal";
-  const preparedRows = [...component.data]
-    .sort((left, right) => {
-      if (isLine || !presentation.sort || presentation.sort === "none") return 0;
-      const leftValue = numericValue(left[metric.result_name]) ?? 0;
-      const rightValue = numericValue(right[metric.result_name]) ?? 0;
-      return presentation.sort === "asc" ? leftValue - rightValue : rightValue - leftValue;
-    })
-    .slice(0, presentation.top_n || (isHorizontal || !isLine ? 12 : 24));
-  const values = preparedRows.map((row) => numericValue(row[metric.result_name]) ?? 0);
-  const minValue = Math.min(0, ...values);
-  const maxValue = Math.max(0, ...values);
-  const valueRange = maxValue - minValue || 1;
-  const width = 760;
-  const height = isHorizontal ? Math.max(250, preparedRows.length * 30 + 42) : 260;
-  // 垂直图表的 Y 轴标签位于绘图区外侧，预留空间避免被 SVG 裁切。
-  const left = isHorizontal ? 148 : 78;
-  const right = 24;
-  const top = 24;
-  const bottom = isHorizontal ? 22 : 48;
-  const color = presentation.color_scheme === "teal" ? "#0f766e" : presentation.color_scheme === "amber" ? "#d97706" : "#2563eb";
-  const baseline = top + ((maxValue - 0) / valueRange) * (height - top - bottom);
-  const plotWidth = width - left - right;
-  const zeroX = left + ((0 - minValue) / valueRange) * plotWidth;
-  const points = values.map((value, index) => {
-    const x = values.length === 1 ? (width + left - right) / 2 : left + (index * (width - left - right)) / (values.length - 1);
-    const y = top + ((maxValue - value) / valueRange) * (height - top - bottom);
-    return { x, y, value, label: textValue(preparedRows[index][dimension.result_name]) };
-  });
-  const labelStep = Math.max(1, Math.ceil(points.length / 8));
-  const chartRowsLabel = preparedRows.length < component.row_count ? "展示 " + preparedRows.length + " / " + component.row_count + " 个数据点" : component.row_count + " 个数据点";
+  const metric = metricColumns[0];
+  const preparedRows = useMemo(() => {
+    const rows = [...component.data];
+    if (!isLine && presentation.sort && presentation.sort !== "none") {
+      rows.sort((left, right) => {
+        const leftValue = numericValue(left[metric.result_name]) ?? 0;
+        const rightValue = numericValue(right[metric.result_name]) ?? 0;
+        return presentation.sort === "asc" ? leftValue - rightValue : rightValue - leftValue;
+      });
+    }
+    const limit = presentation.top_n ?? (isHorizontal || !isLine ? 12 : 24);
+    return rows.slice(0, limit);
+  }, [component.data, isHorizontal, isLine, metric.result_name, presentation.sort, presentation.top_n]);
+  const chartRowsLabel = preparedRows.length < component.row_count
+    ? `展示 ${preparedRows.length} / ${component.row_count} 个数据点`
+    : `${component.row_count} 个数据点`;
+  const option = useMemo<EChartsOption>(() => {
+    const colors = presentation.color_scheme === "teal"
+      ? ["#0f766e", "#14b8a6", "#5eead4"]
+      : presentation.color_scheme === "amber"
+        ? ["#d97706", "#f59e0b", "#fbbf24"]
+        : ["#2563eb", "#60a5fa", "#93c5fd"];
+    const categories = preparedRows.map((row) => textValue(row[dimension.result_name]));
+    const series: SeriesOption[] = metricColumns.map((column) => ({
+      type: isLine ? ("line" as const) : ("bar" as const),
+      name: displayName(column, column.result_name),
+      data: preparedRows.map((row) => numericValue(row[column.result_name])),
+      smooth: isLine,
+      showSymbol: isLine,
+      symbolSize: isLine ? 7 : undefined,
+      barMaxWidth: isHorizontal ? 22 : 34,
+      barGap: "25%",
+      label: {
+        show: Boolean(presentation.show_labels),
+        formatter: (params: { value?: unknown }) => {
+          const number = numericValue(params.value as JsonValue);
+          return number === null ? "" : formatNumber(number, column.unit);
+        },
+      },
+      emphasis: { focus: "series" },
+    }));
+    const tooltipFormatter = (params: unknown) => {
+      const items = (Array.isArray(params) ? params : [params]) as Array<{
+        seriesName?: string;
+        seriesIndex?: number;
+        value?: unknown;
+        axisValue?: unknown;
+      }>;
+      const category = items[0]?.axisValue ?? "";
+      const lines = items
+        .map((item) => {
+          const number = numericValue(item.value as JsonValue);
+          const seriesColumn = metricColumns[item.seriesIndex ?? 0] || metric;
+          return `<div>${escapeTooltipText(item.seriesName || "指标")}：${number === null ? "--" : formatNumber(number, seriesColumn.unit)}</div>`;
+        })
+        .join("");
+      return `<div><strong>${escapeTooltipText(category)}</strong>${lines}</div>`;
+    };
+    const valueAxis = {
+      type: "value" as const,
+      axisLabel: { formatter: (value: number) => formatAxisValue(value, metric.unit) },
+      splitLine: { lineStyle: { color: "#e2e8f0", type: "dashed" as const } },
+    };
+    const categoryAxis = {
+      type: "category" as const,
+      data: categories,
+      axisLabel: { formatter: chartCategoryLabel, interval: isLine ? 0 : ("auto" as const) },
+      axisTick: { alignWithLabel: true },
+    };
+    return {
+      animationDuration: 350,
+      color: colors,
+      grid: {
+        left: isHorizontal ? 132 : 62,
+        right: 24,
+        top: presentation.show_legend ? 42 : 20,
+        bottom: isHorizontal ? 28 : 52,
+        containLabel: true,
+      },
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: isLine ? "cross" : "shadow" },
+        formatter: tooltipFormatter,
+      },
+      legend: {
+        show: Boolean(presentation.show_legend),
+        top: 4,
+        type: "scroll",
+      },
+      xAxis: isHorizontal ? valueAxis : categoryAxis,
+      yAxis: isHorizontal
+        ? { ...categoryAxis, inverse: true, axisLabel: { formatter: chartCategoryLabel } }
+        : valueAxis,
+      series,
+    };
+  }, [dimension.result_name, isHorizontal, isLine, metric.unit, metricColumns, preparedRows, presentation.color_scheme, presentation.show_labels, presentation.show_legend]);
+  useEffect(() => {
+    if (!chartRef.current) return;
+    const chart = echarts.init(chartRef.current, undefined, { renderer: "canvas" });
+    chartInstanceRef.current = chart;
+    const observer = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(() => chart.resize());
+    observer?.observe(chartRef.current);
+    const resize = () => chart.resize();
+    window.addEventListener("resize", resize);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", resize);
+      chart.dispose();
+      chartInstanceRef.current = null;
+    };
+  }, []);
+  useEffect(() => {
+    chartInstanceRef.current?.setOption(option, true);
+    chartInstanceRef.current?.resize();
+  }, [option]);
+  const chartHeight = isHorizontal
+    ? Math.max(300, Math.min(620, preparedRows.length * 32 + 64))
+    : 320;
   return (
     <section className="overflow-hidden rounded-lg border border-slate-200/90 bg-white shadow-[0_8px_24px_-20px_rgba(15,23,42,0.65)]">
-      <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4"><div className="flex min-w-0 items-start gap-2.5"><BarChart3 className="mt-0.5 size-4 shrink-0 text-blue-700" /><div className="min-w-0"><h3 className="break-words text-sm font-extrabold leading-5 text-slate-800">{component.title}</h3><p className="mt-1 text-[11px] text-slate-400">{displayName(metric, metric.result_name)} · {chartRowsLabel}</p></div></div><span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400">{isLine ? "趋势" : "对比"}</span></div>
-      <div className="min-w-0 overflow-hidden px-3 pb-3 pt-2"><svg viewBox={`0 0 ${width} ${height}`} className="block h-auto w-full max-w-full" role="img" aria-label={component.title}>
-        {isHorizontal
-          ? [0, 0.5, 1].map((ratio) => {
-              const value = minValue + ratio * valueRange;
-              const x = left + ratio * plotWidth;
-              return <g key={ratio}><line x1={x} y1={top} x2={x} y2={height - bottom} stroke="#e2e8f0" strokeDasharray="3 4" /><text x={x} y={height - 7} textAnchor="middle" fontSize="10" fill="#94a3b8">{formatAxisValue(value, metric.unit)}</text></g>;
-            })
-          : [0, 0.5, 1].map((ratio) => {
-              const value = maxValue - ratio * valueRange;
-              const y = top + ratio * (height - top - bottom);
-              return <g key={ratio}><line x1={left} y1={y} x2={width - right} y2={y} stroke="#e2e8f0" strokeDasharray="3 4" /><text x={left - 8} y={y + 4} textAnchor="end" fontSize="10" fill="#94a3b8">{formatAxisValue(value, metric.unit)}</text></g>;
-            })}
-        {!isLine && (isHorizontal ? <line x1={zeroX} y1={top} x2={zeroX} y2={height - bottom} stroke="#94a3b8" /> : <line x1={left} y1={baseline} x2={width - right} y2={baseline} stroke="#94a3b8" />)}
-        {isLine ? <><polyline fill="none" stroke={color} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" points={points.map((point) => `${point.x},${point.y}`).join(" ")} />{points.map((point, index) => <circle key={`${point.x}-${index}`} cx={point.x} cy={point.y} r="4" fill="white" stroke={color} strokeWidth="2"><title>{point.label}: {formatNumber(point.value, metric.unit)}</title></circle>)}</> : points.map((point, index) => { const valueX = left + ((point.value - minValue) / valueRange) * plotWidth; const barWidth = Math.max(12, Math.min(46, plotWidth / Math.max(points.length, 1) - 8)); const barHeight = Math.max(2, Math.abs(point.y - baseline)); const horizontalY = top + index * ((height - top - bottom) / Math.max(points.length, 1)) + 6; const horizontalX = Math.min(zeroX, valueX); const horizontalWidth = Math.max(2, Math.abs(valueX - zeroX)); return isHorizontal ? <rect key={`${point.label}-${index}`} x={horizontalX} y={horizontalY} width={horizontalWidth} height="17" rx="3" fill={color}><title>{point.label}: {formatNumber(point.value, metric.unit)}</title></rect> : <rect key={`${point.label}-${index}`} x={point.x - barWidth / 2} y={point.value >= 0 ? point.y : baseline} width={barWidth} height={barHeight} rx="3" fill={color}><title>{point.label}: {formatNumber(point.value, metric.unit)}</title></rect>; })}
-        {points.map((point, index) => {
-          if (index % labelStep !== 0 && index !== points.length - 1) return null;
-          const rowHeight = (height - top - bottom) / Math.max(points.length, 1);
-          return isHorizontal
-            ? <text key={`label-${point.x}`} x={left - 10} y={top + index * rowHeight + rowHeight / 2 + 4} textAnchor="end" fontSize="10" fill="#64748b">{point.label.length > 20 ? `${point.label.slice(0, 20)}…` : point.label}</text>
-            : <text key={`label-${point.x}`} x={point.x} y={height - 16} textAnchor="middle" fontSize="10" fill="#64748b">{point.label.length > 13 ? `${point.label.slice(0, 13)}…` : point.label}</text>;
-        })}
-      </svg></div>
+      <div className="flex items-start justify-between gap-3 border-b border-slate-100 px-5 py-4"><div className="flex min-w-0 items-start gap-2.5"><BarChart3 className="mt-0.5 size-4 shrink-0 text-blue-700" /><div className="min-w-0"><h3 className="break-words text-sm font-extrabold leading-5 text-slate-800">{component.title}</h3><p className="mt-1 text-[11px] text-slate-400">{metricColumns.map((column) => displayName(column, column.result_name)).join("、")} · {chartRowsLabel}</p></div></div><span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-400">{isLine ? "趋势" : "对比"}</span></div>
+      <div className="min-w-0 px-3 pb-3 pt-2" style={{ height: chartHeight }}><div ref={chartRef} className="h-full min-w-0 w-full" role="img" aria-label={component.title} /></div>
     </section>
   );
 }
@@ -921,7 +1044,7 @@ function ReportView({ report }: { report: RenderedReport }) {
     if (component.component_type === "text") return <article key={component.component_id} className="rounded-lg border-l-4 border-teal-600 bg-slate-50/80 px-5 py-4 text-sm leading-7 text-slate-700">{component.content}</article>;
     if (component.component_type === "kpi") return <ReportMetric key={component.component_id} component={component} />;
     if (component.component_type === "table") return <DynamicTable key={component.component_id} component={component} />;
-    return <DynamicChart key={component.component_id} component={component} />;
+    return <ReportChart key={component.component_id} component={component} />;
   };
   return (
     <section className="space-y-10">
