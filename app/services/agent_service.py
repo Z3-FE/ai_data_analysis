@@ -6,6 +6,7 @@
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from typing import Any
@@ -34,6 +35,7 @@ from app.repositories.qdrant.qa_meta_tables_repository import (
     MetaTablesSemanticRepository,
 )
 
+logger = logging.getLogger(__name__)
 SSE_HEARTBEAT_SECONDS = 15.0
 
 
@@ -198,11 +200,133 @@ class AgentService:
             "llm_output": result.get("llm_output", ""),
         }
 
+    @staticmethod
+    def _result_status(result: AgentState) -> str:
+        """把图结果映射成应用历史使用的轮次状态。"""
+        report = result.get("rendered_report")
+        if isinstance(report, dict):
+            report_status = report.get("status")
+            if report_status == "failed":
+                return "failed"
+            if report_status == "partial":
+                return "partial"
+            return "completed"
+        if result.get("execution_mode") == "clarification":
+            return "completed"
+        return "completed" if result.get("output_text") else "failed"
+
+    @staticmethod
+    def _history_output(result: AgentState) -> tuple[str, dict[str, Any], str]:
+        """提取历史需要的助手文本和可重渲染输出。
+
+        这里刻意只保存最终报告、澄清消息或受限的查询结果，不把 Agent State
+        中的 SQL、Python、完整执行事件和完整 rows 写入聊天历史。
+        """
+        report = result.get("rendered_report")
+        if isinstance(report, dict) and report:
+            content = str(report.get("summary") or report.get("title") or "报告已生成。")
+            return "rendered_report", report, content
+
+        if result.get("execution_mode") == "clarification":
+            content = str(
+                result.get("clarification_question")
+                or result.get("output_text")
+                or "请补充问题中的关键指标或范围。"
+            )
+            return "clarification", {"message": content}, content
+
+        rows = result.get("display_sql_result") or result.get("sql_result") or []
+        has_query_result = any(
+            field in result
+            for field in ("sql", "sql_result", "display_sql_result", "result_columns")
+        )
+        if has_query_result:
+            max_rows = 200
+            payload = {
+                "columns": result.get("result_columns", []),
+                "rows": rows[:max_rows],
+                "row_count": len(rows),
+                "truncated": len(rows) > max_rows,
+            }
+            return (
+                "query_result",
+                payload,
+                str(result.get("output_text") or "查询已完成。"),
+            )
+
+        content = result.get("output_text") or result.get("llm_output")
+        if content:
+            content = str(content)
+            return "text", {"message": content}, content
+
+        error = str(result.get("report_plan_error") or "Agent 执行失败。")
+        return "failure", {"message": error}, error
+
+    async def _save_turn_start(
+        self, input_text: str, identity: dict[str, str]
+    ) -> None:
+        """保存轮次开始和用户消息；历史写入失败不阻断 Agent 执行。"""
+        try:
+            await self.conversation_repository.start_turn(
+                conversation_id=identity["conversation_id"],
+                user_id=identity["user_id"],
+                thread_id=identity["thread_id"],
+                turn_id=identity["turn_id"],
+                run_id=identity["run_id"],
+                input_text=input_text,
+            )
+        except Exception:
+            logger.exception("会话轮次开始保存失败：turn_id=%s", identity["turn_id"])
+
+    async def _save_turn_finish(
+        self,
+        identity: dict[str, str],
+        result: AgentState,
+        *,
+        status: str | None = None,
+        error_message: str = "",
+    ) -> tuple[str, dict[str, Any], str]:
+        """保存助手最终消息和受控输出，并返回同一份前端事件内容。"""
+        output_type, output_payload, assistant_content = self._history_output(result)
+        final_status = status or self._result_status(result)
+        try:
+            await self.conversation_repository.finish_turn(
+                conversation_id=identity["conversation_id"],
+                user_id=identity["user_id"],
+                turn_id=identity["turn_id"],
+                execution_mode=result.get("execution_mode", "single_query"),
+                status=final_status,
+                assistant_content=assistant_content,
+                output_type=output_type,
+                output_payload=output_payload,
+                error_message=error_message,
+            )
+        except Exception:
+            logger.exception("会话轮次完成保存失败：turn_id=%s", identity["turn_id"])
+        return output_type, output_payload, assistant_content
+
     def run(self, input_text: str, conversation_id: str) -> dict:
         """同步执行当前 Agent 图并返回结构化结果。"""
         identity = self._new_identity(conversation_id)
         state: AgentState = AgentState(input_text=input_text, **identity)
-        result = asyncio.run(agent_graph.ainvoke(input=state, context=self._context()))
+        asyncio.run(self._save_turn_start(input_text, identity))
+        try:
+            result = asyncio.run(
+                agent_graph.ainvoke(input=state, context=self._context())
+            )
+        except Exception as exc:
+            failed_state: AgentState = {**state, "report_plan_error": str(exc)}
+            asyncio.run(
+                self._save_turn_finish(
+                    identity,
+                    failed_state,
+                    status="failed",
+                    error_message=str(exc),
+                )
+            )
+            raise
+        result = {**identity, **result}
+        asyncio.run(self._save_turn_finish(identity, result))
         return self._format_result(input_text, result)
 
     async def qyStream(
@@ -213,9 +337,16 @@ class AgentService:
         """以带心跳的 SSE 文本流返回当前 Agent 执行过程。"""
         identity = self._new_identity(conversation_id)
         state: AgentState = AgentState(input_text=input_text, **identity)
+        final_state: AgentState = state
 
         async def identity_events() -> AsyncIterator[dict[str, Any]]:
             """先发送运行身份，再转发当前图产生的原始业务事件。"""
+            nonlocal final_state
+            try:
+                await self._save_turn_start(input_text, identity)
+            except asyncio.CancelledError:
+                raise
+
             yield self._with_identity(
                 {
                     "type": "run.started",
@@ -226,16 +357,35 @@ class AgentService:
                 identity,
             )
             try:
-                async for event in agent_graph.astream(
+                async for stream_item in agent_graph.astream(
                     input=state,
                     context=self._context(),
-                    stream_mode="custom",
+                    stream_mode=["custom", "values"],
                 ):
-                    if isinstance(event, dict):
-                        yield self._with_identity(event, identity)
+                    if isinstance(stream_item, tuple) and len(stream_item) == 2:
+                        stream_mode, payload = stream_item
+                        if stream_mode == "custom" and isinstance(payload, dict):
+                            yield self._with_identity(payload, identity)
+                        elif stream_mode == "values" and isinstance(payload, dict):
+                            final_state = {**final_state, **payload}
+                    elif isinstance(stream_item, dict):
+                        if "type" in stream_item:
+                            yield self._with_identity(stream_item, identity)
+                        else:
+                            final_state = {**final_state, **stream_item}
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                failed_state: AgentState = {
+                    **final_state,
+                    "report_plan_error": str(exc),
+                }
+                await self._save_turn_finish(
+                    identity,
+                    failed_state,
+                    status="failed",
+                    error_message=str(exc),
+                )
                 yield self._with_identity(
                     {
                         "type": "run.failed",
@@ -248,12 +398,29 @@ class AgentService:
                 )
                 return
 
+            output_type, output_payload, assistant_content = await self._save_turn_finish(
+                identity, final_state
+            )
+            if assistant_content:
+                yield self._with_identity(
+                    {
+                        "type": "message.completed",
+                        "step": "生成回答",
+                        "node": "agent_service",
+                        "status": "success",
+                        "content": assistant_content,
+                        "output_type": output_type,
+                        "output": output_payload,
+                    },
+                    identity,
+                )
+
             yield self._with_identity(
                 {
                     "type": "run.completed",
                     "step": "执行完成",
                     "node": "agent_service",
-                    "status": "success",
+                    "status": self._result_status(final_state),
                 },
                 identity,
             )
