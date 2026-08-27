@@ -1,11 +1,11 @@
 import { proxyToFastApi } from "../_proxy";
 
 export async function GET(request: Request) {
-  /** 返回当前浏览器会话的轻量状态；会话 ID 通过 query 参数传递。 */
+  /** 返回当前聊天会话的轻量状态；会话 ID 通过 query 参数传递。 */
 
-  const sessionId = new URL(request.url).searchParams.get("session_id") || "";
+  const conversationId = new URL(request.url).searchParams.get("conversation_id") || "";
   return Response.json({
-    session_id: sessionId,
+    conversation_id: conversationId,
     status: "ready",
     execution_endpoint: "POST /api/analysis",
   });

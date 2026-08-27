@@ -1139,16 +1139,16 @@ function displayName(column: ReportColumn | undefined, fallback: string) {
   return column?.display_name || fallback;
 }
 
-async function* streamAgent(question: string, sessionId: string, signal: AbortSignal) {
+async function* streamAgent(question: string, conversationId: string, signal: AbortSignal) {
   // 调用固定 SSE 入口，会话 ID 通过参数传递，不进入 URL 路径。
-  const response = await fetch(`/api/analysis?session_id=${encodeURIComponent(sessionId)}`, {
+  const response = await fetch(`/api/analysis?conversation_id=${encodeURIComponent(conversationId)}`, {
     method: "POST",
     cache: "no-store",
     headers: {
       Accept: "text/event-stream",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ session_id: sessionId, input_text: question }),
+    body: JSON.stringify({ conversation_id: conversationId, input_text: question }),
     signal,
   });
   if (!response.ok || !response.body) {
@@ -2043,7 +2043,7 @@ function ExecutionPanel({ running, debugEvents }: { running: boolean; debugEvent
 export default function AnalysisWorkspace() {
   // 当前会话工作台：提交问题、接收执行事件并渲染唯一的最终报告。
   const [question, setQuestion] = useState("");
-  const [sessionId, setSessionId] = useState(FIXED_REPORT_MODE ? "fixed-report-debug" : "");
+  const [conversationId, setConversationId] = useState(FIXED_REPORT_MODE ? "fixed-report-debug" : "");
   const [sessionStatus, setSessionStatus] = useState(FIXED_REPORT_MODE ? "固定报告渲染调试" : "初始化会话");
   const [running, setRunning] = useState(false);
   const [report, setReport] = useState<RenderedReport | null>(FIXED_REPORT_MODE ? FIXED_RENDERED_REPORT : null);
@@ -2054,11 +2054,11 @@ export default function AnalysisWorkspace() {
   useEffect(() => {
     if (FIXED_REPORT_MODE) return;
     // 初始化当前浏览器会话，并通过 GET 读取工作台状态。
-    const storageKey = "insight-agent:session-id";
-    const currentSessionId = sessionStorage.getItem(storageKey) || crypto.randomUUID();
-    sessionStorage.setItem(storageKey, currentSessionId);
-    setSessionId(currentSessionId);
-    void fetch(`/api/analysis?session_id=${encodeURIComponent(currentSessionId)}`, { cache: "no-store", headers: { Accept: "application/json" } })
+    const storageKey = "insight-agent:conversation-id";
+    const currentConversationId = sessionStorage.getItem(storageKey) || crypto.randomUUID();
+    sessionStorage.setItem(storageKey, currentConversationId);
+    setConversationId(currentConversationId);
+    void fetch(`/api/analysis?conversation_id=${encodeURIComponent(currentConversationId)}`, { cache: "no-store", headers: { Accept: "application/json" } })
       .then(async (response) => {
         if (!response.ok) throw new Error("会话状态读取失败");
         const data = (await response.json()) as { status?: string };
@@ -2084,13 +2084,13 @@ export default function AnalysisWorkspace() {
     if (FIXED_REPORT_MODE) return;
     // 提交问题并消费主流程事件，最终只接受 rendered_report 作为正式产物。
     const normalizedQuestion = question.trim();
-    if (!normalizedQuestion || running || !sessionId) return;
+    if (!normalizedQuestion || running || !conversationId) return;
     resetOutput();
     setRunning(true);
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      for await (const event of streamAgent(normalizedQuestion, sessionId, controller.signal)) {
+      for await (const event of streamAgent(normalizedQuestion, conversationId, controller.signal)) {
         setDebugEvents((current) => upsertDebugEvent(current, event));
         if (event.type === "rendered_report" && event.rendered_report) setReport(event.rendered_report);
         if (event.type === "error") setError(String(event.message || event.error || "分析失败"));
@@ -2101,7 +2101,7 @@ export default function AnalysisWorkspace() {
       setRunning(false);
       abortRef.current = null;
     }
-  }, [question, resetOutput, running, sessionId]);
+  }, [conversationId, question, resetOutput, running]);
 
   const cancelQuestion = () => {
     // 中止当前 SSE 请求，保留已收到的执行信息。
@@ -2124,7 +2124,7 @@ export default function AnalysisWorkspace() {
                 {!FIXED_REPORT_MODE && <StatusBadge status={status} />}
               </div>
               <p className="mt-1 truncate text-xs text-slate-400">
-                {FIXED_REPORT_MODE ? "连续消息与报告富内容渲染调试" : sessionStatus + " · 会话 ID：" + (sessionId || "初始化中")}
+                {FIXED_REPORT_MODE ? "连续消息与报告富内容渲染调试" : sessionStatus + " · 会话 ID：" + (conversationId || "初始化中")}
               </p>
             </div>
             {!FIXED_REPORT_MODE && hasOutput && <Button type="button" variant="ghost" size="icon" onClick={() => { setQuestion(""); resetOutput(); }} title="新建当前会话"><RotateCcw className="size-4" /></Button>}
@@ -2140,7 +2140,7 @@ export default function AnalysisWorkspace() {
               {report && <ReportView report={report} />}
               {error && <div className="flex items-start gap-3 border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"><AlertCircle className="mt-0.5 size-4 shrink-0" /><span>{error}</span></div>}
             </div></div>
-            <div className="border-t border-slate-200 bg-white px-5 py-4 lg:px-8"><div className="mx-auto flex max-w-[1400px] gap-3"><Textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void runQuestion(); } }} placeholder="例如：找出2017年销售额下降最明显的月份，并分析该月份下降最多的商品类别和卖家地区。" className="min-h-12 max-h-32 resize-none bg-slate-50 text-sm focus-visible:bg-white" /><Button type="button" disabled={!question.trim() || running || !sessionId} onClick={() => void runQuestion()} className="h-12 w-12 shrink-0 p-0" title="发送问题">{running ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}</Button>{running && <Button type="button" variant="outline" onClick={cancelQuestion} className="h-12 w-12 shrink-0 p-0" title="停止分析"><XCircle className="size-4" /></Button>}</div></div>
+            <div className="border-t border-slate-200 bg-white px-5 py-4 lg:px-8"><div className="mx-auto flex max-w-[1400px] gap-3"><Textarea value={question} onChange={(event) => setQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void runQuestion(); } }} placeholder="例如：找出2017年销售额下降最明显的月份，并分析该月份下降最多的商品类别和卖家地区。" className="min-h-12 max-h-32 resize-none bg-slate-50 text-sm focus-visible:bg-white" /><Button type="button" disabled={!question.trim() || running || !conversationId} onClick={() => void runQuestion()} className="h-12 w-12 shrink-0 p-0" title="发送问题">{running ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}</Button>{running && <Button type="button" variant="outline" onClick={cancelQuestion} className="h-12 w-12 shrink-0 p-0" title="停止分析"><XCircle className="size-4" /></Button>}</div></div>
           </>
         )}
       </section>

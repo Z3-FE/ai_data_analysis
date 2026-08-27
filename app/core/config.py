@@ -22,6 +22,7 @@ class AppConfig:
 
     name: str
     version: str
+    default_user_id: str
 
 
 @dataclass(frozen=True)

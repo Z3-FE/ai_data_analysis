@@ -4,6 +4,8 @@
 app:
   name: AI Data Analysis
   version: 0.1.0
+  # 当前尚未接入登录系统，服务端使用这个开发用户标识；正式认证接入后替换来源。
+  default_user_id: dev-user
 
 mysql:
   host: 127.0.0.1

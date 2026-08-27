@@ -9,6 +9,7 @@ import json
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from typing import Any
+from uuid import uuid4
 
 from app.agent.context import AgentContext
 from app.agent.graph import agent_graph
@@ -122,11 +123,30 @@ class AgentService:
             llm_timeout_seconds=settings.llm.timeout_seconds,
         )
 
+    def _new_identity(self, conversation_id: str) -> dict[str, str]:
+        """为一次 Agent 执行生成轮次身份，并固定线程与会话的映射。"""
+        return {
+            "user_id": settings.app.default_user_id,
+            "conversation_id": conversation_id,
+            "thread_id": conversation_id,
+            "turn_id": str(uuid4()),
+            "run_id": str(uuid4()),
+        }
+
+    @staticmethod
+    def _with_identity(event: dict[str, Any], identity: dict[str, str]) -> dict[str, Any]:
+        """给所有业务 SSE 事件补充本轮身份，节点不需要重复拼接。"""
+        return {**event, **identity}
+
     def _format_result(self, input_text: str, result: AgentState) -> dict:
         """把图执行结果整理成接口响应结构。"""
         return {
             "input_text": input_text,
-            "session_id": result.get("session_id", ""),
+            "user_id": result.get("user_id", settings.app.default_user_id),
+            "conversation_id": result.get("conversation_id", ""),
+            "thread_id": result.get("thread_id", result.get("conversation_id", "")),
+            "turn_id": result.get("turn_id", ""),
+            "run_id": result.get("run_id", ""),
             "original_question": result.get("original_question", input_text),
             "execution_mode": result.get("execution_mode", "single_query"),
             "route_reason": result.get("route_reason", ""),
@@ -175,23 +195,65 @@ class AgentService:
             "llm_output": result.get("llm_output", ""),
         }
 
-    def run(self, input_text: str, session_id: str = "") -> dict:
+    def run(self, input_text: str, conversation_id: str) -> dict:
         """同步执行当前 Agent 图并返回结构化结果。"""
-        state: AgentState = AgentState(input_text=input_text, session_id=session_id)
+        identity = self._new_identity(conversation_id)
+        state: AgentState = AgentState(input_text=input_text, **identity)
         result = asyncio.run(agent_graph.ainvoke(input=state, context=self._context()))
         return self._format_result(input_text, result)
 
     async def qyStream(
         self,
         input_text: str,
-        session_id: str = "",
+        conversation_id: str,
     ) -> AsyncIterator[str]:
         """以带心跳的 SSE 文本流返回当前 Agent 执行过程。"""
-        state: AgentState = AgentState(input_text=input_text, session_id=session_id)
-        events = agent_graph.astream(
-            input=state,
-            context=self._context(),
-            stream_mode="custom",
-        )
-        async for payload in _stream_sse_with_heartbeat(events):
+        identity = self._new_identity(conversation_id)
+        state: AgentState = AgentState(input_text=input_text, **identity)
+
+        async def identity_events() -> AsyncIterator[dict[str, Any]]:
+            """先发送运行身份，再转发当前图产生的原始业务事件。"""
+            yield self._with_identity(
+                {
+                    "type": "run.started",
+                    "step": "开始执行",
+                    "node": "agent_service",
+                    "status": "running",
+                },
+                identity,
+            )
+            try:
+                async for event in agent_graph.astream(
+                    input=state,
+                    context=self._context(),
+                    stream_mode="custom",
+                ):
+                    if isinstance(event, dict):
+                        yield self._with_identity(event, identity)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                yield self._with_identity(
+                    {
+                        "type": "run.failed",
+                        "step": "执行失败",
+                        "node": "agent_service",
+                        "status": "failed",
+                        "message": str(exc),
+                    },
+                    identity,
+                )
+                return
+
+            yield self._with_identity(
+                {
+                    "type": "run.completed",
+                    "step": "执行完成",
+                    "node": "agent_service",
+                    "status": "success",
+                },
+                identity,
+            )
+
+        async for payload in _stream_sse_with_heartbeat(identity_events()):
             yield payload

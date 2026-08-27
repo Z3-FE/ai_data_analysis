@@ -193,7 +193,7 @@ async function* streamAnalysisEvents(
     },
     body: JSON.stringify({
       conversation_id: conversationId,
-      question,
+      input_text: question,
     }),
     signal: abortSignal,
   });
@@ -727,7 +727,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       <aside className="w-[360px] bg-white shrink-0 flex flex-col">
         <div className="p-5 border-b border-slate-200">
           <h3 className="text-sm font-extrabold text-slate-900">执行详情</h3>
-          <p className="text-xs text-slate-500 mt-1">Phase 4 + Phase 6 最小链路事件</p>
+          <p className="text-xs text-slate-500 mt-1">当前会话的 Agent 运行事件</p>
         </div>
 
         <div className="p-5 space-y-4 overflow-y-auto">

@@ -11,7 +11,11 @@ class AgentState(TypedDict, total=False):
 """
 
     input_text: str
-    session_id: str
+    user_id: str
+    conversation_id: str
+    thread_id: str
+    turn_id: str
+    run_id: str
     original_question: str
 
     # 问题路由和分析计划字段。

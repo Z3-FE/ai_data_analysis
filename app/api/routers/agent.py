@@ -16,14 +16,18 @@ class AgentRunRequest(BaseModel):
     """当前聊天工作台提交给 Agent 的请求体。"""
 
     input_text: str = Field(..., description="输入给 Agent 的文本")
-    session_id: str = Field(default="", description="当前聊天会话 ID")
+    conversation_id: str = Field(..., description="当前聊天会话 ID")
 
 
 class AgentRunResponse(BaseModel):
     """最小 Agent 响应体。"""
 
     input_text: str
-    session_id: str = ""
+    user_id: str
+    conversation_id: str
+    thread_id: str
+    turn_id: str
+    run_id: str
     original_question: str
     execution_mode: str = "single_query"
     route_reason: str = ""
@@ -60,7 +64,7 @@ def run_agent(
     agent_service: Annotated[AgentService, Depends(get_agent_service)],
 ) -> AgentRunResponse:
     """执行当前 LangGraph 并返回结果。"""
-    result = agent_service.run(payload.input_text, payload.session_id)
+    result = agent_service.run(payload.input_text, payload.conversation_id)
     return AgentRunResponse.model_validate(result)
 
 
@@ -71,7 +75,7 @@ async def run_agent_stream(
 ) -> StreamingResponse:
     """以 SSE 形式返回 Agent 结果。"""
     return StreamingResponse(
-        agent_service.qyStream(payload.input_text, payload.session_id),
+        agent_service.qyStream(payload.input_text, payload.conversation_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
