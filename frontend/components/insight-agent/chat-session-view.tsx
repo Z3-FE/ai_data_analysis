@@ -588,6 +588,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
   const [executionTraceLoading, setExecutionTraceLoading] = useState(false);
   const [executionTraceError, setExecutionTraceError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
+  const [activeRunTurnId, setActiveRunTurnId] = useState<string>();
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const pendingStartedRef = useRef(false);
@@ -659,6 +660,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       setActiveExecutionTurnId(undefined);
       setExecutionTraceLoading(false);
       setExecutionTraceError("");
+      setActiveRunTurnId(undefined);
       executionTraceRequestRef.current += 1;
       setIsRunning(true);
       setMessages((current) => [...current, userMessage, assistantMessage]);
@@ -735,12 +737,24 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
 
           if (runEvent.type === "run.started" && typeof payload.turn_id === "string") {
             currentTurnId = payload.turn_id;
+            setActiveRunTurnId(payload.turn_id);
           }
 
           if (runEvent.type === "question_route") {
             const mode = asExecutionMode(payload.execution_mode);
             if (mode) {
               setExecutionMode(mode);
+              if (currentTurnId && (mode === "analysis" || mode === "single_query")) {
+                responseMeta = {
+                  turn_id: currentTurnId,
+                  execution_mode: mode,
+                  response_type: mode === "analysis" ? "analysis" : "simple_data",
+                  assistant_text: assistantText,
+                  status: "running",
+                  elapsed_seconds: Math.max(0, (Date.now() - startedAt) / 1000),
+                };
+                updateAssistantMessage(visibleAssistantText, { type: "running" });
+              }
             }
           }
 
@@ -843,6 +857,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
         if (activeAbortControllerRef.current === abortController) {
           activeAbortControllerRef.current = null;
         }
+        setActiveRunTurnId(undefined);
         setIsRunning(false);
       }
     },
@@ -876,6 +891,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
     setActiveExecutionTurnId(undefined);
     setExecutionTraceLoading(false);
     setExecutionTraceError("");
+    setActiveRunTurnId(undefined);
     executionTraceRequestRef.current += 1;
     pendingStartedRef.current = false;
     activeAbortControllerRef.current?.abort();
@@ -918,6 +934,11 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
     setExecutionTraceError("");
     setExecutionPanelOpen(true);
 
+    if (turnId && turnId === activeRunTurnId && isRunning) {
+      setExecutionTraceLoading(false);
+      return;
+    }
+
     if (!turnId) {
       setDebugEvents([]);
       setExecutionTraceLoading(false);
@@ -959,7 +980,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
           setExecutionTraceLoading(false);
         }
       });
-  }, [activeExecutionTurnId, conversationId, executionPanelOpen]);
+  }, [activeExecutionTurnId, activeRunTurnId, conversationId, executionPanelOpen, isRunning]);
 
   return (
     <ExecutionProcessContext.Provider
