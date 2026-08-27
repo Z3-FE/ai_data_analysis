@@ -204,7 +204,7 @@ class AgentService:
     def _result_status(result: AgentState) -> str:
         """把图结果映射成应用历史使用的轮次状态。"""
         report = result.get("rendered_report")
-        if isinstance(report, dict):
+        if isinstance(report, dict) and report:
             report_status = report.get("status")
             if report_status == "failed":
                 return "failed"
@@ -214,6 +214,12 @@ class AgentService:
         if result.get("execution_mode") == "clarification":
             return "completed"
         return "completed" if result.get("output_text") else "failed"
+
+    @classmethod
+    def _message_status(cls, result: AgentState) -> str:
+        """把内部轮次状态转换成消息完成事件使用的状态。"""
+        status = cls._result_status(result)
+        return "success" if status == "completed" else status
 
     @staticmethod
     def _history_output(result: AgentState) -> tuple[str, dict[str, Any], str]:
@@ -307,26 +313,26 @@ class AgentService:
 
     def run(self, input_text: str, conversation_id: str) -> dict:
         """同步执行当前 Agent 图并返回结构化结果。"""
+        return asyncio.run(self._run_async(input_text, conversation_id))
+
+    async def _run_async(self, input_text: str, conversation_id: str) -> dict:
+        """在同一个事件循环内完成同步接口使用的完整轮次生命周期。"""
         identity = self._new_identity(conversation_id)
         state: AgentState = AgentState(input_text=input_text, **identity)
-        asyncio.run(self._save_turn_start(input_text, identity))
+        await self._save_turn_start(input_text, identity)
         try:
-            result = asyncio.run(
-                agent_graph.ainvoke(input=state, context=self._context())
-            )
+            result = await agent_graph.ainvoke(input=state, context=self._context())
         except Exception as exc:
             failed_state: AgentState = {**state, "report_plan_error": str(exc)}
-            asyncio.run(
-                self._save_turn_finish(
-                    identity,
-                    failed_state,
-                    status="failed",
-                    error_message=str(exc),
-                )
+            await self._save_turn_finish(
+                identity,
+                failed_state,
+                status="failed",
+                error_message=str(exc),
             )
             raise
         result = {**identity, **result}
-        asyncio.run(self._save_turn_finish(identity, result))
+        await self._save_turn_finish(identity, result)
         return self._format_result(input_text, result)
 
     async def qyStream(
@@ -407,7 +413,7 @@ class AgentService:
                         "type": "message.completed",
                         "step": "生成回答",
                         "node": "agent_service",
-                        "status": "success",
+                        "status": self._message_status(final_state),
                         "content": assistant_content,
                         "output_type": output_type,
                         "output": output_payload,

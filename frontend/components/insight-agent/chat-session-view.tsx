@@ -25,6 +25,7 @@ import {
   User,
 } from "lucide-react";
 import { apiGet } from "../../lib/api";
+import { ReportView, type RenderedReport } from "./analysis-workspace";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 
 interface ChatSessionViewProps {
@@ -99,7 +100,45 @@ interface BackendMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  turn_id?: string;
   created_at?: string;
+}
+
+interface BackendTurn {
+  turn_id: string;
+  status?: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
+interface BackendOutput {
+  turn_id: string;
+  output_type: string;
+  payload?: Record<string, unknown>;
+}
+
+interface QueryResultPayload {
+  columns?: Array<string | { result_name?: string; display_name?: string }>;
+  rows?: Array<Record<string, unknown>>;
+  row_count?: number;
+  truncated?: boolean;
+}
+
+interface ConversationHistoryData {
+  conversation?: Record<string, unknown>;
+  messages?: BackendMessage[];
+  turns?: BackendTurn[];
+  outputs?: BackendOutput[];
+}
+
+interface ConversationTurnMeta {
+  response_type: "chat" | "simple_data" | "analysis" | "clarification" | "failure";
+  assistant_text: string;
+  output_type?: string;
+  status?: string;
+  elapsed_seconds: number;
+  rendered_report?: RenderedReport;
+  query_result?: QueryResultPayload;
 }
 
 interface AssistantChatRuntimeProps {
@@ -146,6 +185,127 @@ function getMessageText(message: ThreadMessage | ThreadMessageLike) {
     .join("");
 }
 
+function conversationMeta(message: ThreadMessage | ThreadMessageLike) {
+  /** 读取会话历史中挂载的富内容输出元数据。 */
+
+  const value = message.metadata?.custom?.conversation;
+  if (!value || typeof value !== "object") return undefined;
+  return value as ConversationTurnMeta;
+}
+
+function outputResponseType(outputType?: string): ConversationTurnMeta["response_type"] {
+  /** 将后端输出类型映射为聊天消息的富内容类型。 */
+
+  if (outputType === "rendered_report") return "analysis";
+  if (outputType === "query_result") return "simple_data";
+  if (outputType === "clarification") return "clarification";
+  if (outputType === "failure") return "failure";
+  return "chat";
+}
+
+function buildConversationMeta(
+  content: string,
+  outputType?: string,
+  payload: Record<string, unknown> = {},
+  turn?: BackendTurn,
+  elapsedSecondsOverride?: number,
+): ConversationTurnMeta | undefined {
+  /** 让实时消息和历史消息使用同一份富内容元数据结构。 */
+
+  if (!outputType) return undefined;
+  const elapsedSeconds = typeof elapsedSecondsOverride === "number"
+    ? elapsedSecondsOverride
+    : turn?.started_at && turn.completed_at
+    ? Math.max(0, (new Date(turn.completed_at).getTime() - new Date(turn.started_at).getTime()) / 1000)
+    : 0;
+  return {
+    response_type: outputResponseType(outputType),
+    assistant_text: content,
+    output_type: outputType,
+    status: turn?.status,
+    elapsed_seconds: elapsedSeconds,
+    rendered_report: outputType === "rendered_report" ? payload as unknown as RenderedReport : undefined,
+    query_result: outputType === "query_result" ? payload as QueryResultPayload : undefined,
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  /** 只把事件中的 JSON 对象作为富内容载荷交给渲染器。 */
+
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function formatQueryCell(value: unknown) {
+  /** 将简单问数结果中的单元格转换成可读文本，不改变后端原始值。 */
+
+  if (value === null || value === undefined || value === "") return "--";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function QueryResultView({ result }: { result: QueryResultPayload }) {
+  /** 恢复渲染历史中的轻量问数结果，完整结果仍由后端查询链路负责。 */
+
+  const columns = result.columns ?? [];
+  const rows = result.rows ?? [];
+  const columnDefs = columns.length
+    ? columns.map((column, index) => {
+        if (typeof column === "string") return { key: column, label: column };
+        const fallback = "字段_" + String(index + 1);
+        return {
+          key: column.result_name ?? column.display_name ?? fallback,
+          label: column.display_name ?? column.result_name ?? fallback,
+        };
+      })
+    : Object.keys(rows[0] ?? {}).map((column) => ({ key: column, label: column }));
+
+  if (!rows.length) {
+    return (
+      <div className="mt-4 border-l-2 border-blue-200 pl-4 text-sm text-slate-500">
+        查询完成，未返回数据行。
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-5 overflow-hidden rounded-xl border border-slate-200 bg-white">
+      <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+        <span className="text-xs font-bold text-slate-700">查询结果</span>
+        <span className="text-[11px] text-slate-400">
+          展示 {rows.length} / {result.row_count ?? rows.length} 行
+          {result.truncated ? " · 已截取预览" : ""}
+        </span>
+      </div>
+      <div className="max-h-[360px] overflow-auto">
+        <table className="min-w-full text-left text-xs">
+          <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] font-bold text-slate-500">
+            <tr>
+              {columnDefs.map((column) => (
+                <th key={column.key} className="whitespace-nowrap border-b border-slate-100 px-4 py-2.5">
+                  {column.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {rows.map((row, rowIndex) => (
+              <tr key={rowIndex} className="hover:bg-slate-50">
+                {columnDefs.map((column) => (
+                  <td key={column.key} className="whitespace-nowrap px-4 py-2.5 font-mono text-slate-600">
+                    {formatQueryCell(row[column.key])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function getDisplayMessageText(message: ThreadMessage | ThreadMessageLike) {
   /** 生成最终展示文本，并去掉流式结束后可能残留的独立圆点。 */
 
@@ -154,14 +314,23 @@ function getDisplayMessageText(message: ThreadMessage | ThreadMessageLike) {
   return getMessageText(message).replace(/\s+[●•]\s*$/, "");
 }
 
-function toAssistantMessage(message: BackendMessage): ThreadMessageLike {
-  /** 把后端消息模型转换为 assistant-ui 可渲染的消息结构。 */
+function toAssistantMessage(
+  message: BackendMessage,
+  output?: BackendOutput,
+  turn?: BackendTurn,
+): ThreadMessageLike {
+  /** 把消息和同一轮的结构化输出合并为可恢复的 assistant-ui 消息。 */
+  const payload = output?.payload ?? {};
+  const conversation = output && message.role === "assistant"
+    ? buildConversationMeta(message.content, output.output_type, payload, turn)
+    : undefined;
 
   return {
     id: message.id,
     role: message.role,
     content: [{ type: "text", text: message.content }],
     createdAt: message.created_at ? new Date(message.created_at) : new Date(),
+    ...(conversation ? { metadata: { custom: { conversation } } } : {}),
   };
 }
 
@@ -277,6 +446,7 @@ function AssistantMessageBubble() {
   const threadIsRunning = useAuiState((state) => state.thread.isRunning);
   const lastMessageId = useAuiState((state) => state.thread.messages.at(-1)?.id);
   const isUser = message.role === "user";
+  const meta = conversationMeta(message);
   const displayText = getDisplayMessageText(message);
   const showStreamingCursor =
     threadIsRunning &&
@@ -285,16 +455,16 @@ function AssistantMessageBubble() {
     message.status?.type === "running";
 
   return (
-    <MessagePrimitive.Root className={`flex gap-3 ${isUser ? "justify-end" : "justify-start"}`}>
+    <MessagePrimitive.Root className={`w-full flex gap-3 ${isUser ? "justify-end" : "justify-start"}`}>
       {!isUser && (
         <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0">
           <Bot className="w-4 h-4" />
         </div>
       )}
 
-      <div className={`max-w-[70%] ${isUser ? "items-end" : "items-start"} flex flex-col`}>
+      <div className={`${isUser ? "max-w-[70%]" : "w-full min-w-0"} ${isUser ? "items-end" : "items-start"} flex flex-col`}>
         <div
-          className={`rounded-2xl px-4 py-3 text-sm leading-6 whitespace-pre-wrap ${isUser
+          className={`rounded-2xl px-4 py-3 text-sm leading-6 whitespace-pre-wrap ${!isUser ? "max-w-[70%]" : ""} ${isUser
               ? "bg-blue-600 text-white shadow-sm"
               : "bg-white text-slate-700 border border-slate-200 shadow-sm"
             }`}
@@ -307,6 +477,12 @@ function AssistantMessageBubble() {
         <span className="text-[10px] text-slate-400 mt-1 px-1">
           {formatTime(message.createdAt)}
         </span>
+        {meta?.query_result && <QueryResultView result={meta.query_result} />}
+        {meta?.rendered_report && (
+          <div className="mt-6 w-full min-w-0">
+            <ReportView report={meta.rendered_report} />
+          </div>
+        )}
       </div>
 
       {isUser && (
@@ -384,14 +560,35 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
   const loadConversation = useCallback(async () => {
     /** 同时拉取会话详情和消息列表，用于刷新标题与聊天记录。 */
 
-    const data = await apiGet("/api/conversations", {
-      conversation_id: conversationId,
-      include_messages: true,
-    });
+    try {
+      const data = await apiGet("/api/conversations", {
+        conversation_id: conversationId,
+        include_messages: true,
+      });
+      const history = data as ConversationHistoryData;
+      const turnsById = new Map(
+        (history.turns ?? []).map((turn) => [turn.turn_id, turn]),
+      );
+      const outputsByTurnId = new Map(
+        (history.outputs ?? []).map((output) => [output.turn_id, output]),
+      );
 
-    setConversation(data.conversation);
-    setMessages((data.messages ?? []).map(toAssistantMessage));
-    setIsLoading(false);
+      setConversation(history.conversation ?? null);
+      setMessages(
+        (history.messages ?? []).map((message) =>
+          toAssistantMessage(
+            message,
+            message.turn_id ? outputsByTurnId.get(message.turn_id) : undefined,
+            message.turn_id ? turnsById.get(message.turn_id) : undefined,
+          ),
+        ),
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "无法加载会话历史";
+      setError(`会话历史加载失败：${message}`);
+    } finally {
+      setIsLoading(false);
+    }
   }, [conversationId]);
 
   const sendQuestion = useCallback(
@@ -435,6 +632,9 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       let visibleAssistantText = "";
       let failedMessage = "";
       let typewriterRunning = false;
+      let responseMeta: ConversationTurnMeta | undefined;
+      const startedAt = Date.now();
+      let terminalEventReceived = false;
 
       const updateAssistantMessage = (text: string, status: ThreadMessageLike["status"]) => {
         /** 更新本地 assistant 消息，用于打字机逐步刷新气泡内容。 */
@@ -446,6 +646,9 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
                   ...message,
                   content: [{ type: "text", text }],
                   status,
+                  ...(responseMeta
+                    ? { metadata: { custom: { conversation: responseMeta } } }
+                    : {}),
                 } as ThreadMessageLike)
               : message,
           ),
@@ -490,7 +693,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
           normalizedQuestion,
           abortController.signal,
         )) {
-          const payload = runEvent.data ?? {};
+          const payload = runEvent;
 
           if (runEvent.type === "run.started" && payload.run_id) {
             setActiveRunId(payload.run_id);
@@ -517,6 +720,17 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
             );
           }
 
+          if (runEvent.type === "step.failed") {
+            setSteps((current) =>
+              upsertStep(current, {
+                step: payload.step,
+                name: payload.name,
+                status: "failed",
+                summary: payload.summary ?? payload.message,
+              }),
+            );
+          }
+
           if (runEvent.type === "message.delta" && payload.content) {
             assistantText += payload.content;
             void drainTypewriter();
@@ -524,6 +738,16 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
 
           if (runEvent.type === "message.completed" && payload.content) {
             assistantText = payload.content;
+            const outputType = typeof payload.output_type === "string"
+              ? payload.output_type
+              : undefined;
+            responseMeta = buildConversationMeta(
+              assistantText,
+              outputType,
+              asRecord(payload.output),
+              undefined,
+              Math.max(0, (Date.now() - startedAt) / 1000),
+            );
             void drainTypewriter();
           }
 
@@ -590,16 +814,29 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
           }
 
           if (runEvent.type === "run.completed") {
+            terminalEventReceived = true;
             await waitForTypewriterIdle();
             updateAssistantMessage(assistantText, { type: "complete", reason: "stop" });
             setIsRunning(false);
-            await loadConversation();
+            try {
+              await loadConversation();
+            } catch {
+              // 历史刷新失败时保留刚刚完成的本地消息，避免误报为运行失败。
+            }
             notifyConversationsChanged();
             break;
           }
 
           if (runEvent.type === "run.failed") {
+            terminalEventReceived = true;
             failedMessage = payload.message ?? "运行失败";
+            responseMeta = buildConversationMeta(
+              failedMessage,
+              "failure",
+              { message: failedMessage },
+              undefined,
+              Math.max(0, (Date.now() - startedAt) / 1000),
+            );
             break;
           }
         }
@@ -607,12 +844,42 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
         if (failedMessage) {
           setError(failedMessage);
           updateAssistantMessage(failedMessage, { type: "incomplete", reason: "error" });
+          await loadConversation();
+          notifyConversationsChanged();
+        } else if (!terminalEventReceived) {
+          const message = "执行连接已结束，但没有收到最终状态。";
+          setError(message);
+          responseMeta = buildConversationMeta(
+            message,
+            "failure",
+            { message },
+            undefined,
+            Math.max(0, (Date.now() - startedAt) / 1000),
+          );
+          updateAssistantMessage(message, { type: "incomplete", reason: "error" });
+          try {
+            await loadConversation();
+          } catch {
+            // 历史刷新失败时保留本地终态消息，避免覆盖可见错误。
+          }
         }
       } catch (err) {
         if (!abortController.signal.aborted) {
           const message = err instanceof Error ? err.message : "运行失败";
           setError(message);
+          responseMeta = buildConversationMeta(
+            message,
+            "failure",
+            { message },
+            undefined,
+            Math.max(0, (Date.now() - startedAt) / 1000),
+          );
           updateAssistantMessage(message, { type: "incomplete", reason: "error" });
+          try {
+            await loadConversation();
+          } catch {
+            // 历史刷新失败时保留本地终态消息，避免覆盖可见错误。
+          }
         }
       } finally {
         if (activeAbortControllerRef.current === abortController) {

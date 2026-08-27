@@ -108,7 +108,7 @@ interface ReportSection {
   components: ReportComponent[];
 }
 
-interface RenderedReport {
+export interface RenderedReport {
   status: "success" | "partial" | "failed";
   title: string;
   summary: string;
@@ -1476,7 +1476,7 @@ function groupReportComponents(components: ReportComponent[]): ReportBlock[] {
   return blocks;
 }
 
-function ReportView({ report }: { report: RenderedReport }) {
+export function ReportView({ report }: { report: RenderedReport }) {
   // 由前端统一组织报告层级，LLM 只提供内容和组件意图。
   const renderComponent = (component: ReportComponent) => {
     if (component.binding_status === "failed") return <ReportBindingError key={component.component_id} component={component} />;
