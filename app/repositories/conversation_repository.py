@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import desc, select
+from sqlalchemy import delete, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.agent_history import (
@@ -346,3 +346,34 @@ class ConversationRepository:
                 "messages": [self._message_dict(message) for message in messages],
                 "outputs": [self._output_dict(output) for output in outputs],
             }
+
+    async def delete_conversation(self, user_id: str, conversation_id: str) -> bool:
+        """删除当前用户的会话及其级联历史数据。"""
+        async with self.session_factory() as session:
+            conversation = await session.scalar(
+                select(ConversationModel).where(
+                    ConversationModel.conversation_id == conversation_id,
+                    ConversationModel.user_id == user_id,
+                )
+            )
+            if conversation is None:
+                return False
+
+            await session.execute(
+                delete(TurnOutputModel).where(
+                    TurnOutputModel.conversation_id == conversation_id
+                )
+            )
+            await session.execute(
+                delete(ConversationMessageModel).where(
+                    ConversationMessageModel.conversation_id == conversation_id
+                )
+            )
+            await session.execute(
+                delete(ConversationTurnModel).where(
+                    ConversationTurnModel.conversation_id == conversation_id
+                )
+            )
+            await session.delete(conversation)
+            await session.commit()
+            return True

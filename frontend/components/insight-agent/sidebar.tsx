@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   BookOpen,
   CheckSquare,
@@ -15,9 +15,10 @@ import {
   Search,
   Sliders,
   Tags,
+  Trash2,
   User,
 } from "lucide-react";
-import { apiGet, invalidateApiCache } from "../../lib/api";
+import { apiDelete, apiGet, invalidateApiCache } from "../../lib/api";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
@@ -66,12 +67,14 @@ export default function Sidebar() {
   /** 左侧导航栏：展示新建会话、历史会话、数据源和语义资产入口。 */
 
   const pathname = usePathname();
+  const router = useRouter();
   const [semanticExpanded, setSemanticExpanded] = useState(true);
   const [historyExpanded, setHistoryExpanded] = useState(true);
   const [searchHistory, setSearchHistory] = useState("");
   const [conversations, setConversations] = useState<SidebarConversation[]>([]);
   const [isLoadingConversations, setIsLoadingConversations] = useState(true);
   const [conversationError, setConversationError] = useState("");
+  const [deletingConversationId, setDeletingConversationId] = useState<string | null>(null);
 
   const activeConversationId = pathname.startsWith("/sessions/")
     ? decodeURIComponent(pathname.split("/").filter(Boolean).at(-1) ?? "")
@@ -111,6 +114,35 @@ export default function Sidebar() {
   const filteredConversations = conversations.filter((conversation) =>
     conversation.title.toLowerCase().includes(searchHistory.toLowerCase()),
   );
+
+  const handleDeleteConversation = async (
+    event: React.MouseEvent<HTMLButtonElement>,
+    conversation: SidebarConversation,
+  ) => {
+    event.stopPropagation();
+    if (deletingConversationId) return;
+
+    const confirmed = window.confirm("确定删除会话“" + conversation.title + "”吗？删除后无法恢复。");
+    if (!confirmed) return;
+
+    try {
+      setDeletingConversationId(conversation.conversation_id);
+      await apiDelete("/api/conversations", {
+        conversation_id: conversation.conversation_id,
+      });
+      setConversations((current) =>
+        current.filter((item) => item.conversation_id !== conversation.conversation_id),
+      );
+
+      if (activeConversationId === conversation.conversation_id) {
+        router.push("/");
+      }
+    } catch (error) {
+      setConversationError(error instanceof Error ? error.message : "会话删除失败");
+    } finally {
+      setDeletingConversationId(null);
+    }
+  };
 
   const navItemClass = (isActive: boolean) =>
     /** 根据是否激活生成一级导航项样式。 */
@@ -206,20 +238,41 @@ export default function Sidebar() {
                     const timeText = formatConversationTime(conversation.updated_at ?? conversation.created_at);
 
                     return (
-                      <Link
+                      <div
                         key={conversation.conversation_id}
-                        href={`/sessions/${conversation.conversation_id}`}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => router.push("/sessions/" + conversation.conversation_id)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            router.push("/sessions/" + conversation.conversation_id);
+                          }
+                        }}
                         className={cn(
-                          "w-full text-left py-2 px-2.5 rounded-lg flex items-center justify-between group transition-all text-xs font-medium",
+                          "w-full cursor-pointer rounded-lg flex items-center gap-1 group transition-all text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40",
                           isActive
                             ? "bg-blue-50 text-blue-600 border border-blue-100"
                             : "text-slate-600 hover:bg-slate-200/50 hover:text-slate-800",
                         )}
                       >
-                        <span className="truncate max-w-[140px] font-sans font-medium">{conversation.title}</span>
-                        <span className="text-[10px] text-slate-400 group-hover:hidden">{timeText}</span>
-                        <span className="text-[10px] hidden group-hover:inline text-blue-600">打开</span>
-                      </Link>
+                        <div className="min-w-0 flex-1 py-2 px-2.5" title={conversation.title}>
+                          <span className="block truncate font-sans font-medium">{conversation.title}</span>
+                        </div>
+                        <span className="shrink-0 text-[10px] text-slate-400">{timeText}</span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-xs"
+                          onClick={(event) => void handleDeleteConversation(event, conversation)}
+                          disabled={deletingConversationId !== null}
+                          aria-label={"删除会话：" + conversation.title}
+                          title="删除会话"
+                          className="mr-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                        >
+                          <Trash2 />
+                        </Button>
+                      </div>
                     );
                   })}
 

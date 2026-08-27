@@ -63,3 +63,18 @@ async def get_conversations(
             user_id=settings.app.default_user_id
         )
     }
+
+
+@router.delete("")
+async def delete_conversation(
+    repository: Annotated[ConversationRepository, Depends(get_conversation_repository)],
+    conversation_id: str = Query(...),
+) -> dict:
+    """删除当前用户的会话及其历史内容。"""
+    deleted = await repository.delete_conversation(
+        user_id=settings.app.default_user_id,
+        conversation_id=conversation_id,
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return {"conversation_id": conversation_id, "deleted": True}

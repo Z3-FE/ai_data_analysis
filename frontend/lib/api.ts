@@ -125,3 +125,23 @@ export async function apiPost(path: string, body: unknown): Promise<any> {
 
   return data;
 }
+
+export async function apiDelete(path: string, query: ApiQuery = {}): Promise<any> {
+  /** 删除资源并清理前端 GET 缓存，避免历史列表继续显示已删除会话。 */
+  const response = await fetch(buildApiUrl(path, query), {
+    method: "DELETE",
+    cache: "no-store",
+    headers: {
+      Accept: "application/json",
+    },
+  });
+  const data = await readResponseBody(response);
+
+  if (!response.ok) {
+    throw new Error(getResponseError(data, response.status));
+  }
+
+  invalidateApiCache();
+
+  return data;
+}
