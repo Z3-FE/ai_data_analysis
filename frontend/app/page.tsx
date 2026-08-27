@@ -1,7 +1,7 @@
-import AnalysisWorkspace from "@/components/insight-agent/analysis-workspace";
+import HomeView from "@/components/insight-agent/home-view";
 
 export default function HomePage() {
-  /** 固定首页直接承载当前会话，避免通过动态 URL 切换分析上下文。 */
+  /** 首页承载真实的新建会话流程，由 HomeView 创建会话后进入详情页。 */
 
-  return <AnalysisWorkspace />;
+  return <HomeView />;
 }

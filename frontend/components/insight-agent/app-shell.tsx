@@ -4,7 +4,6 @@ import React from "react";
 import { Bell, ChevronDown, HelpCircle } from "lucide-react";
 import { usePathname } from "next/navigation";
 import Sidebar from "./sidebar";
-import { mockConversations } from "../../data/insight-agent";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -37,10 +36,8 @@ function getRouteMeta(pathname: string): RouteMeta {
   }
 
   if (pathname.startsWith("/sessions/")) {
-    const sessionId = decodeURIComponent(pathname.split("/").filter(Boolean).at(-1) ?? "");
-    const conversation = mockConversations.find((item) => item.id === sessionId);
     return {
-      routeLabel: `分析画布 / ${conversation?.title ?? "新建分析"}`,
+      routeLabel: "分析画布",
       moduleName: "分析运行模块",
       moduleDescription: "展示 Agent 步骤、SQL、图表、来源和审计结果",
     };
