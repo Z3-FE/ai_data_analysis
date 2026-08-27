@@ -16,9 +16,6 @@ import {
 import {
   AlertCircle,
   Bot,
-  CheckCircle2,
-  Clock,
-  Database,
   Loader2,
   MessageSquare,
   Send,
@@ -26,74 +23,15 @@ import {
 } from "lucide-react";
 import { apiGet } from "../../lib/api";
 import { ReportView, type RenderedReport } from "./analysis-workspace";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
+import {
+  ExecutionPanel,
+  appendExecutionEvent,
+  type DebugEvent,
+  type StreamEvent,
+} from "./execution-panel";
 
 interface ChatSessionViewProps {
   conversationId: string;
-}
-
-interface RunStep {
-  step: string;
-  name: string;
-  status: "running" | "completed" | "failed";
-  summary?: string;
-}
-
-interface SqlReviewState {
-  passed?: boolean;
-  risk_level?: string;
-  summary?: string;
-  checks?: Array<{
-    name: string;
-    passed: boolean;
-  }>;
-}
-
-interface TableArtifactState {
-  title?: string;
-  columns: string[];
-  rows: Array<Record<string, string | number | boolean | null>>;
-  row_count?: number;
-  elapsed_ms?: number;
-}
-
-interface SqlGenerationState {
-  generation_mode?: string;
-  reasoning?: string;
-  tables?: string[];
-  metrics?: string[];
-  dimensions?: string[];
-  expected_limit?: number;
-}
-
-interface SourcesState {
-  tables: string[];
-  fields: string[];
-  metrics: string[];
-  dimensions: string[];
-  semantic_source?: string;
-  conversation_asset_count?: number;
-  used_global_assets?: boolean;
-  used_conversation_assets?: boolean;
-  vector_fallback_used?: boolean;
-  stale_vector_record?: boolean;
-}
-
-interface AuditState {
-  risk_level?: string;
-  review_passed?: boolean;
-  checks?: Array<{
-    name: string;
-    passed: boolean;
-  }>;
-  row_count?: number;
-  elapsed_ms?: number;
-  limit?: number;
-  execution_status?: string;
-  error?: string | null;
-  human_confirmation_required?: boolean;
-  vector_fallback_used?: boolean;
-  stale_vector_record?: boolean;
 }
 
 interface BackendMessage {
@@ -159,17 +97,6 @@ function formatTime(value?: Date | string) {
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-function upsertStep(steps: RunStep[], next: RunStep) {
-  /** 插入或更新执行步骤，保证同一个 step 在右侧详情中只出现一次。 */
-
-  const index = steps.findIndex((step) => step.step === next.step);
-  if (index === -1) return [...steps, next];
-
-  const cloned = [...steps];
-  cloned[index] = { ...cloned[index], ...next };
-  return cloned;
 }
 
 function getMessageText(message: ThreadMessage | ThreadMessageLike) {
@@ -346,6 +273,37 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+async function responseErrorMessage(response: Response) {
+  /** 把非 JSON 的代理错误正文转换成可读的 SSE 错误。 */
+  const body = await response.text();
+  if (body.trim()) {
+    try {
+      const data = JSON.parse(body) as { detail?: unknown; message?: unknown };
+      if (typeof data.detail === "string") return data.detail;
+      if (typeof data.message === "string") return data.message;
+    } catch {
+      return body.trim();
+    }
+  }
+  return "SSE 连接失败（HTTP " + response.status + "）";
+}
+
+function parseStreamEvent(data: string): Record<string, any> {
+  /** 解析 SSE JSON，并把纯文本网关错误转换成明确提示。 */
+  try {
+    const parsed = JSON.parse(data);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("SSE 事件不是 JSON 对象。");
+    }
+    return parsed as Record<string, any>;
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error("后端返回了无效的 SSE 数据：" + data.trim().slice(0, 180));
+    }
+    throw error;
+  }
+}
+
 async function* streamAnalysisEvents(
   conversationId: string,
   question: string,
@@ -367,8 +325,11 @@ async function* streamAnalysisEvents(
     signal: abortSignal,
   });
 
-  if (!response.ok || !response.body) {
-    throw new Error("SSE 连接失败，请检查后端服务是否仍在运行。");
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response));
+  }
+  if (!response.body) {
+    throw new Error("SSE 响应没有可读取的数据流。");
   }
 
   const reader = response.body.getReader();
@@ -386,22 +347,22 @@ async function* streamAnalysisEvents(
     for (const chunk of chunks) {
       const dataLines = chunk
         .split("\n")
-        .filter((line) => line.startsWith("data: "))
-        .map((line) => line.slice("data: ".length));
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice("data:".length).trimStart());
 
       if (dataLines.length === 0) continue;
-      yield JSON.parse(dataLines.join("\n"));
+      yield parseStreamEvent(dataLines.join("\n"));
     }
   }
 
   if (buffer.trim()) {
     const dataLines = buffer
       .split("\n")
-      .filter((line) => line.startsWith("data: "))
-      .map((line) => line.slice("data: ".length));
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice("data:".length).trimStart());
 
     if (dataLines.length > 0) {
-      yield JSON.parse(dataLines.join("\n"));
+      yield parseStreamEvent(dataLines.join("\n"));
     }
   }
 }
@@ -539,18 +500,11 @@ function AssistantChatThread() {
 }
 
 export default function ChatSessionView({ conversationId }: ChatSessionViewProps) {
-  /** 会话详情页：加载历史消息，发送问题，订阅 run SSE，并展示执行步骤。 */
+  /** 会话详情页：加载历史消息，发送问题，并把本轮事件交给统一执行面板。 */
 
   const [conversation, setConversation] = useState<any | null>(null);
   const [messages, setMessages] = useState<ThreadMessageLike[]>([]);
-  const [steps, setSteps] = useState<RunStep[]>([]);
-  const [activeRunId, setActiveRunId] = useState("");
-  const [generatedSql, setGeneratedSql] = useState("");
-  const [sqlGeneration, setSqlGeneration] = useState<SqlGenerationState | null>(null);
-  const [sqlReview, setSqlReview] = useState<SqlReviewState | null>(null);
-  const [tableArtifact, setTableArtifact] = useState<TableArtifactState | null>(null);
-  const [sources, setSources] = useState<SourcesState | null>(null);
-  const [audit, setAudit] = useState<AuditState | null>(null);
+  const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -614,14 +568,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       } as ThreadMessageLike;
 
       setError("");
-      setSteps([]);
-      setActiveRunId("");
-      setGeneratedSql("");
-      setSqlGeneration(null);
-      setSqlReview(null);
-      setTableArtifact(null);
-      setSources(null);
-      setAudit(null);
+      setDebugEvents([]);
       setIsRunning(true);
       setMessages((current) => [...current, userMessage, assistantMessage]);
 
@@ -686,50 +633,13 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       };
 
       try {
-        setActiveRunId(crypto.randomUUID());
-
         for await (const runEvent of streamAnalysisEvents(
           conversationId,
           normalizedQuestion,
           abortController.signal,
         )) {
           const payload = runEvent;
-
-          if (runEvent.type === "run.started" && payload.run_id) {
-            setActiveRunId(payload.run_id);
-          }
-
-          if (runEvent.type === "step.started") {
-            setSteps((current) =>
-              upsertStep(current, {
-                step: payload.step,
-                name: payload.name,
-                status: "running",
-              }),
-            );
-          }
-
-          if (runEvent.type === "step.completed") {
-            setSteps((current) =>
-              upsertStep(current, {
-                step: payload.step,
-                name: payload.name,
-                status: "completed",
-                summary: payload.summary,
-              }),
-            );
-          }
-
-          if (runEvent.type === "step.failed") {
-            setSteps((current) =>
-              upsertStep(current, {
-                step: payload.step,
-                name: payload.name,
-                status: "failed",
-                summary: payload.summary ?? payload.message,
-              }),
-            );
-          }
+          setDebugEvents((current) => appendExecutionEvent(current, runEvent as StreamEvent));
 
           if (runEvent.type === "message.delta" && payload.content) {
             assistantText += payload.content;
@@ -749,68 +659,6 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
               Math.max(0, (Date.now() - startedAt) / 1000),
             );
             void drainTypewriter();
-          }
-
-          if (runEvent.type === "sql.generated") {
-            setGeneratedSql(payload.sql ?? "");
-            setSqlGeneration({
-              generation_mode: payload.generation_mode,
-              reasoning: payload.reasoning,
-              tables: payload.tables ?? [],
-              metrics: payload.metrics ?? [],
-              dimensions: payload.dimensions ?? [],
-              expected_limit: payload.expected_limit,
-            });
-          }
-
-          if (runEvent.type === "sql.reviewed") {
-            setSqlReview({
-              passed: payload.passed,
-              risk_level: payload.risk_level,
-              summary: payload.summary,
-              checks: payload.checks ?? [],
-            });
-          }
-
-          if (runEvent.type === "sources.created") {
-            setSources({
-              tables: payload.tables ?? [],
-              fields: payload.fields ?? [],
-              metrics: payload.metrics ?? [],
-              dimensions: payload.dimensions ?? [],
-              semantic_source: payload.semantic_source,
-              conversation_asset_count: payload.conversation_asset_count,
-              used_global_assets: payload.used_global_assets,
-              used_conversation_assets: payload.used_conversation_assets,
-              vector_fallback_used: payload.vector_fallback_used,
-              stale_vector_record: payload.stale_vector_record,
-            });
-          }
-
-          if (runEvent.type === "artifact.created" && payload.artifact_type === "table") {
-            setTableArtifact({
-              title: payload.title,
-              columns: payload.columns ?? [],
-              rows: payload.rows ?? [],
-              row_count: payload.row_count,
-              elapsed_ms: payload.elapsed_ms,
-            });
-          }
-
-          if (runEvent.type === "audit.created") {
-            setAudit({
-              risk_level: payload.risk_level,
-              review_passed: payload.review_passed,
-              checks: payload.checks ?? [],
-              row_count: payload.row_count,
-              elapsed_ms: payload.elapsed_ms,
-              limit: payload.limit,
-              execution_status: payload.execution_status,
-              error: payload.error,
-              human_confirmation_required: payload.human_confirmation_required,
-              vector_fallback_used: payload.vector_fallback_used,
-              stale_vector_record: payload.stale_vector_record,
-            });
           }
 
           if (runEvent.type === "run.completed") {
@@ -912,14 +760,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
   useEffect(() => {
     setIsLoading(true);
     setError("");
-    setSteps([]);
-    setActiveRunId("");
-    setGeneratedSql("");
-    setSqlGeneration(null);
-    setSqlReview(null);
-    setTableArtifact(null);
-    setSources(null);
-    setAudit(null);
+    setDebugEvents([]);
     pendingStartedRef.current = false;
     activeAbortControllerRef.current?.abort();
     activeAbortControllerRef.current = null;
@@ -991,309 +832,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
         )}
       </section>
 
-      <aside className="w-[360px] bg-white shrink-0 flex flex-col">
-        <div className="p-5 border-b border-slate-200">
-          <h3 className="text-sm font-extrabold text-slate-900">执行详情</h3>
-          <p className="text-xs text-slate-500 mt-1">当前会话的 Agent 运行事件</p>
-        </div>
-
-        <div className="p-5 space-y-4 overflow-y-auto">
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <div className="flex items-center gap-2 text-xs font-extrabold text-slate-700 mb-3">
-              <Database className="w-4 h-4 text-emerald-600" />
-              <span>当前状态</span>
-            </div>
-            <div className="space-y-2 text-xs text-slate-500">
-              <div className="flex justify-between">
-                <span>会话状态</span>
-                <span className="font-mono text-slate-700">
-                  {isRunning ? "running" : conversation?.status ?? "--"}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>当前 Run</span>
-                <span className="font-mono text-slate-700 truncate max-w-[180px]">
-                  {activeRunId || "--"}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>数据源</span>
-                <span className="font-mono text-slate-700">{conversation?.data_source_id ?? "olist"}</span>
-              </div>
-            </div>
-          </div>
-
-          <Tabs defaultValue="steps" className="min-h-0 flex-1">
-            <TabsList
-              variant="line"
-              className="grid h-9 w-full grid-cols-4 border-b border-slate-200 p-0 text-xs font-bold"
-            >
-              <TabsTrigger value="steps" className="rounded-none text-xs data-active:text-blue-600">
-                Steps
-              </TabsTrigger>
-              <TabsTrigger value="sql" className="rounded-none text-xs data-active:text-blue-600">
-                SQL
-              </TabsTrigger>
-              <TabsTrigger value="sources" className="rounded-none text-xs data-active:text-blue-600">
-                Sources
-              </TabsTrigger>
-              <TabsTrigger value="audit" className="rounded-none text-xs data-active:text-blue-600">
-                Audit
-              </TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="steps" className="mt-4 space-y-3">
-              {steps.length === 0 && (
-                <div className="rounded-xl border border-dashed border-slate-200 px-4 py-6 text-center text-xs text-slate-400">
-                  等待下一次运行事件
-                </div>
-              )}
-              {steps.map((step) => (
-                <div key={step.step} className="rounded-xl border border-slate-200 bg-white p-3">
-                  <div className="flex items-center gap-2">
-                    {step.status === "completed" ? (
-                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                    ) : (
-                      <Clock className="w-4 h-4 text-blue-600 animate-pulse" />
-                    )}
-                    <span className="text-sm font-bold text-slate-800">{step.name}</span>
-                    <span className="ml-auto text-[10px] font-mono text-slate-400">{step.status}</span>
-                  </div>
-                  {step.summary && <p className="text-xs text-slate-500 mt-2 leading-5">{step.summary}</p>}
-                </div>
-              ))}
-            </TabsContent>
-
-            <TabsContent value="sql" className="mt-4 space-y-4">
-              {sqlGeneration && (
-                <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-3 text-xs text-slate-600">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="font-extrabold text-slate-800">SQL 生成模式</span>
-                    <span className="rounded-full bg-white px-2 py-0.5 font-mono text-[10px] font-bold text-blue-600">
-                      {sqlGeneration.generation_mode ?? "--"}
-                    </span>
-                  </div>
-                  {sqlGeneration.reasoning && (
-                    <p className="mt-2 leading-5 text-slate-500">{sqlGeneration.reasoning}</p>
-                  )}
-                  <div className="mt-2 space-y-1 font-mono text-[10px] text-slate-500">
-                    <div>tables: {(sqlGeneration.tables ?? []).join(", ") || "--"}</div>
-                    <div>metrics: {(sqlGeneration.metrics ?? []).join(", ") || "--"}</div>
-                    <div>dimensions: {(sqlGeneration.dimensions ?? []).join(", ") || "--"}</div>
-                    <div>expected_limit: {sqlGeneration.expected_limit ?? "--"}</div>
-                  </div>
-                </div>
-              )}
-
-              {generatedSql ? (
-                <pre className="max-h-[420px] overflow-auto rounded-xl border border-slate-200 bg-slate-950 p-3 text-[11px] leading-5 text-blue-50">
-                  <code>{generatedSql}</code>
-                </pre>
-              ) : (
-                <div className="rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center text-xs text-slate-400">
-                  等待 SQL 生成事件
-                </div>
-              )}
-
-              {tableArtifact ? (
-                <div className="rounded-xl border border-slate-200 bg-white">
-                  <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
-                    <div>
-                      <div className="text-xs font-extrabold text-slate-800">
-                        {tableArtifact.title ?? "查询结果"}
-                      </div>
-                      <div className="mt-0.5 text-[10px] font-medium text-slate-400">
-                        返回 {tableArtifact.row_count ?? tableArtifact.rows.length} 行
-                        {typeof tableArtifact.elapsed_ms === "number" ? ` · ${tableArtifact.elapsed_ms} ms` : ""}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="max-h-[280px] overflow-auto">
-                    <table className="w-full min-w-[520px] text-left text-[11px]">
-                      <thead className="sticky top-0 bg-slate-50 text-slate-500">
-                        <tr>
-                          {tableArtifact.columns.map((column) => (
-                            <th key={column} className="border-b border-slate-100 px-3 py-2 font-extrabold">
-                              {column}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {tableArtifact.rows.map((row, rowIndex) => (
-                          <tr key={rowIndex} className="border-b border-slate-50 last:border-0">
-                            {tableArtifact.columns.map((column) => (
-                              <td key={column} className="px-3 py-2 font-mono text-slate-600">
-                                {String(row[column] ?? "--")}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              ) : (
-                <div className="rounded-xl border border-dashed border-slate-200 px-4 py-6 text-center text-xs text-slate-400">
-                  等待真实查询结果
-                </div>
-              )}
-            </TabsContent>
-
-            <TabsContent value="sources" className="mt-4">
-              {sources ? (
-                <div className="space-y-3">
-                  <div className="rounded-xl border border-slate-200 bg-white p-3">
-                    <div className="text-xs font-extrabold text-slate-800">来源概览</div>
-                    <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
-                      <div className="rounded-lg bg-slate-50 p-2">
-                        <div className="text-slate-400">语义来源</div>
-                        <div className="mt-1 font-mono text-slate-700">{sources.semantic_source ?? "--"}</div>
-                      </div>
-                      <div className="rounded-lg bg-slate-50 p-2">
-                        <div className="text-slate-400">会话资产数</div>
-                        <div className="mt-1 font-mono text-slate-700">{sources.conversation_asset_count ?? 0}</div>
-                      </div>
-                      <div className="rounded-lg bg-slate-50 p-2">
-                        <div className="text-slate-400">全局语义资产</div>
-                        <div className="mt-1 font-bold text-slate-700">{sources.used_global_assets ? "已使用" : "未使用"}</div>
-                      </div>
-                      <div className="rounded-lg bg-slate-50 p-2">
-                        <div className="text-slate-400">向量兜底</div>
-                        <div className="mt-1 font-bold text-slate-700">
-                          {sources.vector_fallback_used ? "已使用" : "未使用"}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl border border-slate-200 bg-white p-3">
-                    <div className="text-xs font-extrabold text-slate-800">数据表</div>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {sources.tables.length ? (
-                        sources.tables.map((table) => (
-                          <span key={table} className="rounded-full bg-blue-50 px-2 py-1 font-mono text-[10px] text-blue-600">
-                            {table}
-                          </span>
-                        ))
-                      ) : (
-                        <span className="text-xs text-slate-400">暂无表来源</span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl border border-slate-200 bg-white p-3">
-                    <div className="text-xs font-extrabold text-slate-800">字段</div>
-                    <div className="mt-2 max-h-[120px] overflow-auto font-mono text-[10px] leading-5 text-slate-500">
-                      {sources.fields.length ? sources.fields.join(", ") : "暂无字段来源"}
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl border border-slate-200 bg-white p-3">
-                    <div className="text-xs font-extrabold text-slate-800">指标 / 维度</div>
-                    <div className="mt-2 space-y-1 text-[11px] text-slate-500">
-                      <div>metrics: {(sources.metrics ?? []).join(", ") || "--"}</div>
-                      <div>dimensions: {(sources.dimensions ?? []).join(", ") || "--"}</div>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center text-xs leading-5 text-slate-400">
-                  等待 Sources 事件
-                  <br />
-                  Phase 8 会展示使用的数据表、字段、指标和维度来源。
-                </div>
-              )}
-            </TabsContent>
-
-            <TabsContent value="audit" className="mt-4">
-              {sqlReview || audit ? (
-                <div className="space-y-3">
-                  {sqlReview && (
-                    <div className="rounded-xl border border-slate-200 bg-white p-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm font-bold text-slate-800">SQL 审核</span>
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-[10px] font-black ${
-                            sqlReview.passed ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600"
-                          }`}
-                        >
-                          {sqlReview.passed ? "通过" : "未通过"}
-                        </span>
-                      </div>
-                      <p className="mt-2 text-xs leading-5 text-slate-500">{sqlReview.summary}</p>
-                      <div className="mt-3 space-y-2">
-                        {(sqlReview.checks ?? []).map((check) => (
-                          <div key={check.name} className="flex items-center justify-between text-xs">
-                            <span className="text-slate-500">{check.name}</span>
-                            <span className={check.passed ? "text-emerald-600" : "text-rose-600"}>
-                              {check.passed ? "通过" : "失败"}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {audit && (
-                    <div className="rounded-xl border border-slate-200 bg-white p-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm font-bold text-slate-800">执行审计</span>
-                        <span className="rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[10px] font-bold text-slate-600">
-                          {audit.execution_status ?? "--"}
-                        </span>
-                      </div>
-                      <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
-                        <div className="rounded-lg bg-slate-50 p-2">
-                          <div className="text-slate-400">风险等级</div>
-                          <div className="mt-1 font-mono text-slate-700">{audit.risk_level ?? "--"}</div>
-                        </div>
-                        <div className="rounded-lg bg-slate-50 p-2">
-                          <div className="text-slate-400">返回行数</div>
-                          <div className="mt-1 font-mono text-slate-700">{audit.row_count ?? 0}</div>
-                        </div>
-                        <div className="rounded-lg bg-slate-50 p-2">
-                          <div className="text-slate-400">执行耗时</div>
-                          <div className="mt-1 font-mono text-slate-700">{audit.elapsed_ms ?? 0} ms</div>
-                        </div>
-                        <div className="rounded-lg bg-slate-50 p-2">
-                          <div className="text-slate-400">LIMIT</div>
-                          <div className="mt-1 font-mono text-slate-700">{audit.limit ?? "--"}</div>
-                        </div>
-                      </div>
-                      <div className="mt-3 space-y-2 text-xs">
-                        <div className="flex items-center justify-between">
-                          <span className="text-slate-500">需要人工确认</span>
-                          <span className="font-bold text-slate-700">
-                            {audit.human_confirmation_required ? "是" : "否"}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className="text-slate-500">向量兜底</span>
-                          <span className="font-bold text-slate-700">{audit.vector_fallback_used ? "是" : "否"}</span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className="text-slate-500">向量记录过期</span>
-                          <span className="font-bold text-slate-700">{audit.stale_vector_record ? "是" : "否"}</span>
-                        </div>
-                      </div>
-                      {audit.error && (
-                        <div className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-600">
-                          {audit.error}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center text-xs text-slate-400">
-                  等待 SQL 审核事件
-                </div>
-              )}
-            </TabsContent>
-          </Tabs>
-        </div>
-      </aside>
+      <ExecutionPanel running={isRunning} debugEvents={debugEvents} />
     </div>
   );
 }
