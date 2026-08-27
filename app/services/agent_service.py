@@ -414,6 +414,9 @@ class AgentService:
                         "step": "生成回答",
                         "node": "agent_service",
                         "status": self._message_status(final_state),
+                        "execution_mode": final_state.get(
+                            "execution_mode", "single_query"
+                        ),
                         "content": assistant_content,
                         "output_type": output_type,
                         "output": output_payload,
@@ -427,6 +430,7 @@ class AgentService:
                     "step": "执行完成",
                     "node": "agent_service",
                     "status": self._result_status(final_state),
+                    "execution_mode": final_state.get("execution_mode", "single_query"),
                 },
                 identity,
             )

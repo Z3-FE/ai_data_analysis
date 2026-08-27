@@ -2,6 +2,8 @@
 
 路由只决定后续执行模式，不负责查询、分析或回答业务问题：
 
+daily_chat
+    -> 进入普通聊天节点
 single_query
     -> 进入现有 Query Agent
 analysis
@@ -34,11 +36,13 @@ class RouteDecision(BaseModel):
     """
 
     # 决定 LangGraph 条件边的目标节点。
-    execution_mode: Literal["single_query", "analysis", "clarification"] = Field(
+    execution_mode: Literal[
+        "daily_chat", "single_query", "analysis", "clarification"
+    ] = Field(
         default="single_query",
         description=(
-            "执行模式：single_query 表示单次查询即可回答；analysis 表示需要多步查询、"
-            "计算或解释；clarification 表示缺少关键信息，需要先向用户澄清。"
+            "执行模式：daily_chat 表示日常聊天；single_query 表示单次查询即可回答；"
+            "analysis 表示需要多步查询、计算或解释；clarification 表示缺少关键信息，需要先向用户澄清。"
         ),
     )
     # 用于日志和 SSE，帮助定位模型为什么选择当前路径。

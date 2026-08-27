@@ -42,8 +42,11 @@ interface BackendMessage {
   created_at?: string;
 }
 
+type ExecutionMode = "daily_chat" | "single_query" | "analysis" | "clarification";
+
 interface BackendTurn {
   turn_id: string;
+  execution_mode?: ExecutionMode;
   status?: string;
   started_at?: string;
   completed_at?: string;
@@ -70,6 +73,7 @@ interface ConversationHistoryData {
 }
 
 interface ConversationTurnMeta {
+  execution_mode?: ExecutionMode;
   response_type: "chat" | "simple_data" | "analysis" | "clarification" | "failure";
   assistant_text: string;
   output_type?: string;
@@ -130,6 +134,23 @@ function outputResponseType(outputType?: string): ConversationTurnMeta["response
   return "chat";
 }
 
+function asExecutionMode(value: unknown): ExecutionMode | undefined {
+  /** 只接受后端路由协议定义的执行模式。 */
+
+  return value === "daily_chat"
+    || value === "single_query"
+    || value === "analysis"
+    || value === "clarification"
+    ? value
+    : undefined;
+}
+
+function shouldShowExecutionPanel(mode: ExecutionMode | null): boolean {
+  /** 只有需要查询或分析的轮次才展示执行过程。 */
+
+  return mode === "single_query" || mode === "analysis";
+}
+
 function buildConversationMeta(
   content: string,
   outputType?: string,
@@ -146,6 +167,7 @@ function buildConversationMeta(
     ? Math.max(0, (new Date(turn.completed_at).getTime() - new Date(turn.started_at).getTime()) / 1000)
     : 0;
   return {
+    execution_mode: turn?.execution_mode,
     response_type: outputResponseType(outputType),
     assistant_text: content,
     output_type: outputType,
@@ -505,6 +527,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
   const [conversation, setConversation] = useState<any | null>(null);
   const [messages, setMessages] = useState<ThreadMessageLike[]>([]);
   const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
+  const [executionMode, setExecutionMode] = useState<ExecutionMode | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -526,8 +549,10 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       const outputsByTurnId = new Map(
         (history.outputs ?? []).map((output) => [output.turn_id, output]),
       );
+      const latestTurn = history.turns?.at(-1);
 
       setConversation(history.conversation ?? null);
+      setExecutionMode(latestTurn?.execution_mode ?? null);
       setMessages(
         (history.messages ?? []).map((message) =>
           toAssistantMessage(
@@ -569,6 +594,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
 
       setError("");
       setDebugEvents([]);
+      setExecutionMode(null);
       setIsRunning(true);
       setMessages((current) => [...current, userMessage, assistantMessage]);
 
@@ -641,6 +667,11 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
           const payload = runEvent;
           setDebugEvents((current) => appendExecutionEvent(current, runEvent as StreamEvent));
 
+          if (runEvent.type === "question_route") {
+            const mode = asExecutionMode(payload.execution_mode);
+            if (mode) setExecutionMode(mode);
+          }
+
           if (runEvent.type === "message.delta" && payload.content) {
             assistantText += payload.content;
             void drainTypewriter();
@@ -648,6 +679,8 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
 
           if (runEvent.type === "message.completed" && payload.content) {
             assistantText = payload.content;
+            const mode = asExecutionMode(payload.execution_mode);
+            if (mode) setExecutionMode(mode);
             const outputType = typeof payload.output_type === "string"
               ? payload.output_type
               : undefined;
@@ -658,11 +691,14 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
               undefined,
               Math.max(0, (Date.now() - startedAt) / 1000),
             );
+            if (mode && responseMeta) responseMeta = { ...responseMeta, execution_mode: mode };
             void drainTypewriter();
           }
 
           if (runEvent.type === "run.completed") {
             terminalEventReceived = true;
+            const mode = asExecutionMode(payload.execution_mode);
+            if (mode) setExecutionMode(mode);
             await waitForTypewriterIdle();
             updateAssistantMessage(assistantText, { type: "complete", reason: "stop" });
             setIsRunning(false);
@@ -761,6 +797,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
     setIsLoading(true);
     setError("");
     setDebugEvents([]);
+    setExecutionMode(null);
     pendingStartedRef.current = false;
     activeAbortControllerRef.current?.abort();
     activeAbortControllerRef.current = null;
@@ -787,14 +824,12 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
             <div>
               <div className="flex items-center gap-2 text-[11px] font-bold text-blue-600 mb-1">
                 <MessageSquare className="w-4 h-4" />
-                <span>普通聊天最小链路</span>
+                <span>聊天会话</span>
               </div>
               <h2 className="text-xl font-extrabold text-slate-900">
                 {conversation?.title ?? "加载会话中..."}
               </h2>
-              <p className="text-xs text-slate-500 mt-1">
-                当前使用 assistant-ui 接管消息状态和输入框，后端仍通过 run + SSE 驱动执行详情。
-              </p>
+              <p className="text-xs text-slate-500 mt-1">支持日常聊天、简单问数和数据分析。</p>
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
@@ -832,7 +867,9 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
         )}
       </section>
 
-      <ExecutionPanel running={isRunning} debugEvents={debugEvents} />
+      {shouldShowExecutionPanel(executionMode) && (
+        <ExecutionPanel running={isRunning} debugEvents={debugEvents} />
+      )}
     </div>
   );
 }

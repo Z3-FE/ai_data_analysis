@@ -3,13 +3,15 @@
 当前链路已经落地关键词抽取和字段召回。外部依赖通过 AgentContext 注入，
 节点只读写 AgentState 中的业务中间结果。
 
-入口先经过问题路由：简单查询进入 Query Agent，复杂问题进入分析计划，
-缺少关键信息则停在澄清边界。分析侧再通过 query_graph 复用现有问数链。
+入口先经过问题路由：日常聊天进入文本回答节点，简单查询进入 Query Agent，
+复杂问题进入分析计划，缺少关键信息则停在澄清边界。分析侧再通过
+query_graph 复用现有问数链。
 """
 
 from langgraph.graph import END, START, StateGraph
 
 from app.agent.context import AgentContext
+from app.agent.nodes.daily_chat import daily_chat
 from app.agent.nodes.execute_analysis import execute_analysis
 from app.agent.nodes.generate_report_plan import generate_report_plan
 from app.agent.nodes.plan_analysis import plan_analysis
@@ -52,12 +54,13 @@ async def _clarification_route_boundary(
 def build_agent_graph():
     """构建并返回当前阶段的 LangGraph。
 
-路由节点是三个执行分支的边界；分析任务内部的依赖调度由
+路由节点是四个执行分支的边界；分析任务内部的依赖调度由
 execute_analysis 负责，不在 LangGraph 中为每个动态任务创建节点。
 """
     graph = StateGraph(state_schema=AgentState, context_schema=AgentContext)
     # 先判断问题是否需要多步查询和确定性计算。
     graph.add_node("route_question", route_question)
+    graph.add_node("daily_chat", daily_chat)
     graph.add_node("plan_analysis", plan_analysis)
     graph.add_node("execute_analysis", execute_analysis)
     graph.add_node("generate_report_plan", generate_report_plan)
@@ -67,11 +70,12 @@ execute_analysis 负责，不在 LangGraph 中为每个动态任务创建节点�
     add_query_flow(graph, terminal_node="generate_report_plan")
 
     graph.add_edge(START, "route_question")
-    # 路由结果决定进入现有问数链、分析链或澄清边界。
+    # 路由结果决定进入日常聊天、现有问数链、分析链或澄清边界。
     graph.add_conditional_edges(
         "route_question",
         _route_after_question,
         {
+            "daily_chat": "daily_chat",
             "single_query": "extract_keywords",
             "analysis": "plan_analysis",
             "clarification": "clarification_route_boundary",
@@ -83,6 +87,7 @@ execute_analysis 负责，不在 LangGraph 中为每个动态任务创建节点�
     graph.add_edge("generate_report_plan", "render_report")
     graph.add_edge("render_report", END)
     graph.add_edge("clarification_route_boundary", END)
+    graph.add_edge("daily_chat", END)
     return graph.compile()
 
 
