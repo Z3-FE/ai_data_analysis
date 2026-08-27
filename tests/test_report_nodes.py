@@ -223,6 +223,66 @@ class ReportNodesTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(component["binding_status"], "bound")
         self.assertEqual(component["value"], 20)
 
+    async def test_render_report_binds_single_row_kpi_from_rows(self) -> None:
+        state = _single_query_state(row_count=1)
+        state["report_plan"] = {
+            "title": "单值查询报告",
+            "summary": "查询返回一个销售额指标。",
+            "sections": [
+                {
+                    "title": "核心指标",
+                    "components": [
+                        {
+                            "component_type": "kpi",
+                            "title": "销售额",
+                            "data_ref": {
+                                "source_task_id": "single_query",
+                                "source": "rows",
+                            },
+                            "value_field": "gmv",
+                        }
+                    ],
+                }
+            ],
+            "limitations": [],
+        }
+
+        result = await render_report(state, _runtime(None, []))
+
+        component = result["rendered_report"]["sections"][0]["components"][0]
+        self.assertEqual(component["binding_status"], "bound")
+        self.assertEqual(component["value"], 0)
+
+    async def test_render_report_does_not_collapse_multi_row_kpi(self) -> None:
+        state = _single_query_state(row_count=2)
+        state["report_plan"] = {
+            "title": "多行查询报告",
+            "summary": "查询返回多个地区。",
+            "sections": [
+                {
+                    "title": "核心指标",
+                    "components": [
+                        {
+                            "component_type": "kpi",
+                            "title": "销售额",
+                            "data_ref": {
+                                "source_task_id": "single_query",
+                                "source": "rows",
+                            },
+                            "value_field": "gmv",
+                        }
+                    ],
+                }
+            ],
+            "limitations": [],
+        }
+
+        result = await render_report(state, _runtime(None, []))
+
+        component = result["rendered_report"]["sections"][0]["components"][0]
+        self.assertEqual(component["binding_status"], "failed")
+        self.assertIn("需要单行结果", component["binding_error"])
+
     async def test_render_report_resolves_nested_calculation_field(self) -> None:
         state = {
             "input_text": "分析销售额下降月份",

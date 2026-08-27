@@ -125,6 +125,20 @@ def _calculation_available_fields(calculation: Any) -> list[str]:
     return []
 
 
+def _resolve_row_value(
+    rows: list[dict[str, Any]],
+    value_field: str,
+) -> Any:
+    """从单行查询结果读取 KPI 字段，不把多行结果静默压成一个值。"""
+    field = value_field.strip()
+    if not field or len(rows) != 1:
+        return _MISSING
+    row = rows[0]
+    if field not in row:
+        return _MISSING
+    return row[field]
+
+
 def _find_calculation_field(
     value: Any,
     field: str,
@@ -231,8 +245,19 @@ def _bind_component(
         return RenderedReportComponent(**base, value=value), None
 
     if plan.component_type == "kpi":
-        error = f"KPI“{plan.title}”必须使用 calculation_result 数据源。"
-        return _failed_component(plan, error), error
+        all_rows = _rows(task)
+        value = _resolve_row_value(all_rows, plan.value_field)
+        if value is _MISSING:
+            if not all_rows:
+                detail = "rows 没有返回数据"
+            elif len(all_rows) > 1:
+                detail = f"rows 返回了 {len(all_rows)} 行，KPI 需要单行结果"
+            else:
+                available = "、".join(str(key) for key in all_rows[0]) or "无可用字段"
+                detail = f"rows 中不存在字段“{plan.value_field or '未填写'}”，当前字段：{available}"
+            error = f"KPI“{plan.title}”无法从 rows 绑定：{detail}。"
+            return _failed_component(plan, error), error
+        return RenderedReportComponent(**base, value=value), None
 
     all_rows = _rows(task)
     columns = _columns(task)

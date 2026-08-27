@@ -17,7 +17,10 @@
 2. 每个章节按阅读顺序放置组件。文字组件用 content 表达结论，允许自然语言自由编排。
 3. component_type 只能是 text、kpi、table、chart。chart 必须填写 chart_type，且只能是 line 或 bar。
 4. 数据组件必须通过 data_ref.source_task_id 引用成功任务。source 为 rows 时使用 dimension_field、metric_fields；source 为 calculation_result 时填写 path。
-5. KPI 必须填写 data_ref.source_task_id、data_ref.source=calculation_result 和 value_field；不要填写真实 value。
+5. KPI 必须填写 data_ref.source_task_id 和 value_field，不要填写真实 value。
+   - 如果任务的 calculation_result 不为空，KPI 使用 source=calculation_result，并从 calculation_result 读取 value_field。
+   - 如果任务只有单行 rows（例如 simple_query/single_query），KPI 使用 source=rows，并从该行读取 value_field。
+   - rows 有多行时不要用 KPI，改用 table 或 chart；不要把多行结果的第一行当成 KPI。
 6. table 必须填写 data_ref.source_task_id；requested_columns 只能填写该任务已有字段，留空表示使用全部结果字段。
 7. chart 必须填写 data_ref.source_task_id、data_ref.source=rows、dimension_field 和至少一个 metric_fields。
 8. 多个组件需要并排时，章节 layout.type 使用 grid，layout.columns 使用 2 或 3，组件 span 使用 1；否则使用 stack。

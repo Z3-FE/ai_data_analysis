@@ -124,7 +124,10 @@ def _component_catalog() -> list[dict[str, Any]]:
     """描述前端可调用的组件协议，而不是暴露具体渲染代码。"""
     return [
         {"component_type": "text", "use": "文字结论"},
-        {"component_type": "kpi", "use": "calculation_result 中的核心值"},
+        {
+            "component_type": "kpi",
+            "use": "单行 rows 或 calculation_result 中的核心值；不要填写真实 value",
+        },
         {"component_type": "table", "use": "任务 rows 的字段表格"},
         {"component_type": "chart", "chart_type": ["line", "bar"], "use": "任务 rows 的趋势或分类比较"},
     ]
