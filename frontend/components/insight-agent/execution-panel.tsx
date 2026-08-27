@@ -103,7 +103,7 @@ const RESULT_EVENT_TYPES = new Set([
   "rendered_report",
 ]);
 const STEP_ORDER = [
-  "开始执行", "判断问题路由", "判断问题路由结果", "生成分析计划", "提取关键词",
+  "开始执行", "判断问题路由", "生成分析计划", "提取关键词",
   "召回字段", "召回表", "召回指标", "召回维度值", "合并召回信息", "过滤指标",
   "过滤表", "整理 SQL 上下文", "生成 SQL", "执行 SQL", "增强查询结果",
   "执行分析任务", "汇总全部分析证据", "生成报告规划", "渲染最终报告",
@@ -125,6 +125,8 @@ function terminal(status: RunStatus | undefined) {
 }
 
 function mainStep(sourceStep: string, type: string) {
+  if (type === "run.started" || type === "run.completed" || type === "run.failed") return "开始执行";
+  if (type === "question_route") return "判断问题路由";
   if (sourceStep === "问题路由" || sourceStep === "判断问题路由") return "判断问题路由";
   if (sourceStep === "抽取关键词" || sourceStep === "提取关键词") return "提取关键词";
   if (sourceStep.startsWith("召回columns")) return "召回字段";
@@ -273,10 +275,19 @@ function currentEvents(events: DebugEvent[]) {
 
 function displayLabel(event: DebugEvent) {
   const phase = typeof event.payload.phase === "string" ? " · " + event.payload.phase : "";
+  if (event.type === "run.started") return "运行开始";
+  if (event.type === "run.completed") return "运行完成";
+  if (event.type === "run.failed") return "运行失败";
   if (event.type === "reasoning_result") return "思考过程" + phase;
-  if (event.type === "reasoning_chunk") return "思考过程片段" + phase;
+  if (event.type === "reasoning_chunk") {
+    const chunkCount = typeof event.payload.chunk_count === "number" ? event.payload.chunk_count : 0;
+    return (chunkCount > 1 ? "思考过程" : "思考过程片段") + (chunkCount > 1 ? "（" + chunkCount + " 个片段）" : "") + phase;
+  }
   if (event.type === "llm_result") return "模型原始输出" + phase;
-  if (event.type === "llm_chunk") return "模型输出片段" + phase;
+  if (event.type === "llm_chunk") {
+    const chunkCount = typeof event.payload.chunk_count === "number" ? event.payload.chunk_count : 0;
+    return (chunkCount > 1 ? "模型输出" : "模型输出片段") + (chunkCount > 1 ? "（" + chunkCount + " 个片段）" : "") + phase;
+  }
   if (event.type === "analysis_task_phase") return "分析阶段" + phase;
   if (event.type === "analysis_task_resolved") return "依赖结果解析";
   if (event.type === "analysis_task_result") return "分析任务结果";
@@ -303,6 +314,67 @@ function displayEvents(events: DebugEvent[]): DisplayEvent[] {
     visible.push({ key: event.key + ":display", label: displayLabel(event), event });
   }
   return visible;
+}
+
+function streamScope(event: DebugEvent) {
+  const phase = typeof event.payload.phase === "string" ? event.payload.phase : "";
+  return event.type + "::" + event.node + "::" + (event.taskId || "__main__") + "::" + phase;
+}
+
+function streamText(event: DebugEvent) {
+  return typeof event.payload.chunk === "string" ? event.payload.chunk : "";
+}
+
+function compactAllEvents(events: DebugEvent[]): DebugEvent[] {
+  const compacted: DebugEvent[] = [];
+  const streamIndexes = new Map<string, number>();
+
+  for (const event of events) {
+    if (!STREAM_EVENT_TYPES.has(event.type)) {
+      compacted.push(event);
+      continue;
+    }
+
+    const scope = streamScope(event);
+    const existingIndex = streamIndexes.get(scope);
+    if (existingIndex === undefined) {
+      const chunk = streamText(event);
+      compacted.push({
+        ...event,
+        key: event.key + ":compact",
+        payload: {
+          ...event.payload,
+          chunk: chunk || event.payload.chunk,
+          combined_text: chunk,
+          chunk_count: 1,
+          first_sequence: event.sequence,
+          last_sequence: event.sequence,
+        },
+      });
+      streamIndexes.set(scope, compacted.length - 1);
+      continue;
+    }
+
+    const current = compacted[existingIndex];
+    const currentText = typeof current.payload.combined_text === "string" ? current.payload.combined_text : "";
+    const chunk = streamText(event);
+    const chunkCount = typeof current.payload.chunk_count === "number" ? current.payload.chunk_count : 1;
+    compacted[existingIndex] = {
+      ...current,
+      sequence: event.sequence,
+      receivedAt: event.receivedAt,
+      status: event.status || current.status,
+      payload: {
+        ...current.payload,
+        chunk: currentText + chunk,
+        combined_text: currentText + chunk,
+        chunk_count: chunkCount + 1,
+        last_sequence: event.sequence,
+      },
+    };
+  }
+
+  return compacted;
 }
 
 function orderOf(step: string) {
@@ -403,7 +475,7 @@ function buildStepGroups(events: DebugEvent[], tasks: TaskSummary[]): StepGroup[
   const grouped = new Map<string, DebugEvent[]>();
   const publicEvents = events.filter((item) => !STREAM_EVENT_TYPES.has(item.type) && !item.taskId);
   for (const event of publicEvents) {
-    const label = event.type === "question_route" ? "判断问题路由结果" : event.step;
+    const label = event.step;
     grouped.set(label, [...(grouped.get(label) || []), event]);
   }
   const result: StepGroup[] = Array.from(grouped.entries()).map(([step, stepEvents]) => {
@@ -478,7 +550,7 @@ function StepCard({ group }: { group: StepGroup }) {
 function ProgressView({ events, tasks }: { events: DebugEvent[]; tasks: TaskSummary[] }) {
   const groups = new Map<string, DebugEvent[]>();
   for (const event of events.filter((item) => !STREAM_EVENT_TYPES.has(item.type) && !item.taskId)) {
-    const label = event.type === "question_route" ? "判断问题路由结果" : event.step;
+    const label = event.step;
     groups.set(label, [...(groups.get(label) || []), event]);
   }
   if (tasks.length) groups.set("执行分析任务", [taskOverview(tasks)]);
@@ -513,6 +585,7 @@ export function ExecutionPanel({ running, debugEvents }: { running: boolean; deb
     .sort((left, right) => orderOf(left.step) - orderOf(right.step) || eventOrder(left) - eventOrder(right));
   const tasks = buildTasks(rawEvents);
   const steps = buildStepGroups(orderedEvents, tasks);
+  const compactedEvents = compactAllEvents(rawEvents);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [tab, setTab] = useState("progress");
   const handleTab = (value: string | null) => {
@@ -521,5 +594,5 @@ export function ExecutionPanel({ running, debugEvents }: { running: boolean; deb
     scrollRef.current?.scrollTo({ top: 0, behavior: "auto" });
     requestAnimationFrame(() => scrollRef.current?.scrollTo({ top: 0, behavior: "auto" }));
   };
-  return <aside className="flex min-h-0 min-w-0 basis-[430px] shrink-0 flex-[0_0_430px] flex-col border-l border-slate-200 bg-white 2xl:basis-[500px] 2xl:flex-[0_0_500px]"><div className="border-b border-slate-200 px-5 py-4"><div className="flex items-center gap-2 text-sm font-extrabold text-slate-800"><ClipboardList className="size-4 text-blue-600" />执行过程</div><p className="mt-1 text-[11px] text-slate-400">实时展示本次运行的总体进度、任务返回和节点事件</p></div><Tabs value={tab} onValueChange={handleTab} className="min-h-0 flex-1 gap-0"><TabsList variant="line" className="sticky top-0 z-20 grid h-12 w-full shrink-0 grid-cols-4 justify-stretch overflow-x-auto rounded-none border-b border-slate-200 bg-white px-5 py-0 shadow-[0_4px_10px_-8px_rgba(15,23,42,0.35)]"><TabsTrigger value="progress" className="gap-1 text-[11px]"><ClipboardList className="size-3.5" />进度</TabsTrigger><TabsTrigger value="returns" className="gap-1 text-[11px]"><Braces className="size-3.5" />步骤返回{steps.length ? " " + steps.length : ""}</TabsTrigger><TabsTrigger value="tasks" className="gap-1 text-[11px]"><Layers3 className="size-3.5" />分析任务{tasks.length ? " " + tasks.length : ""}</TabsTrigger><TabsTrigger value="events" className="gap-1 text-[11px]"><Braces className="size-3.5" />全部事件{rawEvents.length ? " " + rawEvents.length : ""}</TabsTrigger></TabsList><div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain"><TabsContent value="progress" className="mt-4 px-5 pb-5"><ProgressView events={orderedEvents} tasks={tasks} /></TabsContent><TabsContent value="returns" className="mt-4 space-y-2 px-5 pb-5">{steps.length ? steps.map((group) => <StepCard key={group.step} group={group} />) : <div className="py-10 text-center text-xs text-slate-400">收到节点返回后，这里会显示主步骤摘要</div>}</TabsContent><TabsContent value="tasks" className="mt-4 px-5 pb-5"><TaskList tasks={tasks} /></TabsContent><TabsContent value="events" className="mt-4 px-5 pb-5"><AllEvents events={rawEvents} /></TabsContent></div></Tabs><div className="border-t border-slate-200 px-5 py-3"><div className="flex items-center gap-2 text-[11px] font-semibold text-slate-400"><Timer className="size-3.5" />{running ? "正在执行" : rawEvents.length ? "本次执行已结束" : "等待提问"}</div></div></aside>;
+  return <aside className="flex min-h-0 min-w-0 basis-[430px] shrink-0 flex-[0_0_430px] flex-col border-l border-slate-200 bg-white 2xl:basis-[500px] 2xl:flex-[0_0_500px]"><div className="border-b border-slate-200 px-5 py-4"><div className="flex items-center gap-2 text-sm font-extrabold text-slate-800"><ClipboardList className="size-4 text-blue-600" />执行过程</div><p className="mt-1 text-[11px] text-slate-400">实时展示本次运行的总体进度、任务返回和节点事件</p></div><Tabs value={tab} onValueChange={handleTab} className="min-h-0 flex-1 gap-0"><TabsList variant="line" className="sticky top-0 z-20 grid h-12 w-full shrink-0 grid-cols-4 justify-stretch overflow-x-auto rounded-none border-b border-slate-200 bg-white px-5 py-0 shadow-[0_4px_10px_-8px_rgba(15,23,42,0.35)]"><TabsTrigger value="progress" className="gap-1 text-[11px]"><ClipboardList className="size-3.5" />进度</TabsTrigger><TabsTrigger value="returns" className="gap-1 text-[11px]"><Braces className="size-3.5" />步骤返回{steps.length ? " " + steps.length : ""}</TabsTrigger><TabsTrigger value="tasks" className="gap-1 text-[11px]"><Layers3 className="size-3.5" />分析任务{tasks.length ? " " + tasks.length : ""}</TabsTrigger><TabsTrigger value="events" className="gap-1 text-[11px]"><Braces className="size-3.5" />全部事件{compactedEvents.length ? " " + compactedEvents.length : ""}</TabsTrigger></TabsList><div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain"><TabsContent value="progress" className="mt-4 px-5 pb-5"><ProgressView events={orderedEvents} tasks={tasks} /></TabsContent><TabsContent value="returns" className="mt-4 space-y-2 px-5 pb-5">{steps.length ? steps.map((group) => <StepCard key={group.step} group={group} />) : <div className="py-10 text-center text-xs text-slate-400">收到节点返回后，这里会显示主步骤摘要</div>}</TabsContent><TabsContent value="tasks" className="mt-4 px-5 pb-5"><TaskList tasks={tasks} /></TabsContent><TabsContent value="events" className="mt-4 px-5 pb-5"><AllEvents events={compactedEvents} /></TabsContent></div></Tabs><div className="border-t border-slate-200 px-5 py-3"><div className="flex items-center gap-2 text-[11px] font-semibold text-slate-400"><Timer className="size-3.5" />{running ? "正在执行" : rawEvents.length ? "本次执行已结束" : "等待提问"}</div></div></aside>;
 }
