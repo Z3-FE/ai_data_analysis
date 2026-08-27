@@ -31,7 +31,7 @@ import {
 import { cn } from "@/lib/utils";
 
 interface SidebarConversation {
-  id: string;
+  conversation_id: string;
   title: string;
   updated_at?: string;
   created_at?: string;
@@ -202,13 +202,13 @@ export default function Sidebar() {
                   )}
 
                   {!isLoadingConversations && !conversationError && filteredConversations.map((conversation) => {
-                    const isActive = activeConversationId === conversation.id;
+                    const isActive = activeConversationId === conversation.conversation_id;
                     const timeText = formatConversationTime(conversation.updated_at ?? conversation.created_at);
 
                     return (
                       <Link
-                        key={conversation.id}
-                        href={`/sessions/${conversation.id}`}
+                        key={conversation.conversation_id}
+                        href={`/sessions/${conversation.conversation_id}`}
                         className={cn(
                           "w-full text-left py-2 px-2.5 rounded-lg flex items-center justify-between group transition-all text-xs font-medium",
                           isActive
