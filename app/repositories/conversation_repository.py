@@ -194,7 +194,12 @@ class ConversationRepository:
             conversation.status = "running"
             conversation.active_run_id = run_id
             conversation.updated_at = now
-            session.add_all([turn, user_message])
+            # 显式按外键依赖落库，避免新会话首次写入时消息先于父记录。
+            session.add(conversation)
+            await session.flush()
+            session.add(turn)
+            await session.flush()
+            session.add(user_message)
             await session.commit()
 
     async def finish_turn(
