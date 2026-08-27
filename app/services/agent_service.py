@@ -16,6 +16,7 @@ from app.agent.graph import agent_graph
 from app.agent.state import AgentState
 from app.core.config import settings
 from app.repositories.dw_repository import DwRepository
+from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.es.es_dimension_value_repository import DimensionValueSearch
 from app.repositories.mysql.meta.mysql_meta_catalog_repository import (
     MetaCatalogRepository,
@@ -97,6 +98,7 @@ class AgentService:
         meta_dimension_values_semantic_repository: MetaDimensionValuesSemanticRepository,
         meta_catalog_repository: MetaCatalogRepository,
         dw_repository: DwRepository,
+        conversation_repository: ConversationRepository,
     ) -> None:
         self.llm_client = llm_client
         self.embedding_client = embedding_client
@@ -107,6 +109,7 @@ class AgentService:
         self.meta_dimension_values_semantic_repository = meta_dimension_values_semantic_repository
         self.meta_catalog_repository = meta_catalog_repository
         self.dw_repository = dw_repository
+        self.conversation_repository = conversation_repository
 
     def _context(self) -> AgentContext:
         """组装本次图执行使用的外部依赖。"""

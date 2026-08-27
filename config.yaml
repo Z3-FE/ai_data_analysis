@@ -14,6 +14,8 @@ mysql:
   password: "123456"
   dw_database: dw
   meta_database: meta
+  # 应用会话、消息和可重渲染结果的独立数据库，不随数据仓库导入重置。
+  app_database: agent_app
   charset: utf8mb4
   pool_pre_ping: true
   pool_recycle: 3600

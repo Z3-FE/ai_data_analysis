@@ -35,6 +35,7 @@ class MysqlConfig:
     password: str
     dw_database: str
     meta_database: str
+    app_database: str
     charset: str
     pool_pre_ping: bool
     pool_recycle: int

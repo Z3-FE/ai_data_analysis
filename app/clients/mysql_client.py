@@ -50,3 +50,4 @@ class MySQLClientManager:
 
 meta_mysql_client_manager = MySQLClientManager(settings.mysql, settings.mysql.meta_database)
 dw_mysql_client_manager = MySQLClientManager(settings.mysql, settings.mysql.dw_database)
+app_mysql_client_manager = MySQLClientManager(settings.mysql, settings.mysql.app_database)

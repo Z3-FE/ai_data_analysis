@@ -45,6 +45,7 @@ run_mysql "${ROOT_DIR}/scripts/mysql/08_update_metric_aliases.sql"
 run_mysql "${ROOT_DIR}/scripts/mysql/09_create_dimension_values.sql"
 run_mysql "${ROOT_DIR}/scripts/mysql/10_update_dimension_value_aliases.sql"
 run_mysql "${ROOT_DIR}/scripts/mysql/12_update_meta_metric_grain_rules.sql"
+run_mysql "${ROOT_DIR}/scripts/mysql/13_create_agent_app_tables.sql"
 run_mysql "${ROOT_DIR}/scripts/mysql/06_validate_import.sql"
 
 echo "==> Import finished"

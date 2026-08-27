@@ -11,9 +11,14 @@ from fastapi import Depends
 from app.clients.elasticsearch_client import elasticsearch_client_manager
 from app.clients.embedding_client import embedding_client_manager
 from app.clients.llm_client import llm_client_manager
-from app.clients.mysql_client import dw_mysql_client_manager, meta_mysql_client_manager
+from app.clients.mysql_client import (
+    app_mysql_client_manager,
+    dw_mysql_client_manager,
+    meta_mysql_client_manager,
+)
 from app.clients.qdrant_client import qdrant_client_manager
 from app.repositories.dw_repository import DwRepository
+from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.es.es_dimension_value_repository import DimensionValueSearch
 from app.repositories.mysql.meta.mysql_meta_catalog_repository import (
     MetaCatalogRepository,
@@ -60,6 +65,15 @@ async def get_meta_session():
     )
     async with session_factory() as session:
         yield session
+
+
+def get_conversation_repository() -> ConversationRepository:
+    """获取独立应用库会话历史仓储。"""
+    session_factory = _require_initialized(
+        app_mysql_client_manager.session_factory,
+        "Agent App MySQL Session 工厂",
+    )
+    return ConversationRepository(session_factory=session_factory)
 
 
 async def get_meta_catalog_repository(
@@ -136,6 +150,9 @@ def get_agent_service(
         MetaCatalogRepository, Depends(get_meta_catalog_repository)
     ],
     dw_repository: Annotated[DwRepository, Depends(get_dw_repository)],
+    conversation_repository: Annotated[
+        ConversationRepository, Depends(get_conversation_repository)
+    ],
 ) -> AgentService:
     """组装一次 Agent 执行所需的服务。"""
     return AgentService(
@@ -148,4 +165,5 @@ def get_agent_service(
         meta_dimension_values_semantic_repository=meta_dimension_values_semantic_repository,
         meta_catalog_repository=meta_catalog_repository,
         dw_repository=dw_repository,
+        conversation_repository=conversation_repository,
     )
