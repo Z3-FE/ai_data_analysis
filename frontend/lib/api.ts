@@ -5,6 +5,25 @@ const recentGetResponses = new Map<string, { data: any; expiresAt: number }>();
 type ApiQueryValue = string | number | boolean | null | undefined;
 type ApiQuery = Record<string, ApiQueryValue>;
 
+async function readResponseBody(response: Response): Promise<any> {
+  /** 同时支持 JSON 和纯文本错误，避免把网关/后端错误伪装成 JSON 解析异常。 */
+  const text = await response.text();
+  if (!text) return null;
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function getResponseError(data: any, status: number) {
+  /** 从结构化或纯文本响应中提取可读的接口错误。 */
+  if (typeof data === "string" && data.trim()) return data.trim();
+  if (data && typeof data === "object" && typeof data.detail === "string") return data.detail;
+  return "接口请求失败（HTTP " + status + "）";
+}
+
 export function buildApiUrl(path: string, query: ApiQuery = {}) {
   /** 把请求参数统一编码到 query string，API 路由本身保持固定。 */
 
@@ -62,10 +81,10 @@ export async function apiGet(path: string, query: ApiQuery = {}): Promise<any> {
     },
   })
     .then(async (response) => {
-      const data: any = await response.json();
+      const data = await readResponseBody(response);
 
       if (!response.ok) {
-        throw new Error(data?.detail ?? "接口请求失败");
+        throw new Error(getResponseError(data, response.status));
       }
 
       recentGetResponses.set(url, {
@@ -96,10 +115,10 @@ export async function apiPost(path: string, body: unknown): Promise<any> {
     },
     body: JSON.stringify(body),
   });
-  const data: any = await response.json();
+  const data = await readResponseBody(response);
 
   if (!response.ok) {
-    throw new Error(data?.detail ?? "接口请求失败");
+    throw new Error(getResponseError(data, response.status));
   }
 
   invalidateApiCache();
