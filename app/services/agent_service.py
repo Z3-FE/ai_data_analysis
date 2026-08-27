@@ -291,6 +291,7 @@ class AgentService:
         *,
         status: str | None = None,
         error_message: str = "",
+        execution_trace: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any], str]:
         """保存助手最终消息和受控输出，并返回同一份前端事件内容。"""
         output_type, output_payload, assistant_content = self._history_output(result)
@@ -305,6 +306,7 @@ class AgentService:
                 assistant_content=assistant_content,
                 output_type=output_type,
                 output_payload=output_payload,
+                execution_trace=execution_trace,
                 error_message=error_message,
             )
         except Exception:
@@ -344,6 +346,101 @@ class AgentService:
         identity = self._new_identity(conversation_id)
         state: AgentState = AgentState(input_text=input_text, **identity)
         final_state: AgentState = state
+        trace_events: list[dict[str, Any]] = []
+
+        def trace_event(event: dict[str, Any]) -> dict[str, Any]:
+            """给实时事件补身份，并保留一份用于历史回放的事件。"""
+            enriched = self._with_identity(event, identity)
+            trace_events.append(enriched)
+            return enriched
+
+        def execution_trace() -> dict[str, Any]:
+            """生成历史回放载荷；思考和正文 chunk 合并，避免数据库保存上千条碎片。"""
+            compacted: list[dict[str, Any]] = []
+            stream_indexes: dict[str, int] = {}
+            stream_types = {"reasoning_chunk", "llm_chunk"}
+            limited_array_fields = {
+                "rows",
+                "data",
+                "display_sql_result",
+                "preview_rows",
+            }
+
+            def limit_trace_value(value: Any, field: str = "") -> Any:
+                if isinstance(value, list):
+                    items = value[:1000] if field in limited_array_fields else value
+                    return [limit_trace_value(item) for item in items]
+                if isinstance(value, dict):
+                    return {
+                        key: limit_trace_value(item, str(key))
+                        for key, item in value.items()
+                    }
+                return value
+
+            for sequence, event in enumerate(trace_events):
+                event_type = event.get("type")
+                if event_type not in stream_types:
+                    if event_type == "message.completed":
+                        content = event.get("content")
+                        compacted.append(
+                            {
+                                key: value
+                                for key, value in event.items()
+                                if key not in {"content", "output"}
+                            }
+                            | {
+                                "content_chars": len(content)
+                                if isinstance(content, str)
+                                else 0
+                            }
+                        )
+                    else:
+                        compacted.append(event)
+                    continue
+
+                phase = event.get("phase", "")
+                scope = "::".join(
+                    [
+                        str(event_type),
+                        str(event.get("node", "")),
+                        str(event.get("task_id", "")),
+                        str(phase),
+                    ]
+                )
+                chunk = event.get("chunk")
+                chunk_text = chunk if isinstance(chunk, str) else ""
+                existing_index = stream_indexes.get(scope)
+                if existing_index is None:
+                    compacted.append(
+                        {
+                            **event,
+                            "chunk": chunk_text,
+                            "combined_text": chunk_text,
+                            "chunk_count": 1,
+                            "first_sequence": sequence,
+                            "last_sequence": sequence,
+                        }
+                    )
+                    stream_indexes[scope] = len(compacted) - 1
+                    continue
+
+                current = compacted[existing_index]
+                combined_text = str(current.get("combined_text", "")) + chunk_text
+                compacted[existing_index] = {
+                    **current,
+                    "chunk": combined_text,
+                    "combined_text": combined_text,
+                    "chunk_count": int(current.get("chunk_count", 1)) + 1,
+                    "last_sequence": sequence,
+                }
+
+            return {
+                "turn_id": identity["turn_id"],
+                "run_id": identity["run_id"],
+                "event_count": len(trace_events),
+                "stored_event_count": len(compacted),
+                "events": limit_trace_value(compacted),
+            }
 
         async def identity_events() -> AsyncIterator[dict[str, Any]]:
             """先发送运行身份，再转发当前图产生的原始业务事件。"""
@@ -353,14 +450,13 @@ class AgentService:
             except asyncio.CancelledError:
                 raise
 
-            yield self._with_identity(
+            yield trace_event(
                 {
                     "type": "run.started",
                     "step": "开始执行",
                     "node": "agent_service",
                     "status": "running",
-                },
-                identity,
+                }
             )
             try:
                 async for stream_item in agent_graph.astream(
@@ -371,12 +467,12 @@ class AgentService:
                     if isinstance(stream_item, tuple) and len(stream_item) == 2:
                         stream_mode, payload = stream_item
                         if stream_mode == "custom" and isinstance(payload, dict):
-                            yield self._with_identity(payload, identity)
+                            yield trace_event(payload)
                         elif stream_mode == "values" and isinstance(payload, dict):
                             final_state = {**final_state, **payload}
                     elif isinstance(stream_item, dict):
                         if "type" in stream_item:
-                            yield self._with_identity(stream_item, identity)
+                            yield trace_event(stream_item)
                         else:
                             final_state = {**final_state, **stream_item}
             except asyncio.CancelledError:
@@ -386,54 +482,58 @@ class AgentService:
                     **final_state,
                     "report_plan_error": str(exc),
                 }
-                await self._save_turn_finish(
-                    identity,
-                    failed_state,
-                    status="failed",
-                    error_message=str(exc),
-                )
-                yield self._with_identity(
+                failed_event = trace_event(
                     {
                         "type": "run.failed",
                         "step": "执行失败",
                         "node": "agent_service",
                         "status": "failed",
                         "message": str(exc),
-                    },
-                    identity,
+                    }
                 )
+                await self._save_turn_finish(
+                    identity,
+                    failed_state,
+                    status="failed",
+                    error_message=str(exc),
+                    execution_trace=execution_trace(),
+                )
+                yield failed_event
                 return
 
-            output_type, output_payload, assistant_content = await self._save_turn_finish(
-                identity, final_state
-            )
+            output_type, output_payload, assistant_content = self._history_output(final_state)
+            completion_message = None
             if assistant_content:
-                yield self._with_identity(
+                completion_message = trace_event(
                     {
                         "type": "message.completed",
                         "step": "生成回答",
                         "node": "agent_service",
                         "status": self._message_status(final_state),
-                        "execution_mode": final_state.get(
-                            "execution_mode", "single_query"
-                        ),
+                        "execution_mode": final_state.get("execution_mode", "single_query"),
                         "content": assistant_content,
                         "output_type": output_type,
                         "output": output_payload,
-                    },
-                    identity,
+                    }
                 )
-
-            yield self._with_identity(
+            completion_event = trace_event(
                 {
                     "type": "run.completed",
                     "step": "执行完成",
                     "node": "agent_service",
                     "status": self._result_status(final_state),
                     "execution_mode": final_state.get("execution_mode", "single_query"),
-                },
-                identity,
+                }
             )
+            await self._save_turn_finish(
+                identity,
+                final_state,
+                execution_trace=execution_trace(),
+            )
+            if completion_message:
+                yield completion_message
+
+            yield completion_event
 
         async for payload in _stream_sse_with_heartbeat(identity_events()):
             yield payload

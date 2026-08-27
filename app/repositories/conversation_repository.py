@@ -213,6 +213,7 @@ class ConversationRepository:
         assistant_content: str,
         output_type: str,
         output_payload: dict[str, Any],
+        execution_trace: dict[str, Any] | None = None,
         error_message: str = "",
     ) -> None:
         """保存助手最终消息和受控结构化输出，并结束当前轮次。"""
@@ -265,6 +266,16 @@ class ConversationRepository:
                     payload=_json_safe(output_payload),
                 )
                 session.add(output)
+
+            if execution_trace is not None:
+                trace_output = TurnOutputModel(
+                    output_id=str(uuid4()),
+                    conversation_id=conversation_id,
+                    turn_id=turn_id,
+                    output_type="execution_trace",
+                    payload=_json_safe(execution_trace),
+                )
+                session.add(trace_output)
             await session.commit()
 
     async def list_conversations(
@@ -336,7 +347,10 @@ class ConversationRepository:
             outputs = (
                 await session.scalars(
                     select(TurnOutputModel)
-                    .where(TurnOutputModel.conversation_id == conversation_id)
+                    .where(
+                        TurnOutputModel.conversation_id == conversation_id,
+                        TurnOutputModel.output_type != "execution_trace",
+                    )
                     .order_by(TurnOutputModel.created_at)
                 )
             ).all()
@@ -346,6 +360,32 @@ class ConversationRepository:
                 "messages": [self._message_dict(message) for message in messages],
                 "outputs": [self._output_dict(output) for output in outputs],
             }
+
+    async def get_execution_trace(
+        self, user_id: str, conversation_id: str, turn_id: str
+    ) -> dict[str, Any] | None:
+        """读取指定会话轮次的压缩执行过程。"""
+        async with self.session_factory() as session:
+            output = await session.scalar(
+                select(TurnOutputModel).where(
+                    TurnOutputModel.conversation_id == conversation_id,
+                    TurnOutputModel.turn_id == turn_id,
+                    TurnOutputModel.output_type == "execution_trace",
+                )
+            )
+            if output is None:
+                return None
+
+            turn = await session.scalar(
+                select(ConversationTurnModel).where(
+                    ConversationTurnModel.conversation_id == conversation_id,
+                    ConversationTurnModel.turn_id == turn_id,
+                    ConversationTurnModel.user_id == user_id,
+                )
+            )
+            if turn is None:
+                return None
+            return self._output_dict(output)
 
     async def delete_conversation(self, user_id: str, conversation_id: str) -> bool:
         """删除当前用户的会话及其级联历史数据。"""

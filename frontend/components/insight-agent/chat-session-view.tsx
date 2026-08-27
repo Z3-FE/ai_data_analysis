@@ -76,6 +76,7 @@ interface ConversationHistoryData {
 }
 
 interface ConversationTurnMeta {
+  turn_id?: string;
   execution_mode?: ExecutionMode;
   response_type: "chat" | "simple_data" | "analysis" | "clarification" | "failure";
   assistant_text: string;
@@ -96,7 +97,8 @@ interface AssistantChatRuntimeProps {
 
 interface ExecutionProcessContextValue {
   open: boolean;
-  toggle: () => void;
+  activeTurnId?: string;
+  toggle: (turnId?: string) => void;
 }
 
 const ExecutionProcessContext = createContext<ExecutionProcessContextValue | null>(null);
@@ -166,7 +168,7 @@ function buildConversationMeta(
   content: string,
   outputType?: string,
   payload: Record<string, unknown> = {},
-  turn?: BackendTurn,
+  turn?: Partial<BackendTurn>,
   elapsedSecondsOverride?: number,
 ): ConversationTurnMeta | undefined {
   /** 让实时消息和历史消息使用同一份富内容元数据结构。 */
@@ -180,6 +182,7 @@ function buildConversationMeta(
     ? Math.max(0, (completedAt.getTime() - startedAt.getTime()) / 1000)
     : 0;
   return {
+    turn_id: turn?.turn_id,
     execution_mode: turn?.execution_mode,
     response_type: outputResponseType(outputType),
     assistant_text: content,
@@ -294,6 +297,31 @@ function toAssistantMessage(
     createdAt: parseBackendDate(message.created_at) ?? new Date(),
     ...(conversation ? { metadata: { custom: { conversation } } } : {}),
   };
+}
+
+function outputsByTurn(history: ConversationHistoryData) {
+  /** 按轮次和输出类型保留历史输出，执行过程不能覆盖报告输出。 */
+
+  const grouped = new Map<string, Map<string, BackendOutput>>();
+  for (const output of history.outputs ?? []) {
+    const byType = grouped.get(output.turn_id) ?? new Map<string, BackendOutput>();
+    byType.set(output.output_type, output);
+    grouped.set(output.turn_id, byType);
+  }
+  return grouped;
+}
+
+function displayOutputForMessage(
+  outputs: Map<string, BackendOutput> | undefined,
+): BackendOutput | undefined {
+  /** 助手消息只绑定报告或查询等主输出，执行轨迹由按钮按需读取。 */
+
+  if (!outputs) return undefined;
+  for (const type of ["rendered_report", "query_result", "clarification", "failure", "text"]) {
+    const output = outputs.get(type);
+    if (output) return output;
+  }
+  return undefined;
 }
 
 function notifyConversationsChanged() {
@@ -475,17 +503,17 @@ function AssistantMessageBubble() {
           {formatTime(message.createdAt)}
         </span>
         {meta?.query_result && <QueryResultView result={meta.query_result} />}
-        {executionProcess && (meta?.response_type === "analysis" || meta?.response_type === "simple_data") && (
+        {executionProcess && meta?.turn_id && (meta.response_type === "analysis" || meta.response_type === "simple_data") && (
           <button
             type="button"
-            onClick={executionProcess.toggle}
+            onClick={() => executionProcess.toggle(meta.turn_id)}
             className="mt-4 inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
           >
             <ListTree className="size-3.5" />
             {meta.response_type === "analysis"
-              ? executionProcess.open ? "收起分析过程" : "查看分析过程"
-              : executionProcess.open ? "收起查询过程" : "查看查询过程"}
-            <ChevronRight className={"size-3.5 transition-transform " + (executionProcess.open ? "rotate-180" : "")} />
+              ? executionProcess.open && executionProcess.activeTurnId === meta.turn_id ? "收起分析过程" : "查看分析过程"
+              : executionProcess.open && executionProcess.activeTurnId === meta.turn_id ? "收起查询过程" : "查看查询过程"}
+            <ChevronRight className={"size-3.5 transition-transform " + (executionProcess.open && executionProcess.activeTurnId === meta.turn_id ? "rotate-180" : "")} />
           </button>
         )}
         {meta?.rendered_report && (
@@ -556,11 +584,15 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
   const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
   const [executionMode, setExecutionMode] = useState<ExecutionMode | null>(null);
   const [executionPanelOpen, setExecutionPanelOpen] = useState(false);
+  const [activeExecutionTurnId, setActiveExecutionTurnId] = useState<string>();
+  const [executionTraceLoading, setExecutionTraceLoading] = useState(false);
+  const [executionTraceError, setExecutionTraceError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const pendingStartedRef = useRef(false);
   const activeAbortControllerRef = useRef<AbortController | null>(null);
+  const executionTraceRequestRef = useRef(0);
 
   const loadConversation = useCallback(async () => {
     /** 同时拉取会话详情和消息列表，用于刷新标题与聊天记录。 */
@@ -574,9 +606,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       const turnsById = new Map(
         (history.turns ?? []).map((turn) => [turn.turn_id, turn]),
       );
-      const outputsByTurnId = new Map(
-        (history.outputs ?? []).map((output) => [output.turn_id, output]),
-      );
+      const groupedOutputs = outputsByTurn(history);
       const latestTurn = history.turns?.at(-1);
 
       setConversation(history.conversation ?? null);
@@ -585,7 +615,9 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
         (history.messages ?? []).map((message) =>
           toAssistantMessage(
             message,
-            message.turn_id ? outputsByTurnId.get(message.turn_id) : undefined,
+            message.turn_id
+              ? displayOutputForMessage(groupedOutputs.get(message.turn_id))
+              : undefined,
             message.turn_id ? turnsById.get(message.turn_id) : undefined,
           ),
         ),
@@ -624,6 +656,10 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       setDebugEvents([]);
       setExecutionMode(null);
       setExecutionPanelOpen(false);
+      setActiveExecutionTurnId(undefined);
+      setExecutionTraceLoading(false);
+      setExecutionTraceError("");
+      executionTraceRequestRef.current += 1;
       setIsRunning(true);
       setMessages((current) => [...current, userMessage, assistantMessage]);
 
@@ -635,6 +671,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       let failedMessage = "";
       let typewriterRunning = false;
       let responseMeta: ConversationTurnMeta | undefined;
+      let currentTurnId: string | undefined;
       const startedAt = Date.now();
       let terminalEventReceived = false;
 
@@ -696,6 +733,10 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
           const payload = runEvent;
           setDebugEvents((current) => appendExecutionEvent(current, runEvent as StreamEvent));
 
+          if (runEvent.type === "run.started" && typeof payload.turn_id === "string") {
+            currentTurnId = payload.turn_id;
+          }
+
           if (runEvent.type === "question_route") {
             const mode = asExecutionMode(payload.execution_mode);
             if (mode) {
@@ -721,7 +762,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
               assistantText,
               outputType,
               asRecord(payload.output),
-              undefined,
+              { turn_id: typeof payload.turn_id === "string" ? payload.turn_id : undefined },
               Math.max(0, (Date.now() - startedAt) / 1000),
             );
             if (mode && responseMeta) responseMeta = { ...responseMeta, execution_mode: mode };
@@ -751,7 +792,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
               failedMessage,
               "failure",
               { message: failedMessage },
-              undefined,
+              { turn_id: currentTurnId },
               Math.max(0, (Date.now() - startedAt) / 1000),
             );
             break;
@@ -770,7 +811,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
             message,
             "failure",
             { message },
-            undefined,
+            { turn_id: currentTurnId },
             Math.max(0, (Date.now() - startedAt) / 1000),
           );
           updateAssistantMessage(message, { type: "incomplete", reason: "error" });
@@ -788,7 +829,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
             message,
             "failure",
             { message },
-            undefined,
+            { turn_id: currentTurnId },
             Math.max(0, (Date.now() - startedAt) / 1000),
           );
           updateAssistantMessage(message, { type: "incomplete", reason: "error" });
@@ -832,6 +873,10 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
     setDebugEvents([]);
     setExecutionMode(null);
     setExecutionPanelOpen(false);
+    setActiveExecutionTurnId(undefined);
+    setExecutionTraceLoading(false);
+    setExecutionTraceError("");
+    executionTraceRequestRef.current += 1;
     pendingStartedRef.current = false;
     activeAbortControllerRef.current?.abort();
     activeAbortControllerRef.current = null;
@@ -858,9 +903,71 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
     shouldShowExecutionPanel(executionMode) || hasProcessOutput
   );
 
+  const toggleExecutionProcess = useCallback((turnId?: string) => {
+    /** 打开指定轮次的执行过程；当前运行复用内存事件，历史轮次按需读取。 */
+
+    if (executionPanelOpen && activeExecutionTurnId === turnId) {
+      executionTraceRequestRef.current += 1;
+      setExecutionTraceLoading(false);
+      setExecutionTraceError("");
+      setExecutionPanelOpen(false);
+      return;
+    }
+
+    setActiveExecutionTurnId(turnId);
+    setExecutionTraceError("");
+    setExecutionPanelOpen(true);
+
+    if (!turnId) {
+      setDebugEvents([]);
+      setExecutionTraceLoading(false);
+      return;
+    }
+
+    const requestId = executionTraceRequestRef.current + 1;
+    executionTraceRequestRef.current = requestId;
+    setDebugEvents([]);
+    setExecutionTraceLoading(true);
+    void apiGet("/api/conversations/execution-trace", {
+      conversation_id: conversationId,
+      turn_id: turnId,
+    })
+      .then((data) => {
+        if (executionTraceRequestRef.current !== requestId) return;
+        const payload = asRecord(data?.payload);
+        const traceEvents = Array.isArray(payload.events)
+          ? payload.events.filter((event): event is StreamEvent => Boolean(
+              event &&
+              typeof event === "object" &&
+              typeof (event as Record<string, unknown>).type === "string",
+            ))
+          : [];
+        setDebugEvents(traceEvents.reduce<DebugEvent[]>(
+          (events, event) => appendExecutionEvent(events, event),
+          [],
+        ));
+        if (data?.available === false || !traceEvents.length) {
+          setExecutionTraceError("该轮次没有保存执行过程。");
+        }
+      })
+      .catch((err) => {
+        if (executionTraceRequestRef.current !== requestId) return;
+        setExecutionTraceError(err instanceof Error ? err.message : "执行过程加载失败");
+      })
+      .finally(() => {
+        if (executionTraceRequestRef.current === requestId) {
+          setExecutionTraceLoading(false);
+        }
+      });
+  }, [activeExecutionTurnId, conversationId, executionPanelOpen]);
+
   return (
     <ExecutionProcessContext.Provider
-      value={{ open: executionPanelOpen, toggle: () => setExecutionPanelOpen((current) => !current) }}
+      value={{
+        open: executionPanelOpen,
+        activeTurnId: activeExecutionTurnId,
+        toggle: toggleExecutionProcess,
+      }}
     >
       <div className="flex-1 flex overflow-hidden bg-slate-50">
         <section className="flex-1 min-w-0 flex flex-col border-r border-slate-200">
@@ -913,7 +1020,12 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
         </section>
 
         {showExecutionPanel && (
-          <ExecutionPanel running={isRunning} debugEvents={debugEvents} />
+          <ExecutionPanel
+            running={isRunning}
+            debugEvents={debugEvents}
+            loading={executionTraceLoading}
+            error={executionTraceError}
+          />
         )}
       </div>
     </ExecutionProcessContext.Provider>

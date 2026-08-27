@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS turn_outputs (
   output_id VARCHAR(128) PRIMARY KEY COMMENT '结构化输出 ID',
   conversation_id VARCHAR(128) NOT NULL,
   turn_id VARCHAR(128) NOT NULL,
-  output_type VARCHAR(32) NOT NULL COMMENT 'query_result/rendered_report/clarification/failure',
+  output_type VARCHAR(32) NOT NULL COMMENT 'query_result/rendered_report/execution_trace/clarification/failure',
   payload JSON NOT NULL COMMENT '可供前端重新渲染的受控结果',
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
