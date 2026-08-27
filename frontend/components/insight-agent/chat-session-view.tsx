@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import {
   AssistantRuntimeProvider,
   ComposerPrimitive,
@@ -16,12 +16,15 @@ import {
 import {
   AlertCircle,
   Bot,
+  ChevronRight,
   Loader2,
+  ListTree,
   MessageSquare,
   Send,
   User,
 } from "lucide-react";
 import { apiGet } from "../../lib/api";
+import { parseBackendDate } from "../../lib/date";
 import { ReportView, type RenderedReport } from "./analysis-workspace";
 import {
   ExecutionPanel,
@@ -91,11 +94,19 @@ interface AssistantChatRuntimeProps {
   onCancel: () => Promise<void>;
 }
 
+interface ExecutionProcessContextValue {
+  open: boolean;
+  toggle: () => void;
+}
+
+const ExecutionProcessContext = createContext<ExecutionProcessContextValue | null>(null);
+
 function formatTime(value?: Date | string) {
   /** 格式化消息时间，用于聊天气泡下方展示。 */
 
-  if (!value) return "--";
-  return new Date(value).toLocaleString("zh-CN", {
+  const date = parseBackendDate(value);
+  if (!date) return "--";
+  return date.toLocaleString("zh-CN", {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
@@ -161,10 +172,12 @@ function buildConversationMeta(
   /** 让实时消息和历史消息使用同一份富内容元数据结构。 */
 
   if (!outputType) return undefined;
+  const startedAt = parseBackendDate(turn?.started_at);
+  const completedAt = parseBackendDate(turn?.completed_at);
   const elapsedSeconds = typeof elapsedSecondsOverride === "number"
     ? elapsedSecondsOverride
-    : turn?.started_at && turn.completed_at
-    ? Math.max(0, (new Date(turn.completed_at).getTime() - new Date(turn.started_at).getTime()) / 1000)
+    : startedAt && completedAt
+    ? Math.max(0, (completedAt.getTime() - startedAt.getTime()) / 1000)
     : 0;
   return {
     execution_mode: turn?.execution_mode,
@@ -278,7 +291,7 @@ function toAssistantMessage(
     id: message.id,
     role: message.role,
     content: [{ type: "text", text: message.content }],
-    createdAt: message.created_at ? new Date(message.created_at) : new Date(),
+    createdAt: parseBackendDate(message.created_at) ?? new Date(),
     ...(conversation ? { metadata: { custom: { conversation } } } : {}),
   };
 }
@@ -430,6 +443,7 @@ function AssistantMessageBubble() {
   const lastMessageId = useAuiState((state) => state.thread.messages.at(-1)?.id);
   const isUser = message.role === "user";
   const meta = conversationMeta(message);
+  const executionProcess = useContext(ExecutionProcessContext);
   const displayText = getDisplayMessageText(message);
   const showStreamingCursor =
     threadIsRunning &&
@@ -461,6 +475,19 @@ function AssistantMessageBubble() {
           {formatTime(message.createdAt)}
         </span>
         {meta?.query_result && <QueryResultView result={meta.query_result} />}
+        {executionProcess && (meta?.response_type === "analysis" || meta?.response_type === "simple_data") && (
+          <button
+            type="button"
+            onClick={executionProcess.toggle}
+            className="mt-4 inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
+          >
+            <ListTree className="size-3.5" />
+            {meta.response_type === "analysis"
+              ? executionProcess.open ? "收起分析过程" : "查看分析过程"
+              : executionProcess.open ? "收起查询过程" : "查看查询过程"}
+            <ChevronRight className={"size-3.5 transition-transform " + (executionProcess.open ? "rotate-180" : "")} />
+          </button>
+        )}
         {meta?.rendered_report && (
           <div className="mt-6 w-full min-w-0">
             <ReportView report={meta.rendered_report} />
@@ -528,6 +555,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
   const [messages, setMessages] = useState<ThreadMessageLike[]>([]);
   const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
   const [executionMode, setExecutionMode] = useState<ExecutionMode | null>(null);
+  const [executionPanelOpen, setExecutionPanelOpen] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -595,6 +623,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       setError("");
       setDebugEvents([]);
       setExecutionMode(null);
+      setExecutionPanelOpen(false);
       setIsRunning(true);
       setMessages((current) => [...current, userMessage, assistantMessage]);
 
@@ -669,7 +698,9 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
 
           if (runEvent.type === "question_route") {
             const mode = asExecutionMode(payload.execution_mode);
-            if (mode) setExecutionMode(mode);
+            if (mode) {
+              setExecutionMode(mode);
+            }
           }
 
           if (runEvent.type === "message.delta" && payload.content) {
@@ -680,7 +711,9 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
           if (runEvent.type === "message.completed" && payload.content) {
             assistantText = payload.content;
             const mode = asExecutionMode(payload.execution_mode);
-            if (mode) setExecutionMode(mode);
+            if (mode) {
+              setExecutionMode(mode);
+            }
             const outputType = typeof payload.output_type === "string"
               ? payload.output_type
               : undefined;
@@ -798,6 +831,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
     setError("");
     setDebugEvents([]);
     setExecutionMode(null);
+    setExecutionPanelOpen(false);
     pendingStartedRef.current = false;
     activeAbortControllerRef.current?.abort();
     activeAbortControllerRef.current = null;
@@ -816,9 +850,20 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
     void sendQuestion(pendingQuestion);
   }, [conversationId, isLoading, sendQuestion]);
 
+  const hasProcessOutput = messages.some((message) => {
+    const meta = conversationMeta(message);
+    return meta?.response_type === "analysis" || meta?.response_type === "simple_data";
+  });
+  const showExecutionPanel = executionPanelOpen && (
+    shouldShowExecutionPanel(executionMode) || hasProcessOutput
+  );
+
   return (
-    <div className="flex-1 flex overflow-hidden bg-slate-50">
-      <section className="flex-1 min-w-0 flex flex-col border-r border-slate-200">
+    <ExecutionProcessContext.Provider
+      value={{ open: executionPanelOpen, toggle: () => setExecutionPanelOpen((current) => !current) }}
+    >
+      <div className="flex-1 flex overflow-hidden bg-slate-50">
+        <section className="flex-1 min-w-0 flex flex-col border-r border-slate-200">
         <div className="bg-white border-b border-slate-200 px-6 py-4">
           <div className="flex items-start justify-between gap-4">
             <div>
@@ -865,11 +910,12 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
             {error}
           </div>
         )}
-      </section>
+        </section>
 
-      {shouldShowExecutionPanel(executionMode) && (
-        <ExecutionPanel running={isRunning} debugEvents={debugEvents} />
-      )}
-    </div>
+        {showExecutionPanel && (
+          <ExecutionPanel running={isRunning} debugEvents={debugEvents} />
+        )}
+      </div>
+    </ExecutionProcessContext.Provider>
   );
 }

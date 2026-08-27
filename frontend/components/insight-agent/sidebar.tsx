@@ -30,6 +30,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
+import { parseBackendDate } from "@/lib/date";
 
 interface SidebarConversation {
   conversation_id: string;
@@ -44,8 +45,8 @@ function formatConversationTime(value?: string) {
 
   if (!value) return "--";
 
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "--";
+  const date = parseBackendDate(value);
+  if (!date) return "--";
 
   const now = new Date();
   const isToday = date.toDateString() === now.toDateString();
