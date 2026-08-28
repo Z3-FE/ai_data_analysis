@@ -14,9 +14,17 @@ mysql:
   password: "123456"
   dw_database: dw
   meta_database: meta
-  # 应用会话、消息和可重渲染结果的独立数据库，不随数据仓库导入重置。
-  app_database: agent_app
   charset: utf8mb4
+  pool_pre_ping: true
+  pool_recycle: 3600
+
+postgres:
+  # Agent 平台会话历史和 LangGraph Checkpointer 使用 PostgreSQL；分析数据仍在 MySQL。
+  host: 127.0.0.1
+  port: 5432
+  user: ${oc.env:POSTGRES_USER,z523}
+  password: ${oc.env:POSTGRES_PASSWORD,""}
+  database: agent_app
   pool_pre_ping: true
   pool_recycle: 3600
 

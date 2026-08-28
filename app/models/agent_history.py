@@ -6,8 +6,8 @@
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
-from sqlalchemy.dialects.mysql import LONGTEXT
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -27,7 +27,7 @@ class ConversationModel(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="created")
     active_run_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     conversation_metadata: Mapped[dict] = mapped_column(
-        "metadata", JSON, nullable=False, default=dict
+        "metadata", JSONB, nullable=False, default=dict
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow
@@ -53,7 +53,7 @@ class ConversationTurnModel(Base):
     user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     thread_id: Mapped[str] = mapped_column(String(128), nullable=False)
     run_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    input_text: Mapped[str] = mapped_column(LONGTEXT, nullable=False)
+    input_text: Mapped[str] = mapped_column(Text, nullable=False)
     execution_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -92,9 +92,9 @@ class ConversationMessageModel(Base):
     role: Mapped[str] = mapped_column(String(32), nullable=False)
     message_type: Mapped[str] = mapped_column(String(32), nullable=False, default="text")
     sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    content: Mapped[str] = mapped_column(LONGTEXT, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
     message_metadata: Mapped[dict] = mapped_column(
-        "metadata", JSON, nullable=False, default=dict
+        "metadata", JSONB, nullable=False, default=dict
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow
@@ -124,7 +124,7 @@ class TurnOutputModel(Base):
         index=True,
     )
     output_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow
     )

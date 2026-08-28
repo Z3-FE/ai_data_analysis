@@ -8,6 +8,8 @@
 query_graph 复用现有问数链。
 """
 
+from typing import Any
+
 from langgraph.graph import END, START, StateGraph
 
 from app.agent.context import AgentContext
@@ -51,7 +53,7 @@ async def _clarification_route_boundary(
     return {"output_text": message}
 
 
-def build_agent_graph():
+def build_agent_graph(checkpointer: Any = None):
     """构建并返回当前阶段的 LangGraph。
 
 路由节点是四个执行分支的边界；分析任务内部的依赖调度由
@@ -88,7 +90,7 @@ execute_analysis 负责，不在 LangGraph 中为每个动态任务创建节点�
     graph.add_edge("render_report", END)
     graph.add_edge("clarification_route_boundary", END)
     graph.add_edge("daily_chat", END)
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 agent_graph = build_agent_graph()

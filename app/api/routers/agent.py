@@ -59,12 +59,12 @@ class AgentRunResponse(BaseModel):
 
 
 @router.post("/run", response_model=AgentRunResponse)
-def run_agent(
+async def run_agent(
     payload: AgentRunRequest,
     agent_service: Annotated[AgentService, Depends(get_agent_service)],
 ) -> AgentRunResponse:
     """执行当前 LangGraph 并返回结果。"""
-    result = agent_service.run(payload.input_text, payload.conversation_id)
+    result = await agent_service.arun(payload.input_text, payload.conversation_id)
     return AgentRunResponse.model_validate(result)
 
 

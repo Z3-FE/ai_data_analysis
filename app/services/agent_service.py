@@ -13,7 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.agent.context import AgentContext
-from app.agent.graph import agent_graph
+from app.agent.graph import agent_graph as default_agent_graph
 from app.agent.state import AgentState
 from app.core.config import settings
 from app.repositories.dw_repository import DwRepository
@@ -101,6 +101,7 @@ class AgentService:
         meta_catalog_repository: MetaCatalogRepository,
         dw_repository: DwRepository,
         conversation_repository: ConversationRepository,
+        graph: Any | None = None,
     ) -> None:
         self.llm_client = llm_client
         self.embedding_client = embedding_client
@@ -112,6 +113,7 @@ class AgentService:
         self.meta_catalog_repository = meta_catalog_repository
         self.dw_repository = dw_repository
         self.conversation_repository = conversation_repository
+        self.agent_graph = graph or default_agent_graph
 
     def _context(self) -> AgentContext:
         """组装本次图执行使用的外部依赖。"""
@@ -136,6 +138,54 @@ class AgentService:
             "thread_id": conversation_id,
             "turn_id": str(uuid4()),
             "run_id": str(uuid4()),
+        }
+
+    @staticmethod
+    def _new_turn_state() -> AgentState:
+        """显式清空本轮临时字段，避免 Checkpointer 复用上一轮的中间结果。"""
+        return {
+            "original_question": "",
+            "execution_mode": "",
+            "route_reason": "",
+            "analysis_goals": [],
+            "route_confidence": 0.0,
+            "clarification_question": "",
+            "route_output": "",
+            "analysis_plan": {},
+            "analysis_task_results": [],
+            "analysis_evidence": {},
+            "report_plan": {},
+            "report_plan_status": "",
+            "report_plan_error": "",
+            "rendered_report": {},
+            "llm_keywords": [],
+            "jieba_keywords": [],
+            "keywords": [],
+            "column_recall_terms": [],
+            "column_candidates": [],
+            "table_recall_terms": [],
+            "table_candidates": [],
+            "metrics_recall_terms": [],
+            "metrics_candidates": [],
+            "dimension_value_recall_terms": [],
+            "dimension_value_candidates": [],
+            "table_infos": [],
+            "metric_infos": [],
+            "dimension_infos": [],
+            "relationship_infos": [],
+            "metric_dimension_infos": [],
+            "metric_selection": [],
+            "table_selection": {},
+            "extra_context": {},
+            "sql": "",
+            "sql_reasoning": "",
+            "sql_result": [],
+            "result_columns": [],
+            "dimension_value_mappings": [],
+            "display_sql_result": [],
+            "mapping_limitations": [],
+            "output_text": "",
+            "llm_output": "",
         }
 
     @staticmethod
@@ -317,13 +367,24 @@ class AgentService:
         """同步执行当前 Agent 图并返回结构化结果。"""
         return asyncio.run(self._run_async(input_text, conversation_id))
 
+    async def arun(self, input_text: str, conversation_id: str) -> dict:
+        """在当前异步事件循环内执行 Agent 图。"""
+        return await self._run_async(input_text, conversation_id)
+
     async def _run_async(self, input_text: str, conversation_id: str) -> dict:
         """在同一个事件循环内完成同步接口使用的完整轮次生命周期。"""
         identity = self._new_identity(conversation_id)
-        state: AgentState = AgentState(input_text=input_text, **identity)
+        state: AgentState = AgentState(
+            input_text=input_text,
+            **identity,
+            **self._new_turn_state(),
+        )
         await self._save_turn_start(input_text, identity)
+        config = self._graph_config(identity)
         try:
-            result = await agent_graph.ainvoke(input=state, context=self._context())
+            result = await self.agent_graph.ainvoke(
+                input=state, config=config, context=self._context()
+            )
         except Exception as exc:
             failed_state: AgentState = {**state, "report_plan_error": str(exc)}
             await self._save_turn_finish(
@@ -337,6 +398,20 @@ class AgentService:
         await self._save_turn_finish(identity, result)
         return self._format_result(input_text, result)
 
+    @staticmethod
+    def _graph_config(identity: dict[str, str]) -> dict[str, Any]:
+        """为每次图执行构造官方 Checkpointer 所需的 thread 配置。"""
+        return {
+            "configurable": {
+                "thread_id": identity["thread_id"],
+            },
+            "metadata": {
+                "conversation_id": identity["conversation_id"],
+                "turn_id": identity["turn_id"],
+                "run_id": identity["run_id"],
+            },
+        }
+
     async def qyStream(
         self,
         input_text: str,
@@ -344,7 +419,11 @@ class AgentService:
     ) -> AsyncIterator[str]:
         """以带心跳的 SSE 文本流返回当前 Agent 执行过程。"""
         identity = self._new_identity(conversation_id)
-        state: AgentState = AgentState(input_text=input_text, **identity)
+        state: AgentState = AgentState(
+            input_text=input_text,
+            **identity,
+            **self._new_turn_state(),
+        )
         final_state: AgentState = state
         trace_events: list[dict[str, Any]] = []
 
@@ -446,6 +525,7 @@ class AgentService:
             """先发送运行身份，再转发当前图产生的原始业务事件。"""
             nonlocal final_state
             try:
+                config = self._graph_config(identity)
                 await self._save_turn_start(input_text, identity)
             except asyncio.CancelledError:
                 raise
@@ -459,8 +539,9 @@ class AgentService:
                 }
             )
             try:
-                async for stream_item in agent_graph.astream(
+                async for stream_item in self.agent_graph.astream(
                     input=state,
+                    config=config,
                     context=self._context(),
                     stream_mode=["custom", "values"],
                 ):

@@ -15,10 +15,10 @@ from app.clients.elasticsearch_client import elasticsearch_client_manager
 from app.clients.embedding_client import embedding_client_manager
 from app.clients.llm_client import llm_client_manager
 from app.clients.mysql_client import (
-    app_mysql_client_manager,
     dw_mysql_client_manager,
     meta_mysql_client_manager,
 )
+from app.clients.postgres_client import postgres_client_manager
 from app.clients.qdrant_client import qdrant_client_manager
 from app.core.config import settings
 from app.core.logging import setup_logging
@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     elasticsearch_client_manager.init()
     meta_mysql_client_manager.init()
     dw_mysql_client_manager.init()
-    app_mysql_client_manager.init()
+    await postgres_client_manager.init()
     logger.info("应用级客户端初始化完成")
     try:
         yield
@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await qdrant_client_manager.close()
         await meta_mysql_client_manager.close()
         await dw_mysql_client_manager.close()
-        await app_mysql_client_manager.close()
+        await postgres_client_manager.close()
         await llm_client_manager.aclose()
         logger.info("应用级客户端已关闭")
 

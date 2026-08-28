@@ -20,7 +20,7 @@ from app.models.agent_history import (
 
 
 def _json_safe(value: Any) -> Any:
-    """把 Decimal 等数据库返回类型转换成 MySQL JSON 可保存的值。"""
+    """把 Decimal 等数据库返回类型转换成 PostgreSQL JSONB 可保存的值。"""
     if value is None:
         return None
     return json.loads(json.dumps(value, ensure_ascii=False, default=str))

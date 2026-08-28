@@ -12,10 +12,10 @@ from app.clients.elasticsearch_client import elasticsearch_client_manager
 from app.clients.embedding_client import embedding_client_manager
 from app.clients.llm_client import llm_client_manager
 from app.clients.mysql_client import (
-    app_mysql_client_manager,
     dw_mysql_client_manager,
     meta_mysql_client_manager,
 )
+from app.clients.postgres_client import postgres_client_manager
 from app.clients.qdrant_client import qdrant_client_manager
 from app.repositories.dw_repository import DwRepository
 from app.repositories.conversation_repository import ConversationRepository
@@ -68,10 +68,10 @@ async def get_meta_session():
 
 
 def get_conversation_repository() -> ConversationRepository:
-    """获取独立应用库会话历史仓储。"""
+    """获取 PostgreSQL 会话历史仓储。"""
     session_factory = _require_initialized(
-        app_mysql_client_manager.session_factory,
-        "Agent App MySQL Session 工厂",
+        postgres_client_manager.session_factory,
+        "Agent App PostgreSQL Session 工厂",
     )
     return ConversationRepository(session_factory=session_factory)
 
@@ -166,4 +166,5 @@ def get_agent_service(
         meta_catalog_repository=meta_catalog_repository,
         dw_repository=dw_repository,
         conversation_repository=conversation_repository,
+        graph=postgres_client_manager.agent_graph,
     )

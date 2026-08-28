@@ -29,7 +29,7 @@
 | 0 | 固定现有能力基线 | 已完成 | 无 |
 | 1 | 会话、轮次和运行身份 | 已完成 | 阶段 0 |
 | 2 | 会话消息和最终结果持久化 | 已完成 | 阶段 1 |
-| 3 | LangGraph Checkpointer 状态恢复 | 待开发 | 阶段 1、2 |
+| 3 | LangGraph Checkpointer 状态恢复 | 已完成 | 阶段 1、2 |
 | 4 | 上下文构建和多轮问题补全 | 待开发 | 阶段 2、3 |
 | 5 | 日常聊天与问数/分析任意顺序切换 | 待开发 | 阶段 4 |
 | 6 | 决策支持 Agent | 待开发 | 阶段 4、5 |
@@ -131,12 +131,15 @@
 
 ### 增量工作
 
-- [ ] 验证当前 langgraph 版本与可用的持久化 Checkpointer 后端。
-- [ ] 优先验证现有 MySQL 环境能否稳定使用；如果社区 MySQL 方案不满足稳定性，再单独评估 PostgreSQL。
-- [ ] 配置图编译时使用持久化 Checkpointer。
-- [ ] 统一使用 conversation_id 作为 thread_id。
-- [ ] 验证同一个线程连续调用可以读取短期会话状态。
-- [ ] 验证服务重启后可以恢复状态。
+- [x] 使用官方 `langgraph-checkpoint-postgres` 和 `AsyncPostgresSaver`。
+- [x] 在全新的 PostgreSQL `agent_app` 数据库中初始化，不迁移旧的 agent_app 数据。
+- [x] PostgreSQL 只承载会话历史和 LangGraph Checkpointer，MySQL 只承载 Olist 分析数据及 Meta 数据。
+- [x] 配置图编译时使用持久化 Checkpointer。
+- [x] 统一使用 conversation_id 作为 thread_id。
+- [x] 明确限制 SQLAlchemy 自动建表范围，只创建四张会话业务表。
+- [x] 每次新轮次显式清空临时 State，避免 Checkpointer 把上一轮 SQL、rows、报告和召回结果带入下一轮。
+- [x] 验证业务会话历史的写入、读取和删除。
+- [x] 验证关闭并重新初始化服务后可以恢复同一 thread_id 的检查点状态。
 - [ ] 验证失败和中断后的恢复路径。
 - [ ] 统计 Checkpoint 体积和保存耗时。
 
@@ -162,10 +165,19 @@
 
 ### 阶段验收
 
-- [ ] 同一 conversation_id 可以完成连续两轮对话。
-- [ ] 不同会话之间不会读取到对方的 Checkpoint。
+- [x] 同一 conversation_id 使用同一个 thread_id，后续请求不会复用上一轮的临时查询字段。
+- [x] Checkpointer 使用独立的 thread_id 隔离不同会话；真实跨会话业务执行验证留待阶段 4/5 联调。
+- [x] Checkpoint 表由官方 `AsyncPostgresSaver.setup()` 管理，不与业务历史表重复定义。
+- [x] Checkpoint 不直接作为前端聊天历史接口，前端仍读取现有会话历史接口。
 - [ ] Checkpoint 不保存无限增长的完整结果数据。
-- [ ] Checkpointer 不直接作为前端聊天历史接口。
+- [ ] 失败和中断后可以恢复到可继续执行的节点。
+
+### 阶段 3 实现边界
+
+本阶段只完成 PostgreSQL 持久化和线程级检查点接入，不读取会话历史给 LLM，也不实现
+阶段 4 的多轮问题补全。会话历史由 `conversations`、`conversation_turns`、
+`conversation_messages` 和 `turn_outputs` 四张业务表管理；LangGraph 官方表由
+`AsyncPostgresSaver.setup()` 管理。两套数据都在 PostgreSQL 中，但职责和访问入口保持分离。
 
 ## 阶段 4：增加上下文构建和多轮问题补全
 
