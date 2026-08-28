@@ -372,14 +372,14 @@ function parseStreamEvent(data: string): Record<string, any> {
   }
 }
 
-async function* streamAnalysisEvents(
+async function* streamAgentEvents(
   conversationId: string,
   question: string,
   abortSignal?: AbortSignal,
 ) {
-  /** 通过固定分析入口提交问题，并按事件块逐条读取 SSE 响应。 */
+  /** 通过 Agent 流式入口提交问题，并按事件块逐条读取 SSE 响应。 */
 
-  const response = await fetch("/api/analysis", {
+  const response = await fetch("/api/agent/run/stream", {
     method: "POST",
     cache: "no-store",
     headers: {
@@ -732,7 +732,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       };
 
       try {
-        for await (const runEvent of streamAnalysisEvents(
+        for await (const runEvent of streamAgentEvents(
           conversationId,
           normalizedQuestion,
           abortController.signal,
