@@ -278,6 +278,12 @@ class AgentService:
         这里刻意只保存最终报告、澄清消息或受限的查询结果，不把 Agent State
         中的 SQL、Python、完整执行事件和完整 rows 写入聊天历史。
         """
+        if result.get("execution_mode") == "daily_chat":
+            content = result.get("output_text") or result.get("llm_output")
+            if content:
+                content = str(content)
+                return "text", {"message": content}, content
+
         report = result.get("rendered_report")
         if isinstance(report, dict) and report:
             content = str(report.get("summary") or report.get("title") or "报告已生成。")
@@ -292,11 +298,7 @@ class AgentService:
             return "clarification", {"message": content}, content
 
         rows = result.get("display_sql_result") or result.get("sql_result") or []
-        has_query_result = any(
-            field in result
-            for field in ("sql", "sql_result", "display_sql_result", "result_columns")
-        )
-        if has_query_result:
+        if result.get("execution_mode") == "single_query":
             max_rows = 200
             payload = {
                 "columns": result.get("result_columns", []),

@@ -174,6 +174,7 @@ function buildConversationMeta(
   /** 让实时消息和历史消息使用同一份富内容元数据结构。 */
 
   if (!outputType) return undefined;
+  const isDailyChat = turn?.execution_mode === "daily_chat";
   const startedAt = parseBackendDate(turn?.started_at);
   const completedAt = parseBackendDate(turn?.completed_at);
   const elapsedSeconds = typeof elapsedSecondsOverride === "number"
@@ -184,13 +185,17 @@ function buildConversationMeta(
   return {
     turn_id: turn?.turn_id,
     execution_mode: turn?.execution_mode,
-    response_type: outputResponseType(outputType),
+    response_type: isDailyChat ? "chat" : outputResponseType(outputType),
     assistant_text: content,
     output_type: outputType,
     status: turn?.status,
     elapsed_seconds: elapsedSeconds,
-    rendered_report: outputType === "rendered_report" ? payload as unknown as RenderedReport : undefined,
-    query_result: outputType === "query_result" ? payload as QueryResultPayload : undefined,
+    rendered_report: !isDailyChat && outputType === "rendered_report"
+      ? payload as unknown as RenderedReport
+      : undefined,
+    query_result: !isDailyChat && outputType === "query_result"
+      ? payload as QueryResultPayload
+      : undefined,
   };
 }
 
@@ -776,7 +781,10 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
               assistantText,
               outputType,
               asRecord(payload.output),
-              { turn_id: typeof payload.turn_id === "string" ? payload.turn_id : undefined },
+              {
+                turn_id: typeof payload.turn_id === "string" ? payload.turn_id : undefined,
+                execution_mode: mode,
+              },
               Math.max(0, (Date.now() - startedAt) / 1000),
             );
             if (mode && responseMeta) responseMeta = { ...responseMeta, execution_mode: mode };
