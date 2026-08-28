@@ -187,7 +187,8 @@
 
 ### 增量工作
 
-- [ ] 增加 ContextBuilder（上下文构建器）应用模块。
+- [x] 增加独立的通用 ContextEngine 内核，完成上下文收集、隔离、选择、组织、压缩和追踪。
+- [ ] 增加 Data Agent 的 ContextSource、ContextPolicy 和 ContextBuilder 应用适配层。
 - [ ] 读取当前会话最近几轮消息。
 - [ ] 读取上一轮结构化结果摘要和结果引用。
 - [ ] 生成本轮 resolved_question（补全后的完整问题）。
@@ -386,9 +387,10 @@ Python 分析：当前任务结果 + 必要的依赖摘要
 ## 五、当前执行位置
 
 ~~~text
-当前阶段：阶段 1、阶段 2 已完成
-下一阶段：阶段 3，LangGraph Checkpointer
-当前状态：可以进入阶段 3；本轮暂不接入 Checkpointer
+当前阶段：阶段 4，上下文构建和多轮问题补全
+已完成：独立 ContextEngine 通用内核
+下一步：接入会话消息和结果摘要来源，建立 Data Agent 上下文策略
+当前状态：通用内核尚未读取业务数据库，也尚未接入 Agent 主链路
 ~~~
 
-下一次开发开始前，先确认阶段 1、阶段 2 的验收结果，再进入 Checkpointer。
+下一次开发从 ContextSource 适配开始，不把 Data Agent 业务对象写入通用内核。
