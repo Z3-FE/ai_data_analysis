@@ -85,6 +85,26 @@ async def get_execution_trace(
     }
 
 
+@router.get("/context-trace")
+async def get_context_trace(
+    repository: Annotated[ConversationRepository, Depends(get_conversation_repository)],
+    conversation_id: str = Query(...),
+    turn_id: str = Query(...),
+) -> dict:
+    """读取指定轮次的上下文编译追踪，供记忆层调试和回放使用。"""
+    output = await repository.get_context_trace(
+        user_id=settings.app.default_user_id,
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+    )
+    return {
+        "conversation_id": conversation_id,
+        "turn_id": turn_id,
+        "available": output is not None,
+        "payload": output["payload"] if output else {},
+    }
+
+
 @router.delete("")
 async def delete_conversation(
     repository: Annotated[ConversationRepository, Depends(get_conversation_repository)],

@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.routers.agent import router as agent_router
 from app.api.routers.conversations import router as conversations_router
+from app.api.routers.daily_chat import router as daily_chat_router
 from app.api.routers.meta import router as meta_router
 from app.api.routers.ping import router as ping_router
 
@@ -10,3 +11,4 @@ api_router.include_router(meta_router)
 api_router.include_router(ping_router)
 api_router.include_router(agent_router)
 api_router.include_router(conversations_router)
+api_router.include_router(daily_chat_router)

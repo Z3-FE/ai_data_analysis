@@ -188,6 +188,10 @@
 ### 增量工作
 
 - [x] 增加独立的通用 ContextEngine 内核，完成上下文收集、隔离、选择、组织、压缩和追踪。
+- [x] 增加独立 /api/daily-chat 日常聊天入口，作为 ContextEngine 的首个真实应用适配。
+- [x] 日常聊天读取当前会话消息，保存上下文选择追踪，并不经过数据分析节点。
+- [x] 日常聊天本轮结果保存为普通文本消息，不创建 LangGraph 分析运行。
+- [x] 提供按会话轮次读取 context_trace 的调试接口，不重复返回完整历史内容。
 - [ ] 增加 Data Agent 的 ContextSource、ContextPolicy 和 ContextBuilder 应用适配层。
 - [ ] 读取当前会话最近几轮消息。
 - [ ] 读取上一轮结构化结果摘要和结果引用。
@@ -389,8 +393,8 @@ Python 分析：当前任务结果 + 必要的依赖摘要
 ~~~text
 当前阶段：阶段 4，上下文构建和多轮问题补全
 已完成：独立 ContextEngine 通用内核
-下一步：接入会话消息和结果摘要来源，建立 Data Agent 上下文策略
-当前状态：通用内核尚未读取业务数据库，也尚未接入 Agent 主链路
+下一步：补齐日常聊天上下文边界和 Data Agent 的 ContextSource、ContextPolicy 适配层
+当前状态：日常聊天已接入；数据分析主链路仍未接入 ContextEngine
 ~~~
 
-下一次开发从 ContextSource 适配开始，不把 Data Agent 业务对象写入通用内核。
+下一次开发从 Data Agent ContextSource 适配开始，不把业务对象写入通用内核。

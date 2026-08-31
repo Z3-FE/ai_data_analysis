@@ -36,6 +36,7 @@ from app.repositories.qdrant.qa_meta_tables_repository import (
     MetaTablesSemanticRepository,
 )
 from app.services.agent_service import AgentService
+from app.services.daily_chat_service import DailyChatService
 
 T = TypeVar("T")
 
@@ -74,6 +75,19 @@ def get_conversation_repository() -> ConversationRepository:
         "Agent App PostgreSQL Session 工厂",
     )
     return ConversationRepository(session_factory=session_factory)
+
+
+def get_daily_chat_service(
+    llm_client: Annotated[Any, Depends(get_llm_client)],
+    conversation_repository: Annotated[
+        ConversationRepository, Depends(get_conversation_repository)
+    ],
+) -> DailyChatService:
+    """组装独立日常聊天服务。"""
+    return DailyChatService(
+        llm_client=llm_client,
+        conversation_repository=conversation_repository,
+    )
 
 
 async def get_meta_catalog_repository(
