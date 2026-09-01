@@ -192,6 +192,8 @@
 - [x] 日常聊天读取当前会话消息，保存上下文选择追踪，并不经过数据分析节点。
 - [x] 日常聊天本轮结果保存为普通文本消息，不创建 LangGraph 分析运行。
 - [x] 提供按会话轮次读取 context_trace 的调试接口，不重复返回完整历史内容。
+- [x] 在 app/agent/memory/ 建立四类记忆模型和基础设施无关的 Provider 契约。
+- [x] 建立记忆层与上下文工程专项架构文档和分阶段 TODO。
 - [ ] 增加 Data Agent 的 ContextSource、ContextPolicy 和 ContextBuilder 应用适配层。
 - [ ] 读取当前会话最近几轮消息。
 - [ ] 读取上一轮结构化结果摘要和结果引用。
@@ -392,9 +394,11 @@ Python 分析：当前任务结果 + 必要的依赖摘要
 
 ~~~text
 当前阶段：阶段 4，上下文构建和多轮问题补全
-已完成：独立 ContextEngine 通用内核
-下一步：补齐日常聊天上下文边界和 Data Agent 的 ContextSource、ContextPolicy 适配层
-当前状态：日常聊天已接入；数据分析主链路仍未接入 ContextEngine
+当前专项：记忆层与上下文工程，详见 docs/memory_layer_todo.md
+已完成：独立 ContextEngine；四类记忆模型、Provider 契约和总体架构
+下一步：进入 PostgreSQL 记忆事实存储
+当前状态：记忆层尚未接入运行主链路；现有问数、分析和报告行为不变
 ~~~
 
-下一次开发从 Data Agent ContextSource 适配开始，不把业务对象写入通用内核。
+记忆层的完整边界和流程见 docs/memory_context_architecture.md。后续按记忆专项 TODO
+逐块实现，再由 Data Agent 适配层接入 ContextEngine，不把业务对象写入通用内核。
