@@ -1,6 +1,9 @@
 """LangGraph 状态定义。"""
 
-from typing import TypedDict
+from typing import Annotated, TypedDict
+
+from langchain_core.messages import AnyMessage
+from langgraph.graph.message import add_messages
 
 
 class AgentState(TypedDict, total=False):
@@ -17,6 +20,8 @@ class AgentState(TypedDict, total=False):
     turn_id: str
     run_id: str
     original_question: str
+    # 同一 thread_id 下的短期对话消息，由 Checkpointer 持久化并通过 reducer 追加。
+    messages: Annotated[list[AnyMessage], add_messages]
 
     # 问题路由和分析计划字段。
     execution_mode: str

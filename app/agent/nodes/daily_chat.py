@@ -7,8 +7,9 @@
 import logging
 from typing import Any
 
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.runtime import Runtime
 
 from app.agent.context import AgentContext
@@ -29,14 +30,29 @@ async def daily_chat(
     writer({"type": "progress", "step": step, "node": node, "status": "running"})
 
     question = state.get("input_text", "").strip()
-    prompt = PromptTemplate(
-        template=load_prompt("daily_chat"),
-        input_variables=["query"],
+    history = list(state.get("messages", []))
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", load_prompt("daily_chat")),
+            MessagesPlaceholder(variable_name="history"),
+            ("human", "{query}"),
+        ]
     )
     chain = prompt | runtime.context["llm_client"] | StrOutputParser()
-    answer = str(await chain.ainvoke({"query": question})).strip()
+    answer = str(
+        await chain.ainvoke(
+            {
+                "history": history,
+                "query": question,
+            }
+        )
+    ).strip()
 
-    logger.info("日常聊天回答完成：answer_chars=%s", len(answer))
+    logger.info(
+        "日常聊天回答完成：history_messages=%s answer_chars=%s",
+        len(history),
+        len(answer),
+    )
     writer(
         {
             "type": "daily_chat",
@@ -47,6 +63,10 @@ async def daily_chat(
         }
     )
     return {
+        "messages": [
+            HumanMessage(content=question),
+            AIMessage(content=answer),
+        ],
         "output_text": answer,
         "llm_output": answer,
     }
