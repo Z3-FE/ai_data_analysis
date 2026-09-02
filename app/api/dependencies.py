@@ -8,6 +8,7 @@ from typing import Annotated, Any, TypeVar
 
 from fastapi import Depends
 
+from app.agent.memory.manager import MemoryManager
 from app.clients.elasticsearch_client import elasticsearch_client_manager
 from app.clients.embedding_client import embedding_client_manager
 from app.clients.llm_client import llm_client_manager
@@ -75,6 +76,14 @@ def get_conversation_repository() -> ConversationRepository:
         "Agent App PostgreSQL Session 工厂",
     )
     return ConversationRepository(session_factory=session_factory)
+
+
+def get_memory_manager() -> MemoryManager:
+    """获取初始化好的四类记忆调用门面。"""
+    return _require_initialized(
+        postgres_client_manager.memory_manager,
+        "Agent MemoryManager",
+    )
 
 
 def get_daily_chat_service(

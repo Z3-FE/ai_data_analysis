@@ -218,6 +218,8 @@ class MemoryReadRequest:
     limit: int = 20
     # 是否把已归档记忆纳入本次读取；默认只读活动记忆。
     include_archived: bool = False
+    # 是否要求 conversation_id 精确匹配；Working Memory 必须开启此选项。
+    exact_conversation: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "query", str(self.query).strip())
@@ -239,6 +241,8 @@ class MemoryReadRequest:
             raise ValueError("MemoryReadRequest.memory_types 不能为空")
         if self.limit <= 0:
             raise ValueError("MemoryReadRequest.limit 必须大于 0")
+        if self.exact_conversation and self.scope.conversation_id is None:
+            raise ValueError("精确读取 Working Memory 时必须提供 conversation_id")
 
 
 @dataclass(slots=True)

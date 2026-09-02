@@ -77,6 +77,21 @@ class AgentMemoryModelsTest(unittest.TestCase):
         )
         self.assertEqual(request.asset_ids, ("asset-1", "asset-2"))
 
+    def test_exact_conversation_read_requires_conversation_id(self) -> None:
+        with self.assertRaisesRegex(ValueError, "必须提供 conversation_id"):
+            MemoryReadRequest(
+                scope=MemoryScope(user_id="user-1"),
+                memory_types={MemoryType.WORKING},
+                exact_conversation=True,
+            )
+
+        request = MemoryReadRequest(
+            scope=self.scope,
+            memory_types={MemoryType.WORKING},
+            exact_conversation=True,
+        )
+        self.assertTrue(request.exact_conversation)
+
     def test_scope_requires_user_and_omits_unset_fields(self) -> None:
         with self.assertRaisesRegex(ValueError, "user_id 不能为空"):
             MemoryScope(user_id=" ")

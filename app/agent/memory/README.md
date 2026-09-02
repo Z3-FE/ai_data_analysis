@@ -10,16 +10,35 @@ Working、Episodic、Semantic、Perceptual 四类记忆，但不复制教程的�
 app/agent/memory/
 ├── models.py          四类记忆的稳定数据契约
 ├── interfaces.py      与基础设施无关的 Provider 接口
+├── postgres.py        PostgreSQL 事实模型和第一版 Provider
+├── manager.py         四类记忆的类型化调用门面
 ├── working.py         当前会话活动状态和资源引用（后续）
 ├── episodic.py        已完成任务和可复用经历（后续）
 ├── semantic.py        稳定事实、约定和偏好（后续）
 ├── perceptual.py      图片、音频和文件的派生观察（后续）
 ├── extraction.py      从已完成轮次提取记忆候选（后续）
 ├── consolidation.py   ADD/UPDATE/MERGE/ARCHIVE 等整合（后续）
-└── manager.py         读取、提交和 ContextEngine 适配入口（后续）
+└── __init__.py        对外导出稳定的记忆层契约
 ~~~
 
-目前只创建已经有真实职责的文件。后续模块在对应阶段实现时再增加，不预先创建空壳。
+当前已经落地 PostgreSQL 事实存储和 MemoryManager 调用门面。后续模块在对应阶段
+实现时再增加，不预先创建空壳。
+
+## 当前已实现
+
+AgentMemoryModel 将四类记忆统一保存到 agent_memories 表，保存内容、作用域、来源、
+状态、评分和有效期。PostgreSQLMemoryProvider 提供第一版的新增、关键词或精确读取、
+更新和软归档；当前关键词读取使用 PostgreSQL ILIKE，还不等同于向量检索。
+
+MemoryManager 是 Agent 节点的唯一调用入口。它提供 save_working、save_episodic、
+save_semantic、save_perceptual 及对应读取方法；Agent 节点不需要直接导入 SQLAlchemy
+模型。Working Memory 的读取会要求 conversation_id 精确匹配，长期记忆才允许按更宽的
+作用域复用。
+
+应用启动时由 PostgresClientManager 创建表模型对应的业务表和记忆 Provider；官方
+LangGraph Checkpointer 表仍然由 AsyncPostgresSaver.setup() 管理，两者不混用。
+
+建表脚本：scripts/postgres/14_create_agent_memory_tables.sql
 
 ## 四类记忆
 

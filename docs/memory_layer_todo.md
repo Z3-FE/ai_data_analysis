@@ -8,7 +8,7 @@
 | 里程碑 | 目标 | 状态 | 依赖 |
 | --- | --- | --- | --- |
 | M0 | 契约和架构边界 | 已完成 | 现有 ContextEngine |
-| M1 | PostgreSQL 记忆事实存储 | 待开发 | M0 |
+| M1 | PostgreSQL 记忆事实存储 | 代码完成，联调待验收 | M0 |
 | M2 | Working Memory 和会话活动视图 | 待开发 | M1 |
 | M3 | Episodic 和 Semantic 长期记忆 | 待开发 | M1、M2 |
 | M4 | Qdrant 语义检索索引 | 待开发 | M3 |
@@ -38,20 +38,22 @@
 
 ## M1：PostgreSQL 记忆事实存储
 
-- [ ] 设计 `agent_memories` 统一事实表。
-- [ ] 增加用户、租户、Agent、项目和会话作用域字段及索引。
-- [ ] 增加来源、状态、版本、有效期、重要性和置信度字段。
-- [ ] 使用 JSONB 保存各记忆类型的结构化扩展数据。
-- [ ] 增加 SQLAlchemy 模型和带 COMMENT 的 PostgreSQL 建表脚本。
-- [ ] 实现 PostgreSQLMemoryProvider 的 add/search/update/archive。
-- [ ] 增加作用域隔离、软删除、归档和并发更新验证。
-- [ ] 明确记忆表不由 LangGraph `AsyncPostgresSaver.setup()` 管理。
+- [x] 设计 `agent_memories` 统一事实表。
+- [x] 增加用户、租户、Agent、项目和会话作用域字段及索引。
+- [x] 增加来源、状态、版本、有效期、重要性和置信度字段。
+- [x] 使用 JSONB 保存各记忆类型的结构化扩展数据。
+- [x] 增加 SQLAlchemy 模型和带 COMMENT 的 PostgreSQL 建表脚本。
+- [x] 实现 PostgreSQLMemoryProvider 的 add/search/update/archive。
+- [x] 增加作用域隔离、软归档和基础边界验证。
+- [x] 明确记忆表不由 LangGraph `AsyncPostgresSaver.setup()` 管理。
+- [ ] 增加真实 PostgreSQL 联调和并发更新验证。
 
 ### 验收
 
-- [ ] PostgreSQL 是记忆事实唯一可信来源。
-- [ ] 不同 user_id、tenant_id 和 agent_id 之间不能串用记忆。
-- [ ] 一条记忆可以追溯到原始轮次、消息或资源。
+- [x] PostgreSQL 是记忆事实唯一可信来源。
+- [x] 不同 user_id、tenant_id 和 agent_id 之间不能串用记忆。
+- [x] 一条记忆可以追溯到原始轮次、消息或资源。
+- [ ] 在目标 PostgreSQL 实例执行脚本并完成真实读写验收。
 
 ## M2：Working Memory 和会话活动视图
 
@@ -202,8 +204,11 @@
 
 ## 当前执行位置
 
+M1 实现备注：agent_memories 的 ORM、Provider、MemoryManager 和带 COMMENT 的 PostgreSQL
+建表脚本已经完成；真实 PostgreSQL 联调及并发验证仍待执行。
+
 ~~~text
-当前里程碑：M0 契约和架构边界（已完成）
-已完成：目录边界、四类记忆模型、Provider 契约、总体架构和专项 TODO
-下一步：进入 M1 PostgreSQL 记忆事实存储
+当前里程碑：M1 PostgreSQL 记忆事实存储（代码已完成，真实数据库联调待验收）
+已完成：目录边界、四类记忆模型、Provider 契约、PostgreSQL ORM、建表脚本、CRUD 门面
+下一步：完成 PostgreSQL 实例联调后进入 M2 Working Memory 和会话活动视图
 ~~~
