@@ -21,19 +21,28 @@ def utc_now() -> datetime:
 class MemoryType(StrEnum):
     """Hello-Agents 第 8 章采用的四类记忆。"""
 
+    # 当前会话中仍然有效的活动状态、约束和资源引用。
     WORKING = "working"
+    # 已经完成的任务经历、处理结果和可复用经验。
     EPISODIC = "episodic"
+    # 相对稳定的事实、业务约定、指标定义和用户偏好。
     SEMANTIC = "semantic"
+    # 图片、音频和文件的资源身份及其派生观察。
     PERCEPTUAL = "perceptual"
 
 
 class MemoryStatus(StrEnum):
     """记忆的生命周期状态。"""
 
+    # 当前可被正常读取和检索的记忆。
     ACTIVE = "active"
+    # 暂时不参与默认检索，但保留记录以便审计或恢复。
     ARCHIVED = "archived"
+    # 已被更新版本替代的旧记忆。
     SUPERSEDED = "superseded"
+    # 逻辑删除的记忆，默认不可读取。
     DELETED = "deleted"
+    # 与已有记忆存在冲突，等待确认或人工处理。
     CONFLICT = "conflict"
 
 
@@ -41,10 +50,15 @@ class MemoryStatus(StrEnum):
 class MemoryScope:
     """记忆的访问边界，用于阻止用户、会话和 Agent 之间串用。"""
 
+    # 必填的用户身份；所有记忆至少归属于一个用户。
     user_id: str
+    # 可选的租户身份，用于多租户数据隔离。
     tenant_id: str | None = None
+    # 可选的 Agent 身份，用于区分不同 Agent 的记忆空间。
     agent_id: str | None = None
+    # 可选的项目身份，用于区分同一用户的不同项目上下文。
     project_id: str | None = None
+    # 可选的会话身份；设置后表示记忆只属于当前 conversation。
     conversation_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -80,10 +94,15 @@ class MemoryScope:
 class MemorySource:
     """记忆来源，支持从记忆追溯到原始消息、轮次或资源。"""
 
+    # 来源类别，例如 conversation_message、analysis_output 或 asset。
     source_type: str
+    # 来源对象的业务 ID，例如 message_id、turn_id 或 asset_id。
     source_id: str | None = None
+    # 产生这条记忆的会话轮次 ID。
     turn_id: str | None = None
+    # 产生这条记忆的原始消息 ID。
     message_id: str | None = None
+    # 来源的附加信息，例如提取器名称和版本。
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -109,19 +128,33 @@ class MemorySource:
 class MemoryItem:
     """一条可持久化、检索和整合的记忆事实。"""
 
+    # 记忆所属类型，决定默认读取策略和生命周期。
     memory_type: MemoryType
+    # 给模型和检索器使用的自然语言记忆内容。
     content: str
+    # 访问这条记忆所需的用户、Agent、项目和会话作用域。
     scope: MemoryScope
+    # 记忆的可追溯来源，不允许只保存没有依据的事实。
     source: MemorySource
+    # 记忆的唯一 ID，也是向量索引和外部引用使用的主键。
     memory_id: str = field(default_factory=lambda: str(uuid4()))
+    # 记忆类型对应的结构化字段，例如分析任务 ID、偏好键或 asset_id。
     structured_data: dict[str, Any] = field(default_factory=dict)
+    # 存储、提取器、索引等实现层元数据，不作为主要记忆内容。
     metadata: dict[str, Any] = field(default_factory=dict)
+    # 记忆当前的生命周期状态。
     status: MemoryStatus = MemoryStatus.ACTIVE
+    # 业务重要性评分，默认 0.5 表示尚未人为提高或降低优先级。
     importance: float = 0.5
+    # 记忆内容的可信度评分，默认 0.5 表示中性可信度。
     confidence: float = 0.5
+    # 记忆首次创建时间，用于排序和生命周期管理。
     created_at: datetime = field(default_factory=utc_now)
+    # 记忆最近一次更新或整合时间。
     updated_at: datetime = field(default_factory=utc_now)
+    # 记忆开始生效的时间，可用于事实版本管理。
     valid_from: datetime | None = None
+    # 记忆失效的时间；为空表示尚未设置结束时间。
     valid_to: datetime | None = None
 
     def __post_init__(self) -> None:
@@ -171,13 +204,19 @@ class MemoryItem:
 class MemoryReadRequest:
     """一次记忆读取请求。空 query 表示按作用域精确读取而非语义搜索。"""
 
+    # 本次读取必须使用的作用域，Provider 不能跨作用域返回记忆。
     scope: MemoryScope
+    # 语义检索文本；为空时只做类型、资源和作用域过滤。
     query: str = ""
+    # 允许本次读取的记忆类型；默认允许四类记忆。
     memory_types: frozenset[MemoryType] = field(
         default_factory=lambda: frozenset(MemoryType)
     )
+    # 需要精确读取的资源 ID，例如用户追问“刚才那张图”。
     asset_ids: tuple[str, ...] = ()
+    # Provider 最多返回的记忆条数。
     limit: int = 20
+    # 是否把已归档记忆纳入本次读取；默认只读活动记忆。
     include_archived: bool = False
 
     def __post_init__(self) -> None:
@@ -206,9 +245,13 @@ class MemoryReadRequest:
 class MemoryMatch:
     """记忆检索结果；score 由具体检索实现提供。"""
 
+    # 命中的记忆事实。
     item: MemoryItem
+    # 检索相关性分数；精确读取可以不提供分数。
     score: float | None = None
+    # 命中方式，例如 exact、keyword 或 vector。
     retrieval_mode: str = "exact"
+    # 检索器返回的附加信息，例如距离、索引版本或过滤条件。
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
