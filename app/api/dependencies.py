@@ -8,7 +8,6 @@ from typing import Annotated, Any, TypeVar
 
 from fastapi import Depends
 
-from app.agent.memory.manager import MemoryManager
 from app.clients.elasticsearch_client import elasticsearch_client_manager
 from app.clients.embedding_client import embedding_client_manager
 from app.clients.llm_client import llm_client_manager
@@ -37,7 +36,6 @@ from app.repositories.qdrant.qa_meta_tables_repository import (
     MetaTablesSemanticRepository,
 )
 from app.services.agent_service import AgentService
-from app.services.daily_chat_service import DailyChatService
 
 T = TypeVar("T")
 
@@ -76,27 +74,6 @@ def get_conversation_repository() -> ConversationRepository:
         "Agent App PostgreSQL Session 工厂",
     )
     return ConversationRepository(session_factory=session_factory)
-
-
-def get_memory_manager() -> MemoryManager:
-    """获取初始化好的四类记忆调用门面。"""
-    return _require_initialized(
-        postgres_client_manager.memory_manager,
-        "Agent MemoryManager",
-    )
-
-
-def get_daily_chat_service(
-    llm_client: Annotated[Any, Depends(get_llm_client)],
-    conversation_repository: Annotated[
-        ConversationRepository, Depends(get_conversation_repository)
-    ],
-) -> DailyChatService:
-    """组装独立日常聊天服务。"""
-    return DailyChatService(
-        llm_client=llm_client,
-        conversation_repository=conversation_repository,
-    )
 
 
 async def get_meta_catalog_repository(

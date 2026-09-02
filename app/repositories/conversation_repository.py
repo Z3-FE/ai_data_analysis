@@ -214,7 +214,6 @@ class ConversationRepository:
         output_type: str,
         output_payload: dict[str, Any],
         execution_trace: dict[str, Any] | None = None,
-        context_trace: dict[str, Any] | None = None,
         error_message: str = "",
     ) -> None:
         """保存助手最终消息和受控结构化输出，并结束当前轮次。"""
@@ -277,53 +276,7 @@ class ConversationRepository:
                     payload=_json_safe(execution_trace),
                 )
                 session.add(trace_output)
-            if context_trace is not None:
-                context_output = TurnOutputModel(
-                    output_id=str(uuid4()),
-                    conversation_id=conversation_id,
-                    turn_id=turn_id,
-                    output_type="context_trace",
-                    payload=_json_safe(context_trace),
-                )
-                session.add(context_output)
             await session.commit()
-
-    async def get_recent_messages(
-        self,
-        user_id: str,
-        conversation_id: str,
-        limit: int = 20,
-    ) -> list[dict[str, Any]]:
-        """读取当前用户会话中最近的消息，按对话顺序返回。"""
-        if limit <= 0:
-            return []
-        async with self.session_factory() as session:
-            conversation = await session.scalar(
-                select(ConversationModel).where(
-                    ConversationModel.conversation_id == conversation_id,
-                    ConversationModel.user_id == user_id,
-                )
-            )
-            if conversation is None:
-                return []
-
-            models = list(
-                (
-                    await session.scalars(
-                        select(ConversationMessageModel)
-                        .where(
-                            ConversationMessageModel.conversation_id == conversation_id
-                        )
-                        .order_by(
-                            desc(ConversationMessageModel.created_at),
-                            desc(ConversationMessageModel.sequence_no),
-                        )
-                        .limit(limit)
-                    )
-                ).all()
-            )
-            models.reverse()
-            return [self._message_dict(model) for model in models]
 
     async def list_conversations(
         self, user_id: str, limit: int = 50
@@ -396,9 +349,7 @@ class ConversationRepository:
                     select(TurnOutputModel)
                     .where(
                         TurnOutputModel.conversation_id == conversation_id,
-                        TurnOutputModel.output_type.not_in(
-                            {"execution_trace", "context_trace"}
-                        ),
+                        TurnOutputModel.output_type != "execution_trace",
                     )
                     .order_by(TurnOutputModel.created_at)
                 )
@@ -435,45 +386,6 @@ class ConversationRepository:
             if turn is None:
                 return None
             return self._output_dict(output)
-
-    async def get_context_trace(
-        self, user_id: str, conversation_id: str, turn_id: str
-    ) -> dict[str, Any] | None:
-        """读取指定会话轮次的上下文编译追踪。"""
-        return await self._get_turn_output(
-            user_id=user_id,
-            conversation_id=conversation_id,
-            turn_id=turn_id,
-            output_type="context_trace",
-        )
-
-    async def _get_turn_output(
-        self,
-        *,
-        user_id: str,
-        conversation_id: str,
-        turn_id: str,
-        output_type: str,
-    ) -> dict[str, Any] | None:
-        """读取经过会话归属校验的单轮结构化输出。"""
-        async with self.session_factory() as session:
-            turn = await session.scalar(
-                select(ConversationTurnModel).where(
-                    ConversationTurnModel.conversation_id == conversation_id,
-                    ConversationTurnModel.turn_id == turn_id,
-                    ConversationTurnModel.user_id == user_id,
-                )
-            )
-            if turn is None:
-                return None
-            output = await session.scalar(
-                select(TurnOutputModel).where(
-                    TurnOutputModel.conversation_id == conversation_id,
-                    TurnOutputModel.turn_id == turn_id,
-                    TurnOutputModel.output_type == output_type,
-                )
-            )
-            return self._output_dict(output) if output is not None else None
 
     async def delete_conversation(self, user_id: str, conversation_id: str) -> bool:
         """删除当前用户的会话及其级联历史数据。"""

@@ -7,8 +7,6 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from app.agent.graph import build_agent_graph
-from app.agent.memory.manager import MemoryManager
-from app.agent.memory.postgres import AgentMemoryModel, PostgreSQLMemoryProvider
 from app.core.config import PostgresConfig, settings
 from app.models.agent_history import (
     ConversationMessageModel,
@@ -24,7 +22,6 @@ _AGENT_HISTORY_MODELS = (
     ConversationTurnModel,
     ConversationMessageModel,
     TurnOutputModel,
-    AgentMemoryModel,
 )
 
 
@@ -36,10 +33,6 @@ class PostgresClientManager:
         self.engine: AsyncEngine | None = None
         self.session_factory: async_sessionmaker | None = None
         self.checkpointer: AsyncPostgresSaver | None = None
-        # 记忆事实 Provider 与会话历史复用同一个 agent_app Session 工厂。
-        self.memory_provider: PostgreSQLMemoryProvider | None = None
-        # 四类记忆的业务调用门面，由启动阶段和 Provider 一起创建。
-        self.memory_manager: MemoryManager | None = None
         self.agent_graph: Any | None = None
         self._checkpointer_context: AbstractAsyncContextManager | None = None
 
@@ -58,8 +51,6 @@ class PostgresClientManager:
             autoflush=True,
             expire_on_commit=False,
         )
-        self.memory_provider = PostgreSQLMemoryProvider(self.session_factory)
-        self.memory_manager = MemoryManager(self.memory_provider)
 
         try:
             await self._create_business_tables()
@@ -89,8 +80,6 @@ class PostgresClientManager:
             await self._checkpointer_context.__aexit__(None, None, None)
             self._checkpointer_context = None
         self.checkpointer = None
-        self.memory_provider = None
-        self.memory_manager = None
         self.agent_graph = None
         if self.engine is not None:
             await self.engine.dispose()

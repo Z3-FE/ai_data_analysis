@@ -353,21 +353,37 @@ async function responseErrorMessage(response: Response) {
       return body.trim();
     }
   }
-  return "聊天接口请求失败（HTTP " + response.status + "）";
+  return "SSE 连接失败（HTTP " + response.status + "）";
 }
 
-async function* streamDailyChatEvents(
+function parseStreamEvent(data: string): Record<string, any> {
+  /** 解析 SSE JSON，并把纯文本网关错误转换成明确提示。 */
+  try {
+    const parsed = JSON.parse(data);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("SSE 事件不是 JSON 对象。");
+    }
+    return parsed as Record<string, any>;
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error("后端返回了无效的 SSE 数据：" + data.trim().slice(0, 180));
+    }
+    throw error;
+  }
+}
+
+async function* streamAgentEvents(
   conversationId: string,
   question: string,
   abortSignal?: AbortSignal,
 ) {
-  /** 通过日常聊天入口提交问题，并把 JSON 响应适配成当前消息流水线事件。 */
+  /** 通过 Agent 流式入口提交问题，并按事件块逐条读取 SSE 响应。 */
 
-  const response = await fetch("/api/daily-chat", {
+  const response = await fetch("/api/agent/run/stream", {
     method: "POST",
     cache: "no-store",
     headers: {
-      Accept: "application/json",
+      Accept: "text/event-stream",
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -380,46 +396,43 @@ async function* streamDailyChatEvents(
   if (!response.ok) {
     throw new Error(await responseErrorMessage(response));
   }
-
-  const result = await response.json() as Record<string, any>;
-  const turnId = typeof result.turn_id === "string" ? result.turn_id : undefined;
-  const runId = typeof result.run_id === "string" ? result.run_id : undefined;
-  const content = typeof result.content === "string" ? result.content : "";
-  if (!turnId || !content) {
-    throw new Error("日常聊天接口返回了不完整的响应。");
+  if (!response.body) {
+    throw new Error("SSE 响应没有可读取的数据流。");
   }
 
-  yield {
-    type: "run.started",
-    step: "开始日常聊天",
-    node: "daily_chat",
-    status: "running",
-    execution_mode: "daily_chat",
-    turn_id: turnId,
-    run_id: runId,
-  };
-  yield {
-    type: "message.completed",
-    step: "生成日常回答",
-    node: "daily_chat",
-    status: "success",
-    execution_mode: "daily_chat",
-    turn_id: turnId,
-    run_id: runId,
-    content,
-    output_type: "text",
-    output: { message: content },
-    context: result.context,
-  };
-  yield {
-    type: "run.completed",
-    step: "日常聊天完成",
-    node: "daily_chat",
-    status: "success",
-    execution_mode: "daily_chat",
-    turn_id: turnId,
-    run_id: runId,
-  };
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const chunks = buffer.split("\n\n");
+    buffer = chunks.pop() ?? "";
+
+    for (const chunk of chunks) {
+      const dataLines = chunk
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice("data:".length).trimStart());
+
+      if (dataLines.length === 0) continue;
+      yield parseStreamEvent(dataLines.join("\n"));
+    }
+  }
+
+  if (buffer.trim()) {
+    const dataLines = buffer
+      .split("\n")
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice("data:".length).trimStart());
+
+    if (dataLines.length > 0) {
+      yield parseStreamEvent(dataLines.join("\n"));
+    }
+  }
 }
 
 function getAppendMessageText(message: AppendMessage) {
@@ -538,7 +551,7 @@ function AssistantChatThread() {
             <Bot className="w-10 h-10 mx-auto text-blue-500 mb-3" />
             <div className="font-extrabold text-slate-800">这是一条真实聊天链路</div>
             <p className="text-sm text-slate-500 mt-2">
-              发送一句话，系统会读取当前会话历史并生成日常回答。
+              发送一句话，后端会创建 run，LangGraph 执行 chat 节点，并通过 SSE 返回结果。
             </p>
           </div>
         </ThreadPrimitive.Empty>
@@ -719,7 +732,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       };
 
       try {
-        for await (const runEvent of streamDailyChatEvents(
+        for await (const runEvent of streamAgentEvents(
           conversationId,
           normalizedQuestion,
           abortController.signal,
@@ -997,7 +1010,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
               <h2 className="text-xl font-extrabold text-slate-900">
                 {conversation?.title ?? "加载会话中..."}
               </h2>
-              <p className="text-xs text-slate-500 mt-1">当前为日常聊天模式，数据分析节点暂未启用。</p>
+              <p className="text-xs text-slate-500 mt-1">支持日常聊天、简单问数和数据分析。</p>
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
