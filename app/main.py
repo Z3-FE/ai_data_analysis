@@ -14,6 +14,7 @@ from app.api.router import api_router
 from app.clients.elasticsearch_client import elasticsearch_client_manager
 from app.clients.embedding_client import embedding_client_manager
 from app.clients.llm_client import llm_client_manager
+from app.clients.neo4j_client import neo4j_client_manager
 from app.clients.mysql_client import (
     dw_mysql_client_manager,
     meta_mysql_client_manager,
@@ -33,6 +34,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     llm_client_manager.init()
     embedding_client_manager.init()
     qdrant_client_manager.init()
+    neo4j_client_manager.init()
     elasticsearch_client_manager.init()
     meta_mysql_client_manager.init()
     dw_mysql_client_manager.init()
@@ -43,6 +45,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         await elasticsearch_client_manager.close()
         await qdrant_client_manager.close()
+        await neo4j_client_manager.close()
         await meta_mysql_client_manager.close()
         await dw_mysql_client_manager.close()
         await postgres_client_manager.close()

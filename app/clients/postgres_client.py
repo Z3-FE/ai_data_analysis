@@ -15,13 +15,25 @@ from app.models.agent_history import (
     TurnOutputModel,
 )
 from app.models.base import Base
+from app.models.memory import (
+    AgentMemoryModel,
+    MemoryAssetModel,
+    MemoryGraphProjectionModel,
+    MemoryIndexJobModel,
+    MemorySourceModel,
+)
 
-# 只允许会话历史模型参与 agent_app 建表，避免把 MySQL Meta ORM 误创建到这里。
-_AGENT_HISTORY_MODELS = (
+# 只允许 PostgreSQL Agent 平台模型参与建表，避免把 MySQL Meta ORM 误创建到这里。
+_AGENT_APP_MODELS = (
     ConversationModel,
     ConversationTurnModel,
     ConversationMessageModel,
     TurnOutputModel,
+    AgentMemoryModel,
+    MemorySourceModel,
+    MemoryAssetModel,
+    MemoryGraphProjectionModel,
+    MemoryIndexJobModel,
 )
 
 
@@ -71,7 +83,7 @@ class PostgresClientManager:
         async with self.engine.begin() as connection:
             await connection.run_sync(
                 Base.metadata.create_all,
-                tables=[model.__table__ for model in _AGENT_HISTORY_MODELS],
+                tables=[model.__table__ for model in _AGENT_APP_MODELS],
             )
 
     async def close(self) -> None:

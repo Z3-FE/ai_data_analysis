@@ -96,6 +96,17 @@ class PostgresConfig:
 
 
 @dataclass(frozen=True)
+class Neo4jConfig:
+    """Semantic Memory 使用的 Neo4j 图数据库配置。"""
+
+    uri: str
+    user: str
+    password: str
+    database: str
+    max_connection_pool_size: int
+
+
+@dataclass(frozen=True)
 class QdrantConfig:
     """Qdrant 向量数据库配置。"""
 
@@ -104,6 +115,12 @@ class QdrantConfig:
     columns_collection: str
     metrics_collection: str
     dimension_values_collection: str
+    memory_episodic_collection: str
+    memory_semantic_collection: str
+    memory_perceptual_text_collection: str
+    memory_perceptual_image_collection: str
+    memory_perceptual_audio_collection: str
+    memory_perceptual_video_collection: str
     vector_size: int
     distance: str
     upsert_batch_size: int
@@ -174,6 +191,7 @@ class Settings:
     app: AppConfig
     mysql: MysqlConfig
     postgres: PostgresConfig
+    neo4j: Neo4jConfig
     qdrant: QdrantConfig
     elasticsearch: ElasticsearchConfig
     dimension_value_search: DimensionValueSearchConfig
@@ -216,6 +234,7 @@ def load_settings(path: Path = CONFIG_PATH) -> Settings:
         app=AppConfig(**raw["app"]),
         mysql=MysqlConfig(**raw["mysql"]),
         postgres=PostgresConfig(**raw["postgres"]),
+        neo4j=Neo4jConfig(**raw["neo4j"]),
         qdrant=QdrantConfig(**raw["qdrant"]),
         elasticsearch=ElasticsearchConfig(**raw["elasticsearch"]),
         dimension_value_search=DimensionValueSearchConfig(
