@@ -152,24 +152,89 @@ CREATE TABLE IF NOT EXISTS memory_index_jobs (
   job_id VARCHAR(128) PRIMARY KEY,
   memory_id VARCHAR(128) NOT NULL REFERENCES agent_memories(memory_id) ON DELETE CASCADE,
   target VARCHAR(32) NOT NULL,
-  status VARCHAR(32) NOT NULL DEFAULT 'pending',
+  status VARCHAR(32) NOT NULL DEFAULT 'failed',
   attempts INTEGER NOT NULL DEFAULT 0,
   last_error TEXT,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 早期版本曾把这张表当作任务队列；当前只记录真实失败，幂等升级默认状态。
+ALTER TABLE memory_index_jobs
+  ALTER COLUMN status SET DEFAULT 'failed';
+
 CREATE INDEX IF NOT EXISTS idx_memory_index_jobs_status
   ON memory_index_jobs (status, target, created_at);
 CREATE UNIQUE INDEX IF NOT EXISTS uk_memory_index_jobs_active
   ON memory_index_jobs (memory_id, target)
   WHERE status IN ('pending', 'processing');
-COMMENT ON TABLE memory_index_jobs IS '记忆检索索引同步任务';
-COMMENT ON COLUMN memory_index_jobs.job_id IS '索引任务 ID';
-COMMENT ON COLUMN memory_index_jobs.memory_id IS '待同步记忆 ID';
-COMMENT ON COLUMN memory_index_jobs.target IS 'qdrant 或 neo4j';
-COMMENT ON COLUMN memory_index_jobs.status IS 'pending/processing/completed/failed';
-COMMENT ON COLUMN memory_index_jobs.attempts IS '已重试次数';
+COMMENT ON TABLE memory_index_jobs IS '记忆检索投影同步失败记录，当前不启动自动重试';
+COMMENT ON COLUMN memory_index_jobs.job_id IS '投影失败记录 ID';
+COMMENT ON COLUMN memory_index_jobs.memory_id IS '发生投影同步失败的记忆 ID';
+COMMENT ON COLUMN memory_index_jobs.target IS '发生失败的投影目标：qdrant 或 neo4j';
+COMMENT ON COLUMN memory_index_jobs.status IS '当前写入 failed；pending/processing/completed 供未来修复流程使用';
+COMMENT ON COLUMN memory_index_jobs.attempts IS '未来修复流程的尝试次数，当前失败记录保持为 0';
 COMMENT ON COLUMN memory_index_jobs.last_error IS '最近一次执行错误';
-COMMENT ON COLUMN memory_index_jobs.created_at IS '任务创建时间';
-COMMENT ON COLUMN memory_index_jobs.updated_at IS '任务最近更新时间';
+COMMENT ON COLUMN memory_index_jobs.created_at IS '失败记录创建时间';
+COMMENT ON COLUMN memory_index_jobs.updated_at IS '失败记录最近更新时间';
+
+-- 记录每一轮长期记忆候选的提取、治理、去重和写入结果。
+-- 这张表只审计 M3 形成流程，不保存隐藏思考、完整 AgentState 或完整事件流。
+CREATE TABLE IF NOT EXISTS memory_formation_runs (
+  formation_run_id VARCHAR(128) PRIMARY KEY,
+  user_id VARCHAR(128) NOT NULL,
+  conversation_id VARCHAR(128) NOT NULL,
+  turn_id VARCHAR(128) NOT NULL,
+  run_id VARCHAR(128) NOT NULL,
+  trigger VARCHAR(32) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  extractor_version VARCHAR(64) NOT NULL,
+  eligibility_reason TEXT NOT NULL,
+  candidate_count INTEGER NOT NULL DEFAULT 0,
+  accepted_count INTEGER NOT NULL DEFAULT 0,
+  rejected_count INTEGER NOT NULL DEFAULT 0,
+  duplicate_count INTEGER NOT NULL DEFAULT 0,
+  replaced_count INTEGER NOT NULL DEFAULT 0,
+  failed_count INTEGER NOT NULL DEFAULT 0,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  decisions JSONB NOT NULL DEFAULT '[]'::jsonb,
+  error_message TEXT,
+  started_at TIMESTAMP,
+  completed_at TIMESTAMP,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE memory_formation_runs
+  ADD COLUMN IF NOT EXISTS failed_count INTEGER NOT NULL DEFAULT 0;
+
+CREATE INDEX IF NOT EXISTS idx_memory_formation_runs_user_conversation
+  ON memory_formation_runs (user_id, conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_memory_formation_runs_status
+  ON memory_formation_runs (status, created_at);
+CREATE INDEX IF NOT EXISTS idx_memory_formation_runs_turn
+  ON memory_formation_runs (turn_id);
+
+COMMENT ON TABLE memory_formation_runs IS '长期记忆形成审计';
+COMMENT ON COLUMN memory_formation_runs.formation_run_id IS '一次记忆形成任务 ID';
+COMMENT ON COLUMN memory_formation_runs.user_id IS '形成任务所属用户 ID';
+COMMENT ON COLUMN memory_formation_runs.conversation_id IS '产生候选的会话 ID';
+COMMENT ON COLUMN memory_formation_runs.turn_id IS '产生候选的会话轮次 ID';
+COMMENT ON COLUMN memory_formation_runs.run_id IS '本轮 Agent 执行尝试 ID';
+COMMENT ON COLUMN memory_formation_runs.trigger IS 'explicit_request/automatic/skipped';
+COMMENT ON COLUMN memory_formation_runs.status IS 'pending/processing/completed/partial/skipped/failed';
+COMMENT ON COLUMN memory_formation_runs.extractor_version IS '提取器和提示词版本';
+COMMENT ON COLUMN memory_formation_runs.eligibility_reason IS '本轮是否进入形成流程的原因';
+COMMENT ON COLUMN memory_formation_runs.candidate_count IS '提取出的候选总数';
+COMMENT ON COLUMN memory_formation_runs.accepted_count IS '创建或替换的候选数量';
+COMMENT ON COLUMN memory_formation_runs.rejected_count IS '被治理拒绝的候选数量';
+COMMENT ON COLUMN memory_formation_runs.duplicate_count IS '与现有记忆完全重复的候选数量';
+COMMENT ON COLUMN memory_formation_runs.replaced_count IS '替换旧版本的候选数量';
+COMMENT ON COLUMN memory_formation_runs.failed_count IS '处理失败的候选数量';
+COMMENT ON COLUMN memory_formation_runs.attempts IS '形成任务执行尝试次数';
+COMMENT ON COLUMN memory_formation_runs.decisions IS '紧凑的候选处理决定，不含隐藏思考';
+COMMENT ON COLUMN memory_formation_runs.error_message IS '形成任务错误信息';
+COMMENT ON COLUMN memory_formation_runs.started_at IS '开始提取的时间';
+COMMENT ON COLUMN memory_formation_runs.completed_at IS '完成、跳过或失败的时间';
+COMMENT ON COLUMN memory_formation_runs.created_at IS '审计记录创建时间';
+COMMENT ON COLUMN memory_formation_runs.updated_at IS '审计记录最近更新时间';

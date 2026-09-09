@@ -36,20 +36,3 @@ class TextMemoryEncoder:
         vector = [float(item) for item in value]
         self.dimension = len(vector)
         return vector
-
-    async def encode_many(self, texts: list[str]) -> list[list[float]]:
-        """按输入顺序编码多条文本。"""
-        if not texts:
-            return []
-        method = getattr(self.client, "aembed_documents", None)
-        if method is None:
-            method = getattr(self.client, "embed_documents", None)
-        if method is None:
-            return [await self.encode(text) for text in texts]
-        value = method(texts)
-        if inspect.isawaitable(value):
-            value = await value
-        vectors = [[float(item) for item in vector] for vector in value]
-        if vectors:
-            self.dimension = len(vectors[0])
-        return vectors

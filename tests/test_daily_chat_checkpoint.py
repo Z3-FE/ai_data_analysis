@@ -9,6 +9,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.agent.context import AgentContext
 from app.agent.nodes.daily_chat import daily_chat
+from app.agent.nodes.finalize_turn import finalize_turn
 from app.agent.state import AgentState
 
 
@@ -32,8 +33,10 @@ class DailyChatCheckpointTest(unittest.IsolatedAsyncioTestCase):
 
         builder = StateGraph(state_schema=AgentState, context_schema=AgentContext)
         builder.add_node("daily_chat", daily_chat)
+        builder.add_node("finalize_turn", finalize_turn)
         builder.add_edge(START, "daily_chat")
-        builder.add_edge("daily_chat", END)
+        builder.add_edge("daily_chat", "finalize_turn")
+        builder.add_edge("finalize_turn", END)
         graph = builder.compile(checkpointer=InMemorySaver())
         context = {"llm_client": RunnableLambda(respond)}
 

@@ -15,9 +15,14 @@ from app.models.agent_history import (
     TurnOutputModel,
 )
 from app.models.base import Base
+from app.models.context_engine import (
+    ContextBuildRunModel,
+    ContextConversationSummaryModel,
+)
 from app.models.memory import (
     AgentMemoryModel,
     MemoryAssetModel,
+    MemoryFormationRunModel,
     MemoryGraphProjectionModel,
     MemoryIndexJobModel,
     MemorySourceModel,
@@ -34,6 +39,9 @@ _AGENT_APP_MODELS = (
     MemoryAssetModel,
     MemoryGraphProjectionModel,
     MemoryIndexJobModel,
+    MemoryFormationRunModel,
+    ContextConversationSummaryModel,
+    ContextBuildRunModel,
 )
 
 
@@ -45,12 +53,13 @@ class PostgresClientManager:
         self.engine: AsyncEngine | None = None
         self.session_factory: async_sessionmaker | None = None
         self.checkpointer: AsyncPostgresSaver | None = None
-        self.agent_graph: Any | None = None
+        # 已绑定 PostgreSQL Checkpointer 的 Agent 图实例。
+        self.checkpointed_agent_graph: Any | None = None
         self._checkpointer_context: AbstractAsyncContextManager | None = None
 
     async def init(self) -> None:
         """初始化业务表、官方 Checkpointer 和持久化 Agent 图。"""
-        if self.agent_graph is not None:
+        if self.checkpointed_agent_graph is not None:
             return
 
         self.engine = create_async_engine(
@@ -71,7 +80,9 @@ class PostgresClientManager:
             )
             self.checkpointer = await self._checkpointer_context.__aenter__()
             await self.checkpointer.setup()
-            self.agent_graph = build_agent_graph(checkpointer=self.checkpointer)
+            self.checkpointed_agent_graph = build_agent_graph(
+                checkpointer=self.checkpointer
+            )
         except Exception:
             await self.close()
             raise
@@ -92,7 +103,7 @@ class PostgresClientManager:
             await self._checkpointer_context.__aexit__(None, None, None)
             self._checkpointer_context = None
         self.checkpointer = None
-        self.agent_graph = None
+        self.checkpointed_agent_graph = None
         if self.engine is not None:
             await self.engine.dispose()
             self.engine = None

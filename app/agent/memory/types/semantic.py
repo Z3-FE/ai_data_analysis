@@ -7,9 +7,10 @@ from app.agent.memory.enums import MemoryType
 from app.agent.memory.graph.extractor import GraphExtractor
 from app.agent.memory.interfaces import (
     GraphMemoryRepository,
-    MemoryCreate,
     MemoryRecord,
+    MemoryWriteResult,
 )
+from app.agent.memory.ranker import MemoryRecallCandidate
 from app.agent.memory.types.base import PersistentMemory, is_memory_visible
 
 logger = logging.getLogger(__name__)
@@ -27,89 +28,83 @@ class SemanticMemory(PersistentMemory):
         # 当前只接受调用方明确提供的实体和关系，不从自然语言猜关系。
         self.graph_extractor = GraphExtractor()
 
-    async def add(self, request: MemoryCreate) -> MemoryRecord:
-        """保存语义事实，并尽力同步图投影。"""
-        record = await super().add(request)
-        await self._sync_graph(record)
-        return record
-
-    async def replace(
-        self, memory_id: str, user_id: str, request: MemoryCreate
-    ) -> MemoryRecord:
-        """替换语义事实版本，并把图投影切换到新版本。"""
-        record = await super().replace(memory_id, user_id, request)
-        if self.graph_repository is None:
-            await self.repository.enqueue_index_job(memory_id, "neo4j")
-        else:
+    async def _sync_write_result(self, result: MemoryWriteResult) -> bool:
+        """同步原子事实写入后的向量和图投影，并返回向量投影结果。"""
+        indexed = await super()._sync_write_result(result)
+        if result.replaced_record is not None and self.graph_repository is not None:
             try:
-                await self.graph_repository.delete_projection(memory_id)
+                await self.graph_repository.delete_projection(
+                    result.replaced_record.memory_id
+                )
             except Exception as exc:
-                await self.repository.enqueue_index_job(memory_id, "neo4j", str(exc))
-        await self._sync_graph(record)
-        return record
+                await self.repository.record_index_failure(
+                    result.replaced_record.memory_id,
+                    "neo4j",
+                    str(exc),
+                )
+        await self._sync_graph(result.record)
+        return indexed
 
-    async def forget(self, memory_id: str, user_id: str) -> bool:
+    async def _forget(self, memory_id: str, user_id: str) -> bool:
         """遗忘语义事实时删除 Neo4j 投影。"""
-        changed = await super().forget(memory_id, user_id)
+        changed = await super()._forget(memory_id, user_id)
         if changed:
-            if self.graph_repository is None:
-                await self.repository.enqueue_index_job(memory_id, "neo4j")
-            else:
+            if self.graph_repository is not None:
                 try:
                     await self.graph_repository.delete_projection(memory_id)
                 except Exception as exc:
-                    await self.repository.enqueue_index_job(
+                    await self.repository.record_index_failure(
                         memory_id, "neo4j", str(exc)
                     )
         return changed
 
     async def search(self, **kwargs: Any):
-        """合并向量召回和实体命中结果，并去重。"""
+        """并行融合词法、向量和 Neo4j 关系召回。"""
         limit = kwargs.get("limit", 5)
         if limit <= 0:
             return []
-        base_results = await super().search(**kwargs)
-        if self.graph_repository is None:
-            return base_results
+        candidates = await self._recall_candidates(
+            user_id=kwargs["user_id"],
+            query=kwargs["query"],
+            limit=limit,
+            conversation_id=kwargs.get("conversation_id"),
+            project_id=kwargs.get("project_id"),
+            modality=None,
+            asset_ids=None,
+        )
 
-        try:
-            graph_items = await self.graph_repository.search(
-                user_id=kwargs["user_id"],
-                query=kwargs["query"],
-                limit=max(limit * 2, limit),
-                conversation_id=kwargs.get("conversation_id"),
-                project_id=kwargs.get("project_id"),
-            )
-        except Exception:
-            logger.exception("Neo4j Semantic Memory 检索失败，返回向量或词法结果")
-            return base_results
-        known = {item.memory.memory_id for item in base_results}
-        base_memory_ids = {item.memory.memory_id for item in base_results}
-        for item in graph_items:
-            memory_id = str(item.get("memory_id", ""))
-            if not memory_id or memory_id in known:
-                continue
-            record = await self.repository.get(memory_id, kwargs["user_id"])
-            if record is not None and is_memory_visible(
-                record,
-                memory_type=MemoryType.SEMANTIC,
-                conversation_id=kwargs.get("conversation_id"),
-                project_id=kwargs.get("project_id"),
-            ):
-                ranked = self.ranker.rank(
-                    [(record, float(item.get("score", 0.8)), "neo4j")], 1
+        if self.graph_repository is not None:
+            try:
+                graph_items = await self.graph_repository.search(
+                    user_id=kwargs["user_id"],
+                    query=kwargs["query"],
+                    limit=max(limit * 4, limit),
+                    conversation_id=kwargs.get("conversation_id"),
+                    project_id=kwargs.get("project_id"),
                 )
-                if ranked:
-                    base_results.append(ranked[0])
-                    known.add(memory_id)
-        base_results.sort(key=lambda item: item.score, reverse=True)
-        selected = base_results[:limit]
+            except Exception:
+                logger.exception("Neo4j Semantic Memory 检索失败，继续使用其他召回结果")
+                graph_items = []
+            for item in graph_items:
+                memory_id = str(item.get("memory_id", ""))
+                if not memory_id:
+                    continue
+                record = await self.repository.get(memory_id, kwargs["user_id"])
+                if record is None or not is_memory_visible(
+                    record,
+                    memory_type=MemoryType.SEMANTIC,
+                    conversation_id=kwargs.get("conversation_id"),
+                    project_id=kwargs.get("project_id"),
+                ):
+                    continue
+                candidate = candidates.setdefault(
+                    memory_id, MemoryRecallCandidate(memory=record)
+                )
+                candidate.add_signal("graph", float(item.get("score", 0.0)))
+
+        selected = self.ranker.rank(list(candidates.values()), limit)
         await self.repository.touch_access(
-            [
-                item.memory.memory_id
-                for item in selected
-                if item.memory.memory_id not in base_memory_ids
-            ],
+            [item.memory.memory_id for item in selected],
             kwargs["user_id"],
         )
         return selected
@@ -117,6 +112,9 @@ class SemanticMemory(PersistentMemory):
     async def _sync_graph(self, record: MemoryRecord) -> bool:
         """把结构化实体关系保存到 PostgreSQL，并尽力写入 Neo4j。"""
         entities, relations = self.graph_extractor.extract(record)
+        if not entities:
+            # 没有实体时图检索无法命中，不创建不可检索的空 Memory 节点。
+            return False
         await self.repository.save_graph_projection(
             record,
             entities,
@@ -136,9 +134,5 @@ class SemanticMemory(PersistentMemory):
                 "failed",
                 str(exc),
             )
-            await self.repository.enqueue_index_job(record.memory_id, "neo4j", str(exc))
+            await self.repository.record_index_failure(record.memory_id, "neo4j", str(exc))
             return False
-
-    async def sync_graph_record(self, record: MemoryRecord) -> bool:
-        """公开一次图投影同步，供生命周期维护器调用。"""
-        return await self._sync_graph(record)

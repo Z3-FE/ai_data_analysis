@@ -12,15 +12,20 @@ from neo4j import AsyncDriver
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agent.memory.eligibility import MemoryEligibilityEvaluator
 from app.agent.memory.encoders.text import TextMemoryEncoder
 from app.agent.memory.enums import MemoryType
+from app.agent.memory.formation_service import MemoryFormationService
+from app.agent.memory.governance import MemoryGovernance
 from app.agent.memory.graph.schema import ensure_graph_schema
 from app.agent.memory.lifecycle import MemoryLifecycle
+from app.agent.memory.llm_extractor import LlmMemoryExtractor
 from app.agent.memory.manager import MemoryManager
 from app.agent.memory.types.episodic import EpisodicMemory
 from app.agent.memory.types.perceptual import PerceptualMemory
 from app.agent.memory.types.semantic import SemanticMemory
 from app.agent.memory.types.working import WorkingMemory, WorkingStateLoader
+from app.agent.memory.writer import MemoryWriter
 from app.core.config import Neo4jConfig, QdrantConfig, settings
 from app.repositories.memory.neo4j_graph_repository import Neo4jGraphRepository
 from app.repositories.memory.postgres_memory_repository import PostgresMemoryRepository
@@ -35,16 +40,16 @@ class MemoryRuntime:
 
     # 上层 Agent 和 ContextEngine 使用的统一记忆入口。
     manager: MemoryManager
-    # 过期清理和失败索引重试入口。
+    # 过期清理入口；投影失败只记录，不在当前阶段启动消费者。
     lifecycle: MemoryLifecycle
-    # PostgreSQL 事实仓储，可用于审计或管理接口。
-    repository: PostgresMemoryRepository
-    # Qdrant 检索投影；未提供 Qdrant/Embedding 时为空。
-    vector_repository: QdrantMemoryRepository | None
-    # Semantic Memory 的 Neo4j 图投影；未提供 driver 时为空。
-    graph_repository: Neo4jGraphRepository | None
+    # 是否已经启用 Qdrant 检索投影。
+    vector_enabled: bool
+    # 是否已经启用 Semantic Memory 的 Neo4j 图投影。
+    graph_enabled: bool
     # 本次组装时 Neo4j 约束和索引是否初始化成功。
     graph_schema_ready: bool
+    # 本轮结束后负责形成长期记忆；无 LLM 时仍支持显式“记住”。
+    formation_service: MemoryFormationService
 
 
 async def build_memory_runtime(
@@ -58,6 +63,7 @@ async def build_memory_runtime(
     initialize_graph_schema: bool = True,
     strict_graph_schema: bool = False,
     working_state_loader: WorkingStateLoader | None = None,
+    llm_client: Any = None,
 ) -> MemoryRuntime:
     """按可用基础设施组装 Memory，不改变现有 Agent 图。
 
@@ -102,7 +108,7 @@ async def build_memory_runtime(
                 graph_schema_ready = True
             except Exception:
                 logger.exception(
-                    "Neo4j Memory Schema 初始化失败，图投影将通过同步任务重试"
+                    "Neo4j Memory Schema 初始化失败，图投影状态将保留为降级状态"
                 )
                 if strict_graph_schema:
                     raise
@@ -130,6 +136,18 @@ async def build_memory_runtime(
         episodic=episodic,
         semantic=semantic,
         perceptual=perceptual,
+        repository=repository,
+    )
+    formation_service = MemoryFormationService(
+        repository=repository,
+        governance=MemoryGovernance(repository),
+        writer=MemoryWriter(manager),
+        llm_extractor=(
+            LlmMemoryExtractor(llm_client) if llm_client is not None else None
+        ),
+        eligibility=MemoryEligibilityEvaluator(
+            automatic_formation_enabled=llm_client is not None
+        ),
     )
     lifecycle = MemoryLifecycle(
         repository=repository,
@@ -142,10 +160,10 @@ async def build_memory_runtime(
     return MemoryRuntime(
         manager=manager,
         lifecycle=lifecycle,
-        repository=repository,
-        vector_repository=vector_repository,
-        graph_repository=graph_repository,
+        vector_enabled=vector_repository is not None,
+        graph_enabled=graph_repository is not None,
         graph_schema_ready=graph_schema_ready,
+        formation_service=formation_service,
     )
 
 

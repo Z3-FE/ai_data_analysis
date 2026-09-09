@@ -14,10 +14,13 @@ from uuid import uuid4
 
 from app.agent.context import AgentContext
 from app.agent.graph import agent_graph as default_agent_graph
+from app.agent.memory.contracts import TurnMemoryInput
+from app.agent.memory.formation_service import MemoryFormationService
 from app.agent.state import AgentState
+from app.agent.turn_output import build_turn_output
 from app.core.config import settings
-from app.repositories.dw_repository import DwRepository
 from app.repositories.conversation_repository import ConversationRepository
+from app.repositories.dw_repository import DwRepository
 from app.repositories.es.es_dimension_value_repository import DimensionValueSearch
 from app.repositories.mysql.meta.mysql_meta_catalog_repository import (
     MetaCatalogRepository,
@@ -102,6 +105,7 @@ class AgentService:
         dw_repository: DwRepository,
         conversation_repository: ConversationRepository,
         graph: Any | None = None,
+        memory_formation_service: MemoryFormationService | None = None,
     ) -> None:
         self.llm_client = llm_client
         self.embedding_client = embedding_client
@@ -109,11 +113,15 @@ class AgentService:
         self.meta_tables_semantic_repository = meta_tables_semantic_repository
         self.meta_columns_semantic_repository = meta_columns_semantic_repository
         self.meta_metrics_semantic_repository = meta_metrics_semantic_repository
-        self.meta_dimension_values_semantic_repository = meta_dimension_values_semantic_repository
+        self.meta_dimension_values_semantic_repository = (
+            meta_dimension_values_semantic_repository
+        )
         self.meta_catalog_repository = meta_catalog_repository
         self.dw_repository = dw_repository
         self.conversation_repository = conversation_repository
         self.agent_graph = graph or default_agent_graph
+        # M3 只在本轮历史成功落库后运行，不参与下一轮上下文拼接。
+        self.memory_formation_service = memory_formation_service
 
     def _context(self) -> AgentContext:
         """组装本次图执行使用的外部依赖。"""
@@ -189,7 +197,9 @@ class AgentService:
         }
 
     @staticmethod
-    def _with_identity(event: dict[str, Any], identity: dict[str, str]) -> dict[str, Any]:
+    def _with_identity(
+        event: dict[str, Any], identity: dict[str, str]
+    ) -> dict[str, Any]:
         """给所有业务 SSE 事件补充本轮身份，节点不需要重复拼接。"""
         return {**event, **identity}
 
@@ -228,9 +238,7 @@ class AgentService:
             "dimension_value_recall_terms": result.get(
                 "dimension_value_recall_terms", []
             ),
-            "dimension_value_candidates": result.get(
-                "dimension_value_candidates", []
-            ),
+            "dimension_value_candidates": result.get("dimension_value_candidates", []),
             "table_infos": result.get("table_infos", []),
             "metric_infos": result.get("metric_infos", []),
             "dimension_infos": result.get("dimension_infos", []),
@@ -241,9 +249,7 @@ class AgentService:
             "sql_reasoning": result.get("sql_reasoning", ""),
             "sql_result": result.get("sql_result", []),
             "result_columns": result.get("result_columns", []),
-            "dimension_value_mappings": result.get(
-                "dimension_value_mappings", []
-            ),
+            "dimension_value_mappings": result.get("dimension_value_mappings", []),
             "display_sql_result": result.get("display_sql_result", []),
             "mapping_limitations": result.get("mapping_limitations", []),
             "output_text": result.get("output_text", ""),
@@ -278,54 +284,12 @@ class AgentService:
         这里刻意只保存最终报告、澄清消息或受限的查询结果，不把 Agent State
         中的 SQL、Python、完整执行事件和完整 rows 写入聊天历史。
         """
-        if result.get("execution_mode") == "daily_chat":
-            content = result.get("output_text") or result.get("llm_output")
-            if content:
-                content = str(content)
-                return "text", {"message": content}, content
+        return build_turn_output(result)
 
-        report = result.get("rendered_report")
-        if isinstance(report, dict) and report:
-            content = str(report.get("summary") or report.get("title") or "报告已生成。")
-            return "rendered_report", report, content
-
-        if result.get("execution_mode") == "clarification":
-            content = str(
-                result.get("clarification_question")
-                or result.get("output_text")
-                or "请补充问题中的关键指标或范围。"
-            )
-            return "clarification", {"message": content}, content
-
-        rows = result.get("display_sql_result") or result.get("sql_result") or []
-        if result.get("execution_mode") == "single_query":
-            max_rows = 200
-            payload = {
-                "columns": result.get("result_columns", []),
-                "rows": rows[:max_rows],
-                "row_count": len(rows),
-                "truncated": len(rows) > max_rows,
-            }
-            return (
-                "query_result",
-                payload,
-                str(result.get("output_text") or "查询已完成。"),
-            )
-
-        content = result.get("output_text") or result.get("llm_output")
-        if content:
-            content = str(content)
-            return "text", {"message": content}, content
-
-        error = str(result.get("report_plan_error") or "Agent 执行失败。")
-        return "failure", {"message": error}, error
-
-    async def _save_turn_start(
-        self, input_text: str, identity: dict[str, str]
-    ) -> None:
+    async def _save_turn_start(self, input_text: str, identity: dict[str, str]) -> bool:
         """保存轮次开始和用户消息；历史写入失败不阻断 Agent 执行。"""
         try:
-            await self.conversation_repository.start_turn(
+            saved = await self.conversation_repository.start_turn(
                 conversation_id=identity["conversation_id"],
                 user_id=identity["user_id"],
                 thread_id=identity["thread_id"],
@@ -333,8 +297,10 @@ class AgentService:
                 run_id=identity["run_id"],
                 input_text=input_text,
             )
+            return saved is not False
         except Exception:
             logger.exception("会话轮次开始保存失败：turn_id=%s", identity["turn_id"])
+            return False
 
     async def _save_turn_finish(
         self,
@@ -344,12 +310,12 @@ class AgentService:
         status: str | None = None,
         error_message: str = "",
         execution_trace: dict[str, Any] | None = None,
-    ) -> tuple[str, dict[str, Any], str]:
+    ) -> tuple[str, dict[str, Any], str, bool]:
         """保存助手最终消息和受控输出，并返回同一份前端事件内容。"""
         output_type, output_payload, assistant_content = self._history_output(result)
         final_status = status or self._result_status(result)
         try:
-            await self.conversation_repository.finish_turn(
+            saved = await self.conversation_repository.finish_turn(
                 conversation_id=identity["conversation_id"],
                 user_id=identity["user_id"],
                 turn_id=identity["turn_id"],
@@ -361,27 +327,105 @@ class AgentService:
                 execution_trace=execution_trace,
                 error_message=error_message,
             )
+            history_saved = saved is not False
         except Exception:
             logger.exception("会话轮次完成保存失败：turn_id=%s", identity["turn_id"])
-        return output_type, output_payload, assistant_content
+            history_saved = False
+        return output_type, output_payload, assistant_content, history_saved
 
-    def run(self, input_text: str, conversation_id: str) -> dict:
+    async def _submit_memory_formation(
+        self,
+        identity: dict[str, str],
+        result: AgentState,
+        *,
+        input_text: str,
+        asset_ids: list[str],
+        history_saved: bool,
+        status: str | None = None,
+    ) -> None:
+        """在历史落库成功后提交 M3；形成失败不能影响主执行结果。"""
+        if not history_saved or self.memory_formation_service is None:
+            return
+        output_type, output_payload, assistant_content = self._history_output(result)
+        try:
+            await self.memory_formation_service.submit(
+                TurnMemoryInput(
+                    user_id=identity["user_id"],
+                    conversation_id=identity["conversation_id"],
+                    turn_id=identity["turn_id"],
+                    run_id=identity["run_id"],
+                    # 使用服务层收到的原始问题，避免图的最终状态被节点裁剪后丢失。
+                    input_text=input_text,
+                    assistant_content=assistant_content,
+                    execution_mode=str(result.get("execution_mode") or ""),
+                    status=status or self._result_status(result),
+                    output_type=output_type,
+                    output_payload=output_payload,
+                    asset_ids=asset_ids,
+                )
+            )
+        except Exception:
+            # 记忆是回答之后的增强能力，不能覆盖已经生成的回答或原始错误。
+            logger.exception(
+                "长期记忆形成提交失败：conversation_id=%s turn_id=%s",
+                identity["conversation_id"],
+                identity["turn_id"],
+            )
+
+    def run(
+        self,
+        input_text: str,
+        conversation_id: str,
+        *,
+        asset_ids: list[str] | None = None,
+    ) -> dict:
         """同步执行当前 Agent 图并返回结构化结果。"""
-        return asyncio.run(self._run_async(input_text, conversation_id))
 
-    async def arun(self, input_text: str, conversation_id: str) -> dict:
+        async def execute_and_drain() -> dict:
+            try:
+                return await self._run_async(
+                    input_text,
+                    conversation_id,
+                    asset_ids=asset_ids,
+                )
+            finally:
+                # 同步入口的临时事件循环即将关闭，必须先排空自动形成任务。
+                if self.memory_formation_service is not None:
+                    await self.memory_formation_service.close()
+
+        return asyncio.run(execute_and_drain())
+
+    async def arun(
+        self,
+        input_text: str,
+        conversation_id: str,
+        *,
+        asset_ids: list[str] | None = None,
+    ) -> dict:
         """在当前异步事件循环内执行 Agent 图。"""
-        return await self._run_async(input_text, conversation_id)
+        return await self._run_async(
+            input_text,
+            conversation_id,
+            asset_ids=asset_ids,
+        )
 
-    async def _run_async(self, input_text: str, conversation_id: str) -> dict:
+    async def _run_async(
+        self,
+        input_text: str,
+        conversation_id: str,
+        *,
+        asset_ids: list[str] | None = None,
+    ) -> dict:
         """在同一个事件循环内完成同步接口使用的完整轮次生命周期。"""
         identity = self._new_identity(conversation_id)
+        request_asset_ids = list(dict.fromkeys(asset_ids or []))
         state: AgentState = AgentState(
             input_text=input_text,
+            asset_ids=request_asset_ids,
             **identity,
             **self._new_turn_state(),
         )
-        await self._save_turn_start(input_text, identity)
+        history_started = await self._save_turn_start(input_text, identity)
         config = self._graph_config(identity)
         try:
             result = await self.agent_graph.ainvoke(
@@ -389,15 +433,30 @@ class AgentService:
             )
         except Exception as exc:
             failed_state: AgentState = {**state, "report_plan_error": str(exc)}
-            await self._save_turn_finish(
+            _, _, _, history_saved = await self._save_turn_finish(
                 identity,
                 failed_state,
                 status="failed",
                 error_message=str(exc),
             )
+            await self._submit_memory_formation(
+                identity,
+                failed_state,
+                input_text=input_text,
+                asset_ids=request_asset_ids,
+                history_saved=history_started and history_saved,
+                status="failed",
+            )
             raise
         result = {**identity, **result}
-        await self._save_turn_finish(identity, result)
+        _, _, _, history_saved = await self._save_turn_finish(identity, result)
+        await self._submit_memory_formation(
+            identity,
+            result,
+            input_text=input_text,
+            asset_ids=request_asset_ids,
+            history_saved=history_started and history_saved,
+        )
         return self._format_result(input_text, result)
 
     @staticmethod
@@ -418,16 +477,21 @@ class AgentService:
         self,
         input_text: str,
         conversation_id: str,
+        *,
+        asset_ids: list[str] | None = None,
     ) -> AsyncIterator[str]:
         """以带心跳的 SSE 文本流返回当前 Agent 执行过程。"""
         identity = self._new_identity(conversation_id)
+        request_asset_ids = list(dict.fromkeys(asset_ids or []))
         state: AgentState = AgentState(
             input_text=input_text,
+            asset_ids=request_asset_ids,
             **identity,
             **self._new_turn_state(),
         )
         final_state: AgentState = state
         trace_events: list[dict[str, Any]] = []
+        history_started = False
 
         def trace_event(event: dict[str, Any]) -> dict[str, Any]:
             """给实时事件补身份，并保留一份用于历史回放的事件。"""
@@ -525,10 +589,10 @@ class AgentService:
 
         async def identity_events() -> AsyncIterator[dict[str, Any]]:
             """先发送运行身份，再转发当前图产生的原始业务事件。"""
-            nonlocal final_state
+            nonlocal final_state, history_started
             try:
                 config = self._graph_config(identity)
-                await self._save_turn_start(input_text, identity)
+                history_started = await self._save_turn_start(input_text, identity)
             except asyncio.CancelledError:
                 raise
 
@@ -574,17 +638,27 @@ class AgentService:
                         "message": str(exc),
                     }
                 )
-                await self._save_turn_finish(
+                _, _, _, history_saved = await self._save_turn_finish(
                     identity,
                     failed_state,
                     status="failed",
                     error_message=str(exc),
                     execution_trace=execution_trace(),
                 )
+                await self._submit_memory_formation(
+                    identity,
+                    failed_state,
+                    input_text=input_text,
+                    asset_ids=request_asset_ids,
+                    history_saved=history_started and history_saved,
+                    status="failed",
+                )
                 yield failed_event
                 return
 
-            output_type, output_payload, assistant_content = self._history_output(final_state)
+            output_type, output_payload, assistant_content = self._history_output(
+                final_state
+            )
             completion_message = None
             if assistant_content:
                 completion_message = trace_event(
@@ -593,7 +667,9 @@ class AgentService:
                         "step": "生成回答",
                         "node": "agent_service",
                         "status": self._message_status(final_state),
-                        "execution_mode": final_state.get("execution_mode", "single_query"),
+                        "execution_mode": final_state.get(
+                            "execution_mode", "single_query"
+                        ),
                         "content": assistant_content,
                         "output_type": output_type,
                         "output": output_payload,
@@ -608,10 +684,17 @@ class AgentService:
                     "execution_mode": final_state.get("execution_mode", "single_query"),
                 }
             )
-            await self._save_turn_finish(
+            _, _, _, history_saved = await self._save_turn_finish(
                 identity,
                 final_state,
                 execution_trace=execution_trace(),
+            )
+            await self._submit_memory_formation(
+                identity,
+                final_state,
+                input_text=input_text,
+                asset_ids=request_asset_ids,
+                history_saved=history_started and history_saved,
             )
             if completion_message:
                 yield completion_message

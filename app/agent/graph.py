@@ -15,6 +15,7 @@ from langgraph.graph import END, START, StateGraph
 from app.agent.context import AgentContext
 from app.agent.nodes.daily_chat import daily_chat
 from app.agent.nodes.execute_analysis import execute_analysis
+from app.agent.nodes.finalize_turn import finalize_turn
 from app.agent.nodes.generate_report_plan import generate_report_plan
 from app.agent.nodes.plan_analysis import plan_analysis
 from app.agent.nodes.render_report import render_report
@@ -68,6 +69,7 @@ execute_analysis 负责，不在 LangGraph 中为每个动态任务创建节点�
     graph.add_node("generate_report_plan", generate_report_plan)
     graph.add_node("render_report", render_report)
     graph.add_node("clarification_route_boundary", _clarification_route_boundary)
+    graph.add_node("finalize_turn", finalize_turn)
     # 普通问数和复杂分析都先生成报告规划，再绑定真实数据。
     add_query_flow(graph, terminal_node="generate_report_plan")
 
@@ -87,9 +89,11 @@ execute_analysis 负责，不在 LangGraph 中为每个动态任务创建节点�
     # 分析证据完成后由 LLM 生成规划，再由后端渲染最终报告。
     graph.add_edge("execute_analysis", "generate_report_plan")
     graph.add_edge("generate_report_plan", "render_report")
-    graph.add_edge("render_report", END)
-    graph.add_edge("clarification_route_boundary", END)
-    graph.add_edge("daily_chat", END)
+    # 所有成功路由统一写入 Working Memory，业务节点不各自维护 messages。
+    graph.add_edge("render_report", "finalize_turn")
+    graph.add_edge("clarification_route_boundary", "finalize_turn")
+    graph.add_edge("daily_chat", "finalize_turn")
+    graph.add_edge("finalize_turn", END)
     return graph.compile(checkpointer=checkpointer)
 
 

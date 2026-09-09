@@ -14,11 +14,12 @@ from app.api.router import api_router
 from app.clients.elasticsearch_client import elasticsearch_client_manager
 from app.clients.embedding_client import embedding_client_manager
 from app.clients.llm_client import llm_client_manager
-from app.clients.neo4j_client import neo4j_client_manager
+from app.clients.memory_client import memory_client_manager
 from app.clients.mysql_client import (
     dw_mysql_client_manager,
     meta_mysql_client_manager,
 )
+from app.clients.neo4j_client import neo4j_client_manager
 from app.clients.postgres_client import postgres_client_manager
 from app.clients.qdrant_client import qdrant_client_manager
 from app.core.config import settings
@@ -39,10 +40,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     meta_mysql_client_manager.init()
     dw_mysql_client_manager.init()
     await postgres_client_manager.init()
+    await memory_client_manager.init()
     logger.info("应用级客户端初始化完成")
     try:
         yield
     finally:
+        # 先等待记忆形成后台任务，避免它在依赖的数据库或索引服务关闭后继续写入。
+        await memory_client_manager.close()
         await elasticsearch_client_manager.close()
         await qdrant_client_manager.close()
         await neo4j_client_manager.close()

@@ -8,7 +8,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
 
-from app.agent.memory.enums import MemoryScope, MemoryStatus, MemoryType
+from app.agent.memory.enums import (
+    MemoryDecisionAction,
+    MemoryScope,
+    MemoryStatus,
+    MemoryType,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,12 +54,6 @@ class MemoryCreate:
     expires_at: datetime | None = None
     # 可选来源列表，用于审计和回溯。
     sources: tuple[MemorySource, ...] = ()
-    # 导入或重放场景使用的记忆 ID；普通创建由仓储自动生成。
-    memory_id: str | None = None
-    # 当前版本号；替换旧记忆时由上层传入旧版本加一。
-    version: int = 1
-    # 被当前版本替代的旧记忆 ID。
-    supersedes_memory_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,22 +146,30 @@ class MemorySearchResult:
     similarity: float
     # 最终排序分数。
     score: float
-    # 召回来源：qdrant、postgres 或 neo4j。
+    # 召回来源；混合召回时使用逗号连接多个来源。
     source: str
+    # 用于解释最终排序的分项信号，例如 vector、lexical、graph、reference。
+    signals: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryWriteResult:
+    """PostgreSQL 原子完成一次长期记忆写入后的结果。"""
+
+    # 数据库在同一事务内决定的处理动作。
+    action: MemoryDecisionAction
+    # 当前 active 记录；duplicate 时是原记录，其他动作是新记录。
+    record: MemoryRecord
+    # replace 时被标记为 superseded 的旧记录。
+    replaced_record: MemoryRecord | None = None
 
 
 class MemoryRepository(Protocol):
     """长期记忆事实仓储端口。"""
 
-    async def create(self, request: MemoryCreate) -> MemoryRecord: ...
-
-    async def replace(
-        self, memory_id: str, user_id: str, request: MemoryCreate
-    ) -> tuple[MemoryRecord, MemoryRecord]: ...
+    async def write_managed(self, request: MemoryCreate) -> MemoryWriteResult: ...
 
     async def get(self, memory_id: str, user_id: str) -> MemoryRecord | None: ...
-
-    async def get_by_id(self, memory_id: str) -> MemoryRecord | None: ...
 
     async def touch_access(self, memory_ids: list[str], user_id: str) -> None: ...
 
@@ -176,6 +183,7 @@ class MemoryRepository(Protocol):
         conversation_id: str | None = None,
         project_id: str | None = None,
         modality: str | None = None,
+        asset_ids: list[str] | None = None,
     ) -> list[tuple[MemoryRecord, float]]: ...
 
     async def update(
@@ -192,6 +200,10 @@ class MemoryRepository(Protocol):
 
     async def get_asset(self, asset_id: str, user_id: str) -> MemoryAsset | None: ...
 
+    async def list_sources(
+        self, memory_id: str, user_id: str
+    ) -> list[MemorySource]: ...
+
     async def update_asset(
         self, asset_id: str, user_id: str, **changes: Any
     ) -> MemoryAsset | None: ...
@@ -205,23 +217,24 @@ class MemoryRepository(Protocol):
         last_error: str | None = None,
     ) -> None: ...
 
-    async def enqueue_index_job(
+    async def record_index_failure(
         self, memory_id: str, target: str, error: str = ""
     ) -> None: ...
 
-    async def list_index_jobs(
-        self, limit: int = 100, max_attempts: int = 5
-    ) -> list[dict[str, Any]]: ...
+    async def create_formation_run(self, payload: dict[str, Any]) -> None: ...
 
-    async def update_index_job(
-        self, job_id: str, status: str, error: str = ""
+    async def update_formation_run(
+        self, formation_run_id: str, **changes: Any
     ) -> None: ...
 
-    async def get_graph_projection(self, memory_id: str) -> dict[str, Any] | None: ...
-
-    async def list_graph_projections(
-        self, *, sync_status: str, limit: int = 100
-    ) -> list[dict[str, Any]]: ...
+    async def source_exists(
+        self,
+        *,
+        user_id: str,
+        source_type: str,
+        source_id: str,
+        conversation_id: str | None = None,
+    ) -> bool: ...
 
     async def update_graph_projection(
         self,
@@ -245,6 +258,7 @@ class VectorMemoryRepository(Protocol):
         conversation_id: str | None = None,
         project_id: str | None = None,
         modality: str | None = None,
+        asset_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]: ...
     async def delete(self, memory: MemoryRecord) -> None: ...
 
@@ -269,3 +283,47 @@ class GraphMemoryRepository(Protocol):
         conversation_id: str | None = None,
         project_id: str | None = None,
     ) -> list[dict[str, Any]]: ...
+
+
+class MemoryContextReader(Protocol):
+    """ContextEngine 唯一依赖的只读记忆端口。"""
+
+    async def search(
+        self,
+        *,
+        memory_type: MemoryType,
+        user_id: str,
+        query: str,
+        limit: int = 5,
+        conversation_id: str | None = None,
+        project_id: str | None = None,
+        modality: str | None = None,
+        asset_ids: list[str] | None = None,
+    ) -> list[MemorySearchResult]: ...
+
+    async def search_many(
+        self,
+        *,
+        memory_types: list[MemoryType],
+        user_id: str,
+        query: str,
+        limit: int = 10,
+        conversation_id: str | None = None,
+        project_id: str | None = None,
+        modality: str | None = None,
+        asset_ids: list[str] | None = None,
+    ) -> list[MemorySearchResult]: ...
+
+    async def get_asset(self, asset_id: str, user_id: str) -> MemoryAsset | None: ...
+
+    async def load_working(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        limit: int | None = None,
+    ) -> list[MemoryRecord]: ...
+
+    async def get_sources(
+        self, memory_id: str, user_id: str
+    ) -> list[MemorySource]: ...

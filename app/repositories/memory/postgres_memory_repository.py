@@ -1,18 +1,38 @@
 """PostgreSQL 记忆事实仓储。"""
 
-import re
+import json
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import and_, desc, or_, select, update
+from sqlalchemy import and_, desc, or_, select, text, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.agent.memory.enums import MemoryScope, MemoryStatus, MemoryType
-from app.agent.memory.interfaces import MemoryAsset, MemoryCreate, MemoryRecord
+from app.agent.memory.enums import (
+    MemoryDecisionAction,
+    MemoryScope,
+    MemoryStatus,
+    MemoryType,
+)
+from app.agent.memory.interfaces import (
+    MemoryAsset,
+    MemoryCreate,
+    MemoryRecord,
+    MemorySource,
+    MemoryWriteResult,
+)
+from app.agent.memory.lexical import lexical_scores
+from app.agent.memory.write_policy import resolve_memory_write_identity
+from app.models.agent_history import (
+    ConversationMessageModel,
+    ConversationTurnModel,
+    TurnOutputModel,
+)
 from app.models.memory import (
     AgentMemoryModel,
     MemoryAssetModel,
+    MemoryFormationRunModel,
     MemoryGraphProjectionModel,
     MemoryIndexJobModel,
     MemorySourceModel,
@@ -24,10 +44,11 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _terms(text: str) -> set[str]:
-    """按连续中英文数字片段和单个中文字符生成轻量检索词。"""
-    tokens = set(re.findall(r"[a-zA-Z0-9_]+|[\u4e00-\u9fff]", text.lower()))
-    return tokens or {text.lower()} if text else set()
+def _json_safe(value: Any) -> Any:
+    """把 Decimal 等数据库返回类型转换成 JSONB 可保存的值。"""
+    if value is None:
+        return None
+    return json.loads(json.dumps(value, ensure_ascii=False, default=str))
 
 
 def _record(model: AgentMemoryModel) -> MemoryRecord:
@@ -86,8 +107,6 @@ def _validate_create(request: MemoryCreate) -> None:
         raise ValueError("记忆内容不能为空")
     if not 0 <= request.importance <= 1 or not 0 <= request.confidence <= 1:
         raise ValueError("importance/confidence 必须在 0 到 1 之间")
-    if request.version < 1:
-        raise ValueError("version 必须大于等于 1")
     if request.scope is MemoryScope.CONVERSATION and not request.conversation_id:
         raise ValueError("conversation 作用域的记忆必须提供 conversation_id")
     if request.scope is MemoryScope.PROJECT and not request.project_id:
@@ -96,11 +115,16 @@ def _validate_create(request: MemoryCreate) -> None:
         raise ValueError("只有 project 作用域的记忆可以绑定 project_id")
 
 
-def _new_memory_model(request: MemoryCreate) -> AgentMemoryModel:
-    """把已经校验的领域请求转换为 ORM 对象。"""
+def _new_memory_model(
+    request: MemoryCreate,
+    *,
+    version: int = 1,
+    supersedes_memory_id: str | None = None,
+) -> AgentMemoryModel:
+    """把治理后的请求转换为 ORM 对象，版本身份只由仓储生成。"""
     now = _utcnow()
     return AgentMemoryModel(
-        memory_id=request.memory_id or str(uuid4()),
+        memory_id=str(uuid4()),
         user_id=request.user_id.strip(),
         memory_type=request.memory_type.value,
         scope=request.scope.value,
@@ -111,26 +135,116 @@ def _new_memory_model(request: MemoryCreate) -> AgentMemoryModel:
         status=MemoryStatus.ACTIVE.value,
         importance=request.importance,
         confidence=request.confidence,
-        version=request.version,
-        supersedes_memory_id=request.supersedes_memory_id,
+        version=version,
+        supersedes_memory_id=supersedes_memory_id,
         expires_at=request.expires_at,
         created_at=now,
         updated_at=now,
     )
 
 
-def _add_sources(session: AsyncSession, memory_id: str, request: MemoryCreate) -> None:
-    """把领域来源列表加入当前事务。"""
-    for source in request.sources:
-        session.add(
-            MemorySourceModel(
-                source_link_id=str(uuid4()),
-                memory_id=memory_id,
-                source_type=source.source_type,
-                source_id=source.source_id,
-                source_path=source.source_path,
-            )
+async def _add_sources_idempotent(
+    session: AsyncSession, memory_id: str, sources: tuple[MemorySource, ...]
+) -> None:
+    """在当前事务中幂等追加来源，供重复和并发写入路径复用。"""
+    if not sources:
+        return
+    await session.execute(
+        insert(MemorySourceModel)
+        .values(
+            [
+                {
+                    "source_link_id": str(uuid4()),
+                    "memory_id": memory_id,
+                    "source_type": source.source_type,
+                    "source_id": source.source_id,
+                    "source_path": source.source_path,
+                }
+                for source in sources
+            ]
         )
+        .on_conflict_do_nothing(
+            index_elements=["memory_id", "source_type", "source_id"]
+        )
+    )
+
+
+def _scope_conditions(request: MemoryCreate) -> list[Any]:
+    """构造精确作用域条件，避免用户级记忆误命中会话或项目记忆。"""
+    return [
+        AgentMemoryModel.scope == request.scope.value,
+        (
+            AgentMemoryModel.conversation_id == request.conversation_id
+            if request.conversation_id is not None
+            else AgentMemoryModel.conversation_id.is_(None)
+        ),
+        (
+            AgentMemoryModel.project_id == request.project_id
+            if request.project_id is not None
+            else AgentMemoryModel.project_id.is_(None)
+        ),
+    ]
+
+
+def _write_lock_identity(request: MemoryCreate) -> str:
+    """根据记忆类型生成事务锁身份，避免并发重复写入。"""
+    memory_identity = resolve_memory_write_identity(request)
+    identity = {
+        "user_id": request.user_id.strip(),
+        "memory_type": request.memory_type.value,
+        "scope": request.scope.value,
+        "conversation_id": request.conversation_id,
+        "project_id": request.project_id,
+        "memory_identity": {
+            "type": memory_identity.identity_type,
+            "key": memory_identity.identity_key,
+            "qualifiers": memory_identity.qualifiers,
+        },
+    }
+    return json.dumps(identity, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _identity_conditions(request: MemoryCreate) -> list[Any]:
+    """构造类型化身份的数据库预筛选条件。"""
+    identity = resolve_memory_write_identity(request)
+    identity_type = identity.identity_type
+    if identity_type == "semantic_fact":
+        return [
+            AgentMemoryModel.structured_data["fact_key"].as_string()
+            == identity.identity_key
+        ]
+    if identity_type == "episodic_event":
+        return [
+            AgentMemoryModel.structured_data["event_key"].as_string()
+            == identity.identity_key
+        ]
+    if identity_type == "perceptual_asset":
+        return [
+            AgentMemoryModel.structured_data["asset_id"].as_string()
+            == identity.identity_key,
+            AgentMemoryModel.structured_data["modality"].as_string()
+            == identity.qualifiers["modality"],
+        ]
+    return [AgentMemoryModel.content == request.content.strip()]
+
+
+def _same_type_identity(model: AgentMemoryModel, request: MemoryCreate) -> bool:
+    """复核 JSON 条件，避免语义事实在不同适用条件间互相替换。"""
+    identity = resolve_memory_write_identity(request)
+    if identity.identity_type != "semantic_fact":
+        return True
+    model_data = model.structured_data if isinstance(model.structured_data, dict) else {}
+    model_conditions = model_data.get("conditions", {})
+    return model_conditions == identity.qualifiers["conditions"]
+
+
+def _same_payload(model: AgentMemoryModel, request: MemoryCreate) -> bool:
+    """比较会改变记忆语义的正文和结构化内容。"""
+    model_data = model.structured_data if isinstance(model.structured_data, dict) else {}
+    return (
+        model.content == request.content.strip()
+        and _json_safe(model_data) == _json_safe(request.structured_data)
+    )
 
 
 class PostgresMemoryRepository:
@@ -140,75 +254,88 @@ class PostgresMemoryRepository:
         # 由应用级 PostgreSQL 客户端注入，和会话历史共用连接池但不共用业务表。
         self.session_factory = session_factory
 
-    async def create(self, request: MemoryCreate) -> MemoryRecord:
-        """创建事实记录并保存来源关联。"""
+    async def write_managed(self, request: MemoryCreate) -> MemoryWriteResult:
+        """按记忆类型在同一事务内完成幂等创建或版本替换。"""
         _validate_create(request)
-        memory = _new_memory_model(request)
-        async with self.session_factory() as session:
-            session.add(memory)
-            await session.flush()
-            _add_sources(session, memory.memory_id, request)
-            await session.commit()
-            await session.refresh(memory)
-        return _record(memory)
 
-    async def replace(
-        self, memory_id: str, user_id: str, request: MemoryCreate
-    ) -> tuple[MemoryRecord, MemoryRecord]:
-        """在一个事务中创建新版本，并把旧版本标为 superseded。"""
-        _validate_create(request)
-        if request.user_id.strip() != user_id:
-            raise ValueError("替换请求的 user_id 与目标用户不一致")
         async with self.session_factory() as session:
-            old_model = await session.scalar(
-                select(AgentMemoryModel)
-                .where(
-                    AgentMemoryModel.memory_id == memory_id,
-                    AgentMemoryModel.user_id == user_id,
+            async with session.begin():
+                # 相同逻辑事实共享一把事务级锁。事务提交或回滚后锁自动释放。
+                await session.execute(
+                    text(
+                        "SELECT pg_advisory_xact_lock("
+                        "hashtextextended(:lock_identity, 0))"
+                    ),
+                    {"lock_identity": _write_lock_identity(request)},
                 )
-                .with_for_update()
-            )
-            if old_model is None:
-                raise LookupError("要替换的记忆不存在")
-            if old_model.status != MemoryStatus.ACTIVE.value:
-                raise ValueError("只有 active 记忆可以创建替代版本")
-            if old_model.memory_type != request.memory_type.value:
-                raise ValueError("不能使用不同的 memory_type 替换记忆")
-            if (
-                old_model.scope != request.scope.value
-                or old_model.conversation_id != request.conversation_id
-                or old_model.project_id != request.project_id
-            ):
-                raise ValueError("替代版本必须保持原记忆的作用域和归属")
 
-            old_record = _record(old_model)
-            replacement = MemoryCreate(
-                user_id=request.user_id,
-                memory_type=request.memory_type,
-                content=request.content,
-                scope=request.scope,
-                conversation_id=request.conversation_id,
-                project_id=request.project_id,
-                structured_data=request.structured_data,
-                importance=request.importance,
-                confidence=request.confidence,
-                expires_at=request.expires_at,
-                sources=request.sources,
-                memory_id=request.memory_id,
-                version=old_model.version + 1,
-                supersedes_memory_id=old_model.memory_id,
-            )
-            new_model = _new_memory_model(replacement)
-            if new_model.memory_id == old_model.memory_id:
-                raise ValueError("替代版本必须使用新的 memory_id")
-            old_model.status = MemoryStatus.SUPERSEDED.value
-            old_model.updated_at = _utcnow()
-            session.add(new_model)
-            await session.flush()
-            _add_sources(session, new_model.memory_id, replacement)
-            await session.commit()
-            await session.refresh(new_model)
-            return old_record, _record(new_model)
+                conditions = [
+                    AgentMemoryModel.user_id == request.user_id.strip(),
+                    AgentMemoryModel.memory_type == request.memory_type.value,
+                    AgentMemoryModel.status == MemoryStatus.ACTIVE.value,
+                    or_(
+                        AgentMemoryModel.expires_at.is_(None),
+                        AgentMemoryModel.expires_at > _utcnow(),
+                    ),
+                    *_scope_conditions(request),
+                    *_identity_conditions(request),
+                ]
+                active_models = list(
+                    (
+                        await session.scalars(
+                            select(AgentMemoryModel)
+                            .where(and_(*conditions))
+                            .order_by(desc(AgentMemoryModel.version))
+                            .with_for_update()
+                        )
+                    ).all()
+                )
+                active_models = [
+                    model
+                    for model in active_models
+                    if _same_type_identity(model, request)
+                ]
+
+                current = active_models[0] if active_models else None
+                if current is not None and _same_payload(current, request):
+                    await _add_sources_idempotent(
+                        session, current.memory_id, request.sources
+                    )
+                    return MemoryWriteResult(
+                        action=MemoryDecisionAction.DUPLICATE,
+                        record=_record(current),
+                    )
+
+                if current is None:
+                    new_model = _new_memory_model(request)
+                    session.add(new_model)
+                    await session.flush()
+                    await _add_sources_idempotent(
+                        session, new_model.memory_id, request.sources
+                    )
+                    return MemoryWriteResult(
+                        action=MemoryDecisionAction.CREATED,
+                        record=_record(new_model),
+                    )
+
+                old_record = _record(current)
+                new_model = _new_memory_model(
+                    request,
+                    version=current.version + 1,
+                    supersedes_memory_id=current.memory_id,
+                )
+                current.status = MemoryStatus.SUPERSEDED.value
+                current.updated_at = _utcnow()
+                session.add(new_model)
+                await session.flush()
+                await _add_sources_idempotent(
+                    session, new_model.memory_id, request.sources
+                )
+                return MemoryWriteResult(
+                    action=MemoryDecisionAction.REPLACED,
+                    record=_record(new_model),
+                    replaced_record=old_record,
+                )
 
     async def get(self, memory_id: str, user_id: str) -> MemoryRecord | None:
         """按 ID 和用户读取 active/superseded 等任意生命周期记录。"""
@@ -219,12 +346,6 @@ class PostgresMemoryRepository:
                     AgentMemoryModel.user_id == user_id,
                 )
             )
-            return _record(model) if model else None
-
-    async def get_by_id(self, memory_id: str) -> MemoryRecord | None:
-        """按 ID 读取记录，仅供索引同步等内部任务使用。"""
-        async with self.session_factory() as session:
-            model = await session.get(AgentMemoryModel, memory_id)
             return _record(model) if model else None
 
     async def touch_access(self, memory_ids: list[str], user_id: str) -> None:
@@ -255,6 +376,7 @@ class PostgresMemoryRepository:
         conversation_id: str | None = None,
         project_id: str | None = None,
         modality: str | None = None,
+        asset_ids: list[str] | None = None,
     ) -> list[tuple[MemoryRecord, float]]:
         """在数据库内先按权限和状态筛选，再进行可解释词项匹配。"""
         now = _utcnow()
@@ -300,6 +422,14 @@ class PostgresMemoryRepository:
                 conditions.append(
                     AgentMemoryModel.structured_data["modality"].as_string() == modality
                 )
+            if asset_ids is not None:
+                if not asset_ids:
+                    return []
+                conditions.append(
+                    AgentMemoryModel.structured_data["asset_id"].as_string().in_(
+                        list(dict.fromkeys(asset_ids))
+                    )
+                )
             models = (
                 await session.scalars(
                     select(AgentMemoryModel)
@@ -308,14 +438,10 @@ class PostgresMemoryRepository:
                     .limit(max(100, limit * 20))
                 )
             ).all()
-        query_terms = _terms(query)
+        similarities = lexical_scores(query, [model.content for model in models])
         scored: list[tuple[MemoryRecord, float]] = []
-        for model in models:
-            content_terms = _terms(model.content)
-            overlap = len(query_terms & content_terms) / max(1, len(query_terms))
-            substring = 1.0 if query.strip().lower() in model.content.lower() else 0.0
-            score = max(overlap, substring)
-            if score > 0 or not query.strip():
+        for model, score in zip(models, similarities, strict=True):
+            if score > 0 or not query.strip() or asset_ids is not None:
                 scored.append((_record(model), score))
         scored.sort(
             key=lambda item: (item[1], item[0].importance, item[0].updated_at),
@@ -445,6 +571,36 @@ class PostgresMemoryRepository:
             )
             return _asset(model) if model else None
 
+    async def list_sources(
+        self, memory_id: str, user_id: str
+    ) -> list[MemorySource]:
+        """按记忆和用户读取来源，防止跨用户暴露来源链。"""
+        async with self.session_factory() as session:
+            rows = await session.execute(
+                select(
+                    MemorySourceModel.source_type,
+                    MemorySourceModel.source_id,
+                    MemorySourceModel.source_path,
+                )
+                .join(
+                    AgentMemoryModel,
+                    AgentMemoryModel.memory_id == MemorySourceModel.memory_id,
+                )
+                .where(
+                    MemorySourceModel.memory_id == memory_id,
+                    AgentMemoryModel.user_id == user_id,
+                )
+                .order_by(MemorySourceModel.created_at, MemorySourceModel.source_link_id)
+            )
+            return [
+                MemorySource(
+                    source_type=source_type,
+                    source_id=source_id,
+                    source_path=source_path,
+                )
+                for source_type, source_id, source_path in rows
+            ]
+
     async def update_asset(
         self, asset_id: str, user_id: str, **changes: Any
     ) -> MemoryAsset | None:
@@ -500,48 +656,6 @@ class PostgresMemoryRepository:
             model.updated_at = _utcnow()
             await session.commit()
 
-    async def get_graph_projection(self, memory_id: str) -> dict[str, Any] | None:
-        """读取 Neo4j 投影的可重建输入。"""
-        async with self.session_factory() as session:
-            model = await session.scalar(
-                select(MemoryGraphProjectionModel).where(
-                    MemoryGraphProjectionModel.memory_id == memory_id
-                )
-            )
-            if model is None:
-                return None
-            return {
-                "memory_id": model.memory_id,
-                "entities": list(model.entities or []),
-                "relations": list(model.relations or []),
-                "sync_status": model.sync_status,
-                "last_error": model.last_error,
-            }
-
-    async def list_graph_projections(
-        self, *, sync_status: str, limit: int = 100
-    ) -> list[dict[str, Any]]:
-        """列出待同步图投影，便于 Neo4j 后启用时批量重建。"""
-        async with self.session_factory() as session:
-            models = (
-                await session.scalars(
-                    select(MemoryGraphProjectionModel)
-                    .where(MemoryGraphProjectionModel.sync_status == sync_status)
-                    .order_by(MemoryGraphProjectionModel.created_at)
-                    .limit(max(0, limit))
-                )
-            ).all()
-        return [
-            {
-                "memory_id": model.memory_id,
-                "entities": list(model.entities or []),
-                "relations": list(model.relations or []),
-                "sync_status": model.sync_status,
-                "last_error": model.last_error,
-            }
-            for model in models
-        ]
-
     async def update_graph_projection(
         self,
         memory_id: str,
@@ -562,72 +676,172 @@ class PostgresMemoryRepository:
             model.updated_at = _utcnow()
             await session.commit()
 
-    async def enqueue_index_job(
+    async def record_index_failure(
         self, memory_id: str, target: str, error: str = ""
     ) -> None:
-        """写入可重试索引任务；同一记忆和目标只保留一个未完成任务。"""
+        """记录真实投影同步失败；当前不创建或执行后台任务。"""
+        if target not in {"qdrant", "neo4j"}:
+            raise ValueError(f"不支持的索引目标：{target}")
         async with self.session_factory() as session:
-            existing = await session.scalar(
-                select(MemoryIndexJobModel).where(
-                    MemoryIndexJobModel.memory_id == memory_id,
-                    MemoryIndexJobModel.target == target,
-                    MemoryIndexJobModel.status.in_(("pending", "processing", "failed")),
+            async with session.begin():
+                await session.execute(
+                    text(
+                        "SELECT pg_advisory_xact_lock("
+                        "hashtextextended(:lock_identity, 0))"
+                    ),
+                    {"lock_identity": f"memory-index:{memory_id}:{target}"},
                 )
-            )
-            if existing:
-                if existing.status == "failed":
-                    existing.status = "pending"
-                existing.last_error = error[:4000] or None
-                existing.updated_at = _utcnow()
-            else:
-                session.add(
-                    MemoryIndexJobModel(
-                        job_id=str(uuid4()),
-                        memory_id=memory_id,
-                        target=target,
-                        status="pending",
-                        last_error=error[:4000] or None,
-                    )
-                )
-            await session.commit()
-
-    async def list_index_jobs(
-        self, limit: int = 100, max_attempts: int = 5
-    ) -> list[dict[str, Any]]:
-        """返回待处理和失败任务，供后台同步器消费。"""
-        async with self.session_factory() as session:
-            models = (
-                await session.scalars(
+                existing = await session.scalar(
                     select(MemoryIndexJobModel)
                     .where(
-                        MemoryIndexJobModel.status.in_(("pending", "failed")),
-                        MemoryIndexJobModel.attempts < max(1, max_attempts),
+                        MemoryIndexJobModel.memory_id == memory_id,
+                        MemoryIndexJobModel.target == target,
+                        MemoryIndexJobModel.status.in_(
+                            ("pending", "processing")
+                        ),
                     )
-                    .order_by(MemoryIndexJobModel.created_at)
-                    .limit(max(0, limit))
+                    .order_by(desc(MemoryIndexJobModel.updated_at))
+                    .with_for_update()
                 )
-            ).all()
-        return [
-            {
-                "job_id": model.job_id,
-                "memory_id": model.memory_id,
-                "target": model.target,
-                "status": model.status,
-                "attempts": model.attempts,
-                "last_error": model.last_error,
-            }
-            for model in models
-        ]
+                if existing is None:
+                    existing = await session.scalar(
+                        select(MemoryIndexJobModel)
+                        .where(
+                            MemoryIndexJobModel.memory_id == memory_id,
+                            MemoryIndexJobModel.target == target,
+                            MemoryIndexJobModel.status == "failed",
+                        )
+                        .order_by(desc(MemoryIndexJobModel.updated_at))
+                        .with_for_update()
+                    )
+                if existing is not None:
+                    # 无论旧记录处于何种状态，本次调用表达的都是一次失败。
+                    existing.status = "failed"
+                    existing.last_error = error[:4000] or None
+                    existing.updated_at = _utcnow()
+                else:
+                    session.add(
+                        MemoryIndexJobModel(
+                            job_id=str(uuid4()),
+                            memory_id=memory_id,
+                            target=target,
+                            status="failed",
+                            last_error=error[:4000] or None,
+                        )
+                    )
 
-    async def update_index_job(self, job_id: str, status: str, error: str = "") -> None:
-        """更新索引任务状态和重试次数。"""
+    async def create_formation_run(self, payload: dict[str, Any]) -> None:
+        """创建一次记忆形成审计记录。"""
         async with self.session_factory() as session:
-            model = await session.get(MemoryIndexJobModel, job_id)
+            session.add(
+                MemoryFormationRunModel(
+                    formation_run_id=payload["formation_run_id"],
+                    user_id=payload["user_id"],
+                    conversation_id=payload["conversation_id"],
+                    turn_id=payload["turn_id"],
+                    run_id=payload["run_id"],
+                    trigger=str(payload["trigger"]),
+                    status=str(payload["status"]),
+                    extractor_version=payload.get(
+                        "extractor_version", "m3-v1"
+                    ),
+                    eligibility_reason=payload.get("eligibility_reason", ""),
+                    candidate_count=int(payload.get("candidate_count", 0)),
+                    accepted_count=int(payload.get("accepted_count", 0)),
+                    rejected_count=int(payload.get("rejected_count", 0)),
+                    duplicate_count=int(payload.get("duplicate_count", 0)),
+                    replaced_count=int(payload.get("replaced_count", 0)),
+                    failed_count=int(payload.get("failed_count", 0)),
+                    attempts=int(payload.get("attempts", 0)),
+                    decisions=_json_safe(payload.get("decisions", [])),
+                    error_message=payload.get("error_message") or None,
+                    started_at=payload.get("started_at"),
+                    completed_at=payload.get("completed_at"),
+                )
+            )
+            await session.commit()
+
+    async def update_formation_run(
+        self, formation_run_id: str, **changes: Any
+    ) -> None:
+        """更新记忆形成审计状态和紧凑决定列表。"""
+        allowed = {
+            "status",
+            "candidate_count",
+            "accepted_count",
+            "rejected_count",
+            "duplicate_count",
+            "replaced_count",
+            "failed_count",
+            "attempts",
+            "decisions",
+            "error_message",
+            "started_at",
+            "completed_at",
+        }
+        async with self.session_factory() as session:
+            model = await session.get(MemoryFormationRunModel, formation_run_id)
             if model is None:
                 return
-            model.status = status
-            model.last_error = error[:4000] or None
+            for key, value in changes.items():
+                if key not in allowed:
+                    continue
+                if key == "decisions":
+                    value = _json_safe(value)
+                if key == "error_message" and value:
+                    value = str(value)[:4000]
+                setattr(model, key, value)
             model.updated_at = _utcnow()
-            if status == "processing":
-                model.attempts += 1
             await session.commit()
+
+    async def source_exists(
+        self,
+        *,
+        user_id: str,
+        source_type: str,
+        source_id: str,
+        conversation_id: str | None = None,
+    ) -> bool:
+        """校验候选来源属于当前用户，避免 LLM 伪造来源引用。"""
+        async with self.session_factory() as session:
+            if source_type == "output":
+                # TurnOutputModel 没有 user_id，必须通过所属轮次做用户隔离。
+                conditions = [
+                    TurnOutputModel.output_id == source_id,
+                    ConversationTurnModel.user_id == user_id,
+                    TurnOutputModel.turn_id == ConversationTurnModel.turn_id,
+                ]
+                if conversation_id:
+                    conditions.append(
+                        TurnOutputModel.conversation_id == conversation_id
+                    )
+                return (
+                    await session.scalar(
+                        select(TurnOutputModel)
+                        .join(
+                            ConversationTurnModel,
+                            TurnOutputModel.turn_id == ConversationTurnModel.turn_id,
+                        )
+                        .where(and_(*conditions))
+                    )
+                ) is not None
+
+            source_models: dict[str, Any] = {
+                "turn": ConversationTurnModel,
+                "message": ConversationMessageModel,
+                "asset": MemoryAssetModel,
+            }
+            model = source_models.get(source_type)
+            if model is None:
+                return False
+            identity_field = {
+                "turn": model.turn_id,
+                "message": model.message_id,
+                "asset": model.asset_id,
+            }[source_type]
+            conditions = [identity_field == source_id, model.user_id == user_id]
+            if conversation_id:
+                conditions.append(model.conversation_id == conversation_id)
+            return (
+                await session.scalar(select(model).where(and_(*conditions)))
+            ) is not None

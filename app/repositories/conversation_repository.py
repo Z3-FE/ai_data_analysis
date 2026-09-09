@@ -149,7 +149,7 @@ class ConversationRepository:
         turn_id: str,
         run_id: str,
         input_text: str,
-    ) -> None:
+    ) -> bool:
         """以一个事务写入用户问题，并把会话置为 running。"""
         now = datetime.utcnow()
         async with self.session_factory() as session:
@@ -201,6 +201,7 @@ class ConversationRepository:
             await session.flush()
             session.add(user_message)
             await session.commit()
+            return True
 
     async def finish_turn(
         self,
@@ -215,7 +216,7 @@ class ConversationRepository:
         output_payload: dict[str, Any],
         execution_trace: dict[str, Any] | None = None,
         error_message: str = "",
-    ) -> None:
+    ) -> bool:
         """保存助手最终消息和受控结构化输出，并结束当前轮次。"""
         now = datetime.utcnow()
         async with self.session_factory() as session:
@@ -233,7 +234,7 @@ class ConversationRepository:
                 )
             )
             if turn is None or conversation is None:
-                return
+                return False
 
             turn.execution_mode = execution_mode
             turn.status = status
@@ -277,6 +278,7 @@ class ConversationRepository:
                 )
                 session.add(trace_output)
             await session.commit()
+            return True
 
     async def list_conversations(
         self, user_id: str, limit: int = 50

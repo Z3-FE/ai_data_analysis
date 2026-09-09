@@ -7,7 +7,6 @@
 import logging
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.runtime import Runtime
@@ -63,10 +62,6 @@ async def daily_chat(
         }
     )
     return {
-        "messages": [
-            HumanMessage(content=question),
-            AIMessage(content=answer),
-        ],
         "output_text": answer,
         "llm_output": answer,
     }

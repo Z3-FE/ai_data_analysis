@@ -17,6 +17,10 @@ class AgentRunRequest(BaseModel):
 
     input_text: str = Field(..., description="输入给 Agent 的文本")
     conversation_id: str = Field(..., description="当前聊天会话 ID")
+    asset_ids: list[str] = Field(
+        default_factory=list,
+        description="本轮已登记附件 ID；可选，不影响现有请求",
+    )
 
 
 class AgentRunResponse(BaseModel):
@@ -64,7 +68,11 @@ async def run_agent(
     agent_service: Annotated[AgentService, Depends(get_agent_service)],
 ) -> AgentRunResponse:
     """执行当前 LangGraph 并返回结果。"""
-    result = await agent_service.arun(payload.input_text, payload.conversation_id)
+    result = await agent_service.arun(
+        payload.input_text,
+        payload.conversation_id,
+        asset_ids=payload.asset_ids,
+    )
     return AgentRunResponse.model_validate(result)
 
 
@@ -75,7 +83,11 @@ async def run_agent_stream(
 ) -> StreamingResponse:
     """以 SSE 形式返回 Agent 结果。"""
     return StreamingResponse(
-        agent_service.qyStream(payload.input_text, payload.conversation_id),
+        agent_service.qyStream(
+            payload.input_text,
+            payload.conversation_id,
+            asset_ids=payload.asset_ids,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",

@@ -9,6 +9,7 @@ from qdrant_client.http.models import (
     Distance,
     FieldCondition,
     Filter,
+    MatchAny,
     MatchValue,
     PayloadSchemaType,
     PointIdsList,
@@ -98,6 +99,7 @@ class QdrantMemoryRepository:
                 "scope",
                 "status",
                 "modality",
+                "asset_id",
             ):
                 try:
                     await self.client.create_payload_index(
@@ -134,6 +136,7 @@ class QdrantMemoryRepository:
                             "conversation_id": memory.conversation_id or "",
                             "project_id": memory.project_id or "",
                             "modality": modality,
+                            "asset_id": str(memory.structured_data.get("asset_id") or ""),
                             "scope": memory.scope.value,
                             "status": memory.status.value,
                             "version": memory.version,
@@ -157,6 +160,7 @@ class QdrantMemoryRepository:
         conversation_id: str | None = None,
         project_id: str | None = None,
         modality: str | None = None,
+        asset_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """按用户、状态和可见会话范围进行向量检索。"""
         collection_name = self.collection_for(memory_type, modality or "text")
@@ -203,6 +207,15 @@ class QdrantMemoryRepository:
         if modality:
             must.append(
                 FieldCondition(key="modality", match=MatchValue(value=modality))
+            )
+        if asset_ids is not None:
+            if not asset_ids:
+                return []
+            must.append(
+                FieldCondition(
+                    key="asset_id",
+                    match=MatchAny(any=list(dict.fromkeys(asset_ids))),
+                )
             )
         response = await self.client.query_points(
             collection_name=collection_name,

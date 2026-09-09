@@ -5,13 +5,13 @@ AgentState.messages 保存，并由 AsyncPostgresSaver 按 thread_id 持久化�
 适配器只读取已有状态，供后续 ContextEngine 统一调用。
 """
 
-import re
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timezone
 from typing import Any
 
 from app.agent.memory.enums import MemoryScope, MemoryStatus, MemoryType
-from app.agent.memory.interfaces import MemoryCreate, MemoryRecord, MemorySearchResult
+from app.agent.memory.interfaces import MemoryRecord, MemorySearchResult
+from app.agent.memory.lexical import lexical_scores
 
 # 根据 conversation_id 读取 LangGraph StateSnapshot.values 或等价字典。
 WorkingStateLoader = Callable[[str], Awaitable[Any]]
@@ -24,11 +24,6 @@ def create_working_state_loader(graph: Any) -> WorkingStateLoader:
         return await graph.aget_state({"configurable": {"thread_id": conversation_id}})
 
     return load
-
-
-def _terms(text: str) -> set[str]:
-    """生成适合中英文短消息的轻量词项。"""
-    return set(re.findall(r"[a-zA-Z0-9_]+|[\u4e00-\u9fff]", text.lower()))
 
 
 def _message_text(message: Any) -> str:
@@ -58,24 +53,42 @@ def _message_role(message: Any) -> str:
     return str(getattr(message, "type", message.__class__.__name__.lower()))
 
 
+def _message_importance(message: Any) -> float:
+    """读取显式消息重要性；普通历史不按角色硬编码不同权重。"""
+    metadata = (
+        message.get("additional_kwargs", {})
+        if isinstance(message, Mapping)
+        else getattr(message, "additional_kwargs", {})
+    )
+    raw = (
+        metadata.get("memory_importance", 0.5) if isinstance(metadata, Mapping) else 0.5
+    )
+    try:
+        return max(0.0, min(1.0, float(raw)))
+    except (TypeError, ValueError):
+        return 0.5
+
+
+def _message_metadata(message: Any) -> dict[str, Any]:
+    """读取允许进入上下文工程的消息元数据。"""
+    metadata = (
+        message.get("additional_kwargs", {})
+        if isinstance(message, Mapping)
+        else getattr(message, "additional_kwargs", {})
+    )
+    return dict(metadata) if isinstance(metadata, Mapping) else {}
+
+
 class WorkingMemory:
     """从 Checkpointer-backed AgentState 读取当前线程短期记忆。"""
 
     def __init__(
-        self, state_loader: WorkingStateLoader, *, max_items: int = 50
+        self, state_loader: WorkingStateLoader, *, max_items: int | None = None
     ) -> None:
         # 状态加载器由集成层提供，本模块不依赖具体 CompiledStateGraph 实例。
         self.state_loader = state_loader
-        # 单次最多返回的消息数量，避免无界读取。
-        self.max_items = max(1, max_items)
-
-    async def add(self, request: MemoryCreate) -> MemoryRecord:
-        """拒绝旁路写入，Working Memory 只能随 Agent 图状态更新。"""
-        del request
-        raise RuntimeError(
-            "Working Memory 由 AgentState.messages + Checkpointer 写入，"
-            "不能通过 MemoryManager.add 单独写入"
-        )
+        # 独立调用方可以设硬上限；ContextEngine 默认读取完整状态后按 token 预算处理。
+        self.max_items = max(1, max_items) if max_items is not None else None
 
     async def load(
         self,
@@ -101,8 +114,12 @@ class WorkingMemory:
 
         raw_messages = values.get("messages", [])
         messages = list(raw_messages) if isinstance(raw_messages, (list, tuple)) else []
-        requested_limit = self.max_items if limit is None else max(0, limit)
-        selected_count = min(requested_limit, self.max_items)
+        requested_limit = len(messages) if limit is None else max(0, limit)
+        selected_count = (
+            min(requested_limit, self.max_items)
+            if self.max_items is not None
+            else requested_limit
+        )
         if selected_count == 0:
             return []
         selected = messages[-selected_count:]
@@ -118,6 +135,15 @@ class WorkingMemory:
                 if isinstance(message, Mapping)
                 else getattr(message, "id", None)
             )
+            metadata = _message_metadata(message)
+            asset_ids = metadata.get("asset_ids", [])
+            if not isinstance(asset_ids, (list, tuple)):
+                asset_ids = []
+            raw_index = metadata.get("message_index", start_index + offset)
+            try:
+                message_index = int(raw_index)
+            except (TypeError, ValueError):
+                message_index = start_index + offset
             records.append(
                 MemoryRecord(
                     memory_id=str(
@@ -132,11 +158,19 @@ class WorkingMemory:
                     content=content,
                     structured_data={
                         "role": _message_role(message),
-                        "message_index": start_index + offset,
+                        "message_index": message_index,
+                        "turn_id": str(metadata.get("turn_id") or ""),
+                        "execution_mode": str(metadata.get("execution_mode") or ""),
+                        "output_type": str(metadata.get("output_type") or ""),
+                        "asset_ids": [
+                            str(asset_id)
+                            for asset_id in asset_ids
+                            if str(asset_id).strip()
+                        ],
                     },
                     status=MemoryStatus.ACTIVE,
                     version=1,
-                    importance=0.5,
+                    importance=_message_importance(message),
                     confidence=1.0,
                     supersedes_memory_id=None,
                     expires_at=None,
@@ -165,35 +199,33 @@ class WorkingMemory:
             conversation_id=conversation_id,
             limit=max(limit * 3, limit),
         )
-        query_terms = _terms(query)
+        similarities = lexical_scores(query, [record.content for record in records])
         candidates: list[MemorySearchResult] = []
         total = max(1, len(records))
-        for index, record in enumerate(records):
-            content_terms = _terms(record.content)
-            overlap = len(query_terms & content_terms) / max(1, len(query_terms))
-            substring = (
-                1.0 if query and query.lower() in record.content.lower() else 0.0
-            )
-            similarity = max(overlap, substring)
+        for index, (record, similarity) in enumerate(
+            zip(records, similarities, strict=True)
+        ):
             if similarity > 0 or not query.strip():
-                # 同等相关性时稍微偏向较新的消息，但不改变召回语义。
-                recency = (index + 1) / total
+                # 对齐教程思想：词法相关性乘近因性，再乘重要性权重。
+                recency = 0.85 + ((index + 1) / total) * 0.15
+                importance_weight = 0.8 + record.importance * 0.4
                 candidates.append(
                     MemorySearchResult(
                         memory=record,
                         similarity=similarity,
                         score=(similarity if query.strip() else 1.0)
-                        * (0.9 + recency * 0.1),
+                        * recency
+                        * importance_weight,
                         source="working",
+                        signals={
+                            "lexical": similarity,
+                            "recency": recency,
+                            "importance": record.importance,
+                        },
                     )
                 )
         candidates.sort(key=lambda item: item.score, reverse=True)
         return candidates[:limit]
-
-    async def forget(self, memory_id: str, user_id: str) -> bool:
-        """拒绝旁路删除，线程消息应由会话或 Checkpointer 管理接口处理。"""
-        del memory_id, user_id
-        raise RuntimeError("Working Memory 不能通过长期记忆接口单独删除")
 
 
 __all__ = [

@@ -5,13 +5,17 @@ from typing import Annotated, TypedDict
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
+"""LangGraph 状态定义。"""
+
+from app.agent.harness.state import HarnessControlState
+
 
 class AgentState(TypedDict, total=False):
     """Agent 图共享的中间状态。
 
-字段按生命周期分组：路由和分析字段由分析入口写入，
-问数字段由可复用 Query Agent 写入，最后由服务层整理成接口响应。
-"""
+    字段按生命周期分组：路由和分析字段由分析入口写入，
+    问数字段由可复用 Query Agent 写入，最后由服务层整理成接口响应。
+    """
 
     input_text: str
     user_id: str
@@ -20,6 +24,8 @@ class AgentState(TypedDict, total=False):
     turn_id: str
     run_id: str
     original_question: str
+    # 本轮明确关联的附件 ID；收尾节点会把它写入用户消息元数据。
+    asset_ids: list[str]
     # 同一 thread_id 下的短期对话消息，由 Checkpointer 持久化并通过 reducer 追加。
     messages: Annotated[list[AnyMessage], add_messages]
 
@@ -75,3 +81,5 @@ class AgentState(TypedDict, total=False):
     mapping_limitations: list[str]
     output_text: str
     llm_output: str
+    # Harness 控制状态；旧图业务字段保持扁平并继续兼容。
+    harness: "HarnessControlState"

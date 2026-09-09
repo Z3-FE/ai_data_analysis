@@ -212,7 +212,7 @@ class MemoryGraphProjectionModel(Base):
 
 
 class MemoryIndexJobModel(Base):
-    """Qdrant/Neo4j 索引同步任务表。"""
+    """Qdrant/Neo4j 投影同步失败记录；当前不启动任务消费者。"""
 
     __tablename__ = "memory_index_jobs"
     __table_args__ = (
@@ -224,12 +224,12 @@ class MemoryIndexJobModel(Base):
             unique=True,
             postgresql_where=text("status IN ('pending', 'processing')"),
         ),
-        {"comment": "记忆检索索引同步任务"},
+        {"comment": "记忆检索投影同步失败记录，当前不启动自动重试"},
     )
 
-    # 索引任务的稳定唯一 ID。
+    # 投影失败记录的稳定唯一 ID。
     job_id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    # 待同步的记忆 ID。
+    # 发生投影同步失败的记忆 ID。
     memory_id: Mapped[str] = mapped_column(
         String(128),
         ForeignKey("agent_memories.memory_id", ondelete="CASCADE"),
@@ -237,17 +237,83 @@ class MemoryIndexJobModel(Base):
     )
     # 索引目标：qdrant 或 neo4j。
     target: Mapped[str] = mapped_column(String(32), nullable=False)
-    # 当前任务状态：pending、processing、completed 或 failed。
-    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
-    # 当前已重试次数。
+    # 失败记录状态；当前写入 failed，其他状态只为未来修复流程保留。
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="failed")
+    # 修复流程的尝试次数；当前只记录失败，因此保持为 0。
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # 最近一次执行错误。
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # 任务创建时间。
+    # 失败记录创建时间。
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow
     )
-    # 任务最近更新时间。
+    # 失败记录最近更新时间。
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class MemoryFormationRunModel(Base):
+    """记录一次本轮对话的长期记忆形成和治理过程。"""
+
+    __tablename__ = "memory_formation_runs"
+    __table_args__ = (
+        Index(
+            "idx_memory_formation_runs_user_conversation",
+            "user_id",
+            "conversation_id",
+            "created_at",
+        ),
+        Index("idx_memory_formation_runs_status", "status", "created_at"),
+        Index("idx_memory_formation_runs_turn", "turn_id"),
+        {"comment": "长期记忆形成审计"},
+    )
+
+    # 一次记忆形成任务的稳定 ID。
+    formation_run_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    # 形成任务所属用户，用于审计数据隔离。
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    # 产生候选的业务会话 ID。
+    conversation_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    # 产生候选的会话轮次 ID。
+    turn_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    # 本轮 Agent 执行尝试 ID。
+    run_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    # 触发方式：explicit_request、automatic 或 skipped。
+    trigger: Mapped[str] = mapped_column(String(32), nullable=False)
+    # 形成任务状态：pending、processing、completed、partial、skipped 或 failed。
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    # 提取器和提示词版本，便于复盘和重新评估。
+    extractor_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Eligibility 预筛选原因。
+    eligibility_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    # 候选总数。
+    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # 被接受并写入或替换的候选数量。
+    accepted_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # 被治理拒绝的候选数量。
+    rejected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # 与现有记忆完全重复的候选数量。
+    duplicate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # 替换旧版本的候选数量。
+    replaced_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # 去重、写入或投影同步中的单候选失败数量。
+    failed_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # 形成任务执行尝试次数。
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # 候选处理决定；只保存必要的审计信息，不保存模型隐藏思考。
+    decisions: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # 任务级错误信息。
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 开始实际提取的时间。
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 完成或失败的时间。
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # 审计任务创建时间。
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+    # 审计任务最近更新时间。
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
     )
@@ -259,4 +325,5 @@ __all__ = [
     "MemoryAssetModel",
     "MemoryGraphProjectionModel",
     "MemoryIndexJobModel",
+    "MemoryFormationRunModel",
 ]
