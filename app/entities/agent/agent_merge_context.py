@@ -95,11 +95,13 @@ class RelationshipInfo:
 
 @dataclass(frozen=True)
 class MetricDimensionInfo:
-    """召回指标与召回维度之间的兼容关系。"""
+    """召回指标与召回维度之间的兼容关系和使用限制。"""
 
     metric_id: str
     dimension_id: str
     compatibility_note: str
+    support_level: str = "supported"
+    usage_note: str = ""
 
 
 @dataclass

@@ -61,6 +61,7 @@ export async function proxyToFastApi(request: Request, endpoint: string) {
     headers: buildForwardHeaders(request),
     body: hasBody ? await request.arrayBuffer() : undefined,
     cache: "no-store",
+    signal: request.signal,
   });
 
   return new Response(upstream.body, {

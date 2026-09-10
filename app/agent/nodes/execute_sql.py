@@ -15,7 +15,7 @@ async def execute_sql(
     """执行 SQL 并把查询结果写回 AgentState。"""
     writer = runtime.stream_writer
     step = "执行 SQL"
-    writer({"type": "progress", "step": step, "status": "running"})
+    writer({"type": "progress", "step": step, "node": "execute_sql", "status": "running"})
 
     sql = state.get("sql", "").strip()
     if not sql:
@@ -26,6 +26,7 @@ async def execute_sql(
         {
             "type": "execute_sql",
             "step": step,
+            "node": "execute_sql",
             "status": "success",
             "row_count": len(rows),
             "rows": rows,

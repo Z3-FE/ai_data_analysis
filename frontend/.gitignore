@@ -4,3 +4,6 @@ out/
 tsconfig.tsbuildinfo
 .env*.local
 .history
+.next
+.vscode
+.agents

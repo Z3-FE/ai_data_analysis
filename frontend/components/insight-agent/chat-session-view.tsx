@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import {
   AssistantRuntimeProvider,
   ComposerPrimitive,
@@ -16,90 +16,75 @@ import {
 import {
   AlertCircle,
   Bot,
-  CheckCircle2,
-  Clock,
-  Database,
+  ChevronRight,
   Loader2,
+  ListTree,
   MessageSquare,
   Send,
   User,
 } from "lucide-react";
 import { apiGet } from "../../lib/api";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
+import { parseBackendDate } from "../../lib/date";
+import { ReportView, type RenderedReport } from "./analysis-workspace";
+import {
+  ExecutionPanel,
+  appendExecutionEvent,
+  type DebugEvent,
+  type StreamEvent,
+} from "./execution-panel";
 
 interface ChatSessionViewProps {
   conversationId: string;
-}
-
-interface RunStep {
-  step: string;
-  name: string;
-  status: "running" | "completed" | "failed";
-  summary?: string;
-}
-
-interface SqlReviewState {
-  passed?: boolean;
-  risk_level?: string;
-  summary?: string;
-  checks?: Array<{
-    name: string;
-    passed: boolean;
-  }>;
-}
-
-interface TableArtifactState {
-  title?: string;
-  columns: string[];
-  rows: Array<Record<string, string | number | boolean | null>>;
-  row_count?: number;
-  elapsed_ms?: number;
-}
-
-interface SqlGenerationState {
-  generation_mode?: string;
-  reasoning?: string;
-  tables?: string[];
-  metrics?: string[];
-  dimensions?: string[];
-  expected_limit?: number;
-}
-
-interface SourcesState {
-  tables: string[];
-  fields: string[];
-  metrics: string[];
-  dimensions: string[];
-  semantic_source?: string;
-  conversation_asset_count?: number;
-  used_global_assets?: boolean;
-  used_conversation_assets?: boolean;
-  vector_fallback_used?: boolean;
-  stale_vector_record?: boolean;
-}
-
-interface AuditState {
-  risk_level?: string;
-  review_passed?: boolean;
-  checks?: Array<{
-    name: string;
-    passed: boolean;
-  }>;
-  row_count?: number;
-  elapsed_ms?: number;
-  limit?: number;
-  execution_status?: string;
-  error?: string | null;
-  human_confirmation_required?: boolean;
-  vector_fallback_used?: boolean;
-  stale_vector_record?: boolean;
 }
 
 interface BackendMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
+  turn_id?: string;
   created_at?: string;
+}
+
+type ExecutionMode = "daily_chat" | "single_query" | "analysis" | "clarification";
+
+interface BackendTurn {
+  turn_id: string;
+  execution_mode?: ExecutionMode;
+  status?: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
+interface BackendOutput {
+  turn_id: string;
+  output_type: string;
+  payload?: Record<string, unknown>;
+}
+
+interface QueryResultPayload {
+  columns?: Array<string | { result_name?: string; display_name?: string }>;
+  rows?: Array<Record<string, unknown>>;
+  row_count?: number;
+  truncated?: boolean;
+}
+
+interface ConversationHistoryData {
+  conversation?: Record<string, unknown>;
+  messages?: BackendMessage[];
+  turns?: BackendTurn[];
+  outputs?: BackendOutput[];
+}
+
+interface ConversationTurnMeta {
+  turn_id?: string;
+  execution_mode?: ExecutionMode;
+  response_type: "chat" | "simple_data" | "analysis" | "clarification" | "failure";
+  assistant_text: string;
+  output_type?: string;
+  status?: string;
+  elapsed_seconds: number;
+  rendered_report?: RenderedReport;
+  query_result?: QueryResultPayload;
 }
 
 interface AssistantChatRuntimeProps {
@@ -110,27 +95,25 @@ interface AssistantChatRuntimeProps {
   onCancel: () => Promise<void>;
 }
 
+interface ExecutionProcessContextValue {
+  open: boolean;
+  activeTurnId?: string;
+  toggle: (turnId?: string) => void;
+}
+
+const ExecutionProcessContext = createContext<ExecutionProcessContextValue | null>(null);
+
 function formatTime(value?: Date | string) {
   /** 格式化消息时间，用于聊天气泡下方展示。 */
 
-  if (!value) return "--";
-  return new Date(value).toLocaleString("zh-CN", {
+  const date = parseBackendDate(value);
+  if (!date) return "--";
+  return date.toLocaleString("zh-CN", {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-function upsertStep(steps: RunStep[], next: RunStep) {
-  /** 插入或更新执行步骤，保证同一个 step 在右侧详情中只出现一次。 */
-
-  const index = steps.findIndex((step) => step.step === next.step);
-  if (index === -1) return [...steps, next];
-
-  const cloned = [...steps];
-  cloned[index] = { ...cloned[index], ...next };
-  return cloned;
 }
 
 function getMessageText(message: ThreadMessage | ThreadMessageLike) {
@@ -146,6 +129,153 @@ function getMessageText(message: ThreadMessage | ThreadMessageLike) {
     .join("");
 }
 
+function conversationMeta(message: ThreadMessage | ThreadMessageLike) {
+  /** 读取会话历史中挂载的富内容输出元数据。 */
+
+  const value = message.metadata?.custom?.conversation;
+  if (!value || typeof value !== "object") return undefined;
+  return value as ConversationTurnMeta;
+}
+
+function outputResponseType(outputType?: string): ConversationTurnMeta["response_type"] {
+  /** 将后端输出类型映射为聊天消息的富内容类型。 */
+
+  if (outputType === "rendered_report") return "analysis";
+  if (outputType === "query_result") return "simple_data";
+  if (outputType === "clarification") return "clarification";
+  if (outputType === "failure") return "failure";
+  return "chat";
+}
+
+function asExecutionMode(value: unknown): ExecutionMode | undefined {
+  /** 只接受后端路由协议定义的执行模式。 */
+
+  return value === "daily_chat"
+    || value === "single_query"
+    || value === "analysis"
+    || value === "clarification"
+    ? value
+    : undefined;
+}
+
+function shouldShowExecutionPanel(mode: ExecutionMode | null): boolean {
+  /** 只有需要查询或分析的轮次才展示执行过程。 */
+
+  return mode === "single_query" || mode === "analysis";
+}
+
+function buildConversationMeta(
+  content: string,
+  outputType?: string,
+  payload: Record<string, unknown> = {},
+  turn?: Partial<BackendTurn>,
+  elapsedSecondsOverride?: number,
+): ConversationTurnMeta | undefined {
+  /** 让实时消息和历史消息使用同一份富内容元数据结构。 */
+
+  if (!outputType) return undefined;
+  const isDailyChat = turn?.execution_mode === "daily_chat";
+  const startedAt = parseBackendDate(turn?.started_at);
+  const completedAt = parseBackendDate(turn?.completed_at);
+  const elapsedSeconds = typeof elapsedSecondsOverride === "number"
+    ? elapsedSecondsOverride
+    : startedAt && completedAt
+    ? Math.max(0, (completedAt.getTime() - startedAt.getTime()) / 1000)
+    : 0;
+  return {
+    turn_id: turn?.turn_id,
+    execution_mode: turn?.execution_mode,
+    response_type: isDailyChat ? "chat" : outputResponseType(outputType),
+    assistant_text: content,
+    output_type: outputType,
+    status: turn?.status,
+    elapsed_seconds: elapsedSeconds,
+    rendered_report: !isDailyChat && outputType === "rendered_report"
+      ? payload as unknown as RenderedReport
+      : undefined,
+    query_result: !isDailyChat && outputType === "query_result"
+      ? payload as QueryResultPayload
+      : undefined,
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  /** 只把事件中的 JSON 对象作为富内容载荷交给渲染器。 */
+
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function formatQueryCell(value: unknown) {
+  /** 将简单问数结果中的单元格转换成可读文本，不改变后端原始值。 */
+
+  if (value === null || value === undefined || value === "") return "--";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function QueryResultView({ result }: { result: QueryResultPayload }) {
+  /** 恢复渲染历史中的轻量问数结果，完整结果仍由后端查询链路负责。 */
+
+  const columns = result.columns ?? [];
+  const rows = result.rows ?? [];
+  const columnDefs = columns.length
+    ? columns.map((column, index) => {
+        if (typeof column === "string") return { key: column, label: column };
+        const fallback = "字段_" + String(index + 1);
+        return {
+          key: column.result_name ?? column.display_name ?? fallback,
+          label: column.display_name ?? column.result_name ?? fallback,
+        };
+      })
+    : Object.keys(rows[0] ?? {}).map((column) => ({ key: column, label: column }));
+
+  if (!rows.length) {
+    return (
+      <div className="mt-4 border-l-2 border-blue-200 pl-4 text-sm text-slate-500">
+        查询完成，未返回数据行。
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-5 overflow-hidden rounded-xl border border-slate-200 bg-white">
+      <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-3">
+        <span className="text-xs font-bold text-slate-700">查询结果</span>
+        <span className="text-[11px] text-slate-400">
+          展示 {rows.length} / {result.row_count ?? rows.length} 行
+          {result.truncated ? " · 已截取预览" : ""}
+        </span>
+      </div>
+      <div className="max-h-[360px] overflow-auto">
+        <table className="min-w-full text-left text-xs">
+          <thead className="sticky top-0 z-10 bg-slate-50 text-[11px] font-bold text-slate-500">
+            <tr>
+              {columnDefs.map((column) => (
+                <th key={column.key} className="whitespace-nowrap border-b border-slate-100 px-4 py-2.5">
+                  {column.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {rows.map((row, rowIndex) => (
+              <tr key={rowIndex} className="hover:bg-slate-50">
+                {columnDefs.map((column) => (
+                  <td key={column.key} className="whitespace-nowrap px-4 py-2.5 font-mono text-slate-600">
+                    {formatQueryCell(row[column.key])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function getDisplayMessageText(message: ThreadMessage | ThreadMessageLike) {
   /** 生成最终展示文本，并去掉流式结束后可能残留的独立圆点。 */
 
@@ -154,15 +284,49 @@ function getDisplayMessageText(message: ThreadMessage | ThreadMessageLike) {
   return getMessageText(message).replace(/\s+[●•]\s*$/, "");
 }
 
-function toAssistantMessage(message: BackendMessage): ThreadMessageLike {
-  /** 把后端消息模型转换为 assistant-ui 可渲染的消息结构。 */
+function toAssistantMessage(
+  message: BackendMessage,
+  output?: BackendOutput,
+  turn?: BackendTurn,
+): ThreadMessageLike {
+  /** 把消息和同一轮的结构化输出合并为可恢复的 assistant-ui 消息。 */
+  const payload = output?.payload ?? {};
+  const conversation = output && message.role === "assistant"
+    ? buildConversationMeta(message.content, output.output_type, payload, turn)
+    : undefined;
 
   return {
     id: message.id,
     role: message.role,
     content: [{ type: "text", text: message.content }],
-    createdAt: message.created_at ? new Date(message.created_at) : new Date(),
+    createdAt: parseBackendDate(message.created_at) ?? new Date(),
+    ...(conversation ? { metadata: { custom: { conversation } } } : {}),
   };
+}
+
+function outputsByTurn(history: ConversationHistoryData) {
+  /** 按轮次和输出类型保留历史输出，执行过程不能覆盖报告输出。 */
+
+  const grouped = new Map<string, Map<string, BackendOutput>>();
+  for (const output of history.outputs ?? []) {
+    const byType = grouped.get(output.turn_id) ?? new Map<string, BackendOutput>();
+    byType.set(output.output_type, output);
+    grouped.set(output.turn_id, byType);
+  }
+  return grouped;
+}
+
+function displayOutputForMessage(
+  outputs: Map<string, BackendOutput> | undefined,
+): BackendOutput | undefined {
+  /** 助手消息只绑定报告或查询等主输出，执行轨迹由按钮按需读取。 */
+
+  if (!outputs) return undefined;
+  for (const type of ["rendered_report", "query_result", "clarification", "failure", "text"]) {
+    const output = outputs.get(type);
+    if (output) return output;
+  }
+  return undefined;
 }
 
 function notifyConversationsChanged() {
@@ -177,14 +341,45 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-async function* streamAnalysisEvents(
+async function responseErrorMessage(response: Response) {
+  /** 把非 JSON 的代理错误正文转换成可读的 SSE 错误。 */
+  const body = await response.text();
+  if (body.trim()) {
+    try {
+      const data = JSON.parse(body) as { detail?: unknown; message?: unknown };
+      if (typeof data.detail === "string") return data.detail;
+      if (typeof data.message === "string") return data.message;
+    } catch {
+      return body.trim();
+    }
+  }
+  return "SSE 连接失败（HTTP " + response.status + "）";
+}
+
+function parseStreamEvent(data: string): Record<string, any> {
+  /** 解析 SSE JSON，并把纯文本网关错误转换成明确提示。 */
+  try {
+    const parsed = JSON.parse(data);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("SSE 事件不是 JSON 对象。");
+    }
+    return parsed as Record<string, any>;
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error("后端返回了无效的 SSE 数据：" + data.trim().slice(0, 180));
+    }
+    throw error;
+  }
+}
+
+async function* streamAgentEvents(
   conversationId: string,
   question: string,
   abortSignal?: AbortSignal,
 ) {
-  /** 通过固定分析入口提交问题，并按事件块逐条读取 SSE 响应。 */
+  /** 通过 Agent 流式入口提交问题，并按事件块逐条读取 SSE 响应。 */
 
-  const response = await fetch("/api/analysis", {
+  const response = await fetch("/api/agent/run/stream", {
     method: "POST",
     cache: "no-store",
     headers: {
@@ -193,13 +388,16 @@ async function* streamAnalysisEvents(
     },
     body: JSON.stringify({
       conversation_id: conversationId,
-      question,
+      input_text: question,
     }),
     signal: abortSignal,
   });
 
-  if (!response.ok || !response.body) {
-    throw new Error("SSE 连接失败，请检查后端服务是否仍在运行。");
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response));
+  }
+  if (!response.body) {
+    throw new Error("SSE 响应没有可读取的数据流。");
   }
 
   const reader = response.body.getReader();
@@ -217,22 +415,22 @@ async function* streamAnalysisEvents(
     for (const chunk of chunks) {
       const dataLines = chunk
         .split("\n")
-        .filter((line) => line.startsWith("data: "))
-        .map((line) => line.slice("data: ".length));
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice("data:".length).trimStart());
 
       if (dataLines.length === 0) continue;
-      yield JSON.parse(dataLines.join("\n"));
+      yield parseStreamEvent(dataLines.join("\n"));
     }
   }
 
   if (buffer.trim()) {
     const dataLines = buffer
       .split("\n")
-      .filter((line) => line.startsWith("data: "))
-      .map((line) => line.slice("data: ".length));
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice("data:".length).trimStart());
 
     if (dataLines.length > 0) {
-      yield JSON.parse(dataLines.join("\n"));
+      yield parseStreamEvent(dataLines.join("\n"));
     }
   }
 }
@@ -277,6 +475,8 @@ function AssistantMessageBubble() {
   const threadIsRunning = useAuiState((state) => state.thread.isRunning);
   const lastMessageId = useAuiState((state) => state.thread.messages.at(-1)?.id);
   const isUser = message.role === "user";
+  const meta = conversationMeta(message);
+  const executionProcess = useContext(ExecutionProcessContext);
   const displayText = getDisplayMessageText(message);
   const showStreamingCursor =
     threadIsRunning &&
@@ -285,16 +485,16 @@ function AssistantMessageBubble() {
     message.status?.type === "running";
 
   return (
-    <MessagePrimitive.Root className={`flex gap-3 ${isUser ? "justify-end" : "justify-start"}`}>
+    <MessagePrimitive.Root className={`w-full flex gap-3 ${isUser ? "justify-end" : "justify-start"}`}>
       {!isUser && (
         <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0">
           <Bot className="w-4 h-4" />
         </div>
       )}
 
-      <div className={`max-w-[70%] ${isUser ? "items-end" : "items-start"} flex flex-col`}>
+      <div className={`${isUser ? "max-w-[70%]" : "w-full min-w-0"} ${isUser ? "items-end" : "items-start"} flex flex-col`}>
         <div
-          className={`rounded-2xl px-4 py-3 text-sm leading-6 whitespace-pre-wrap ${isUser
+          className={`rounded-2xl px-4 py-3 text-sm leading-6 whitespace-pre-wrap ${!isUser ? "max-w-[70%]" : ""} ${isUser
               ? "bg-blue-600 text-white shadow-sm"
               : "bg-white text-slate-700 border border-slate-200 shadow-sm"
             }`}
@@ -307,6 +507,25 @@ function AssistantMessageBubble() {
         <span className="text-[10px] text-slate-400 mt-1 px-1">
           {formatTime(message.createdAt)}
         </span>
+        {meta?.query_result && <QueryResultView result={meta.query_result} />}
+        {executionProcess && meta?.turn_id && (meta.response_type === "analysis" || meta.response_type === "simple_data") && (
+          <button
+            type="button"
+            onClick={() => executionProcess.toggle(meta.turn_id)}
+            className="mt-4 inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
+          >
+            <ListTree className="size-3.5" />
+            {meta.response_type === "analysis"
+              ? executionProcess.open && executionProcess.activeTurnId === meta.turn_id ? "收起分析过程" : "查看分析过程"
+              : executionProcess.open && executionProcess.activeTurnId === meta.turn_id ? "收起查询过程" : "查看查询过程"}
+            <ChevronRight className={"size-3.5 transition-transform " + (executionProcess.open && executionProcess.activeTurnId === meta.turn_id ? "rotate-180" : "")} />
+          </button>
+        )}
+        {meta?.rendered_report && (
+          <div className="mt-6 w-full min-w-0">
+            <ReportView report={meta.rendered_report} />
+          </div>
+        )}
       </div>
 
       {isUser && (
@@ -363,35 +582,58 @@ function AssistantChatThread() {
 }
 
 export default function ChatSessionView({ conversationId }: ChatSessionViewProps) {
-  /** 会话详情页：加载历史消息，发送问题，订阅 run SSE，并展示执行步骤。 */
+  /** 会话详情页：加载历史消息，发送问题，并把本轮事件交给统一执行面板。 */
 
   const [conversation, setConversation] = useState<any | null>(null);
   const [messages, setMessages] = useState<ThreadMessageLike[]>([]);
-  const [steps, setSteps] = useState<RunStep[]>([]);
-  const [activeRunId, setActiveRunId] = useState("");
-  const [generatedSql, setGeneratedSql] = useState("");
-  const [sqlGeneration, setSqlGeneration] = useState<SqlGenerationState | null>(null);
-  const [sqlReview, setSqlReview] = useState<SqlReviewState | null>(null);
-  const [tableArtifact, setTableArtifact] = useState<TableArtifactState | null>(null);
-  const [sources, setSources] = useState<SourcesState | null>(null);
-  const [audit, setAudit] = useState<AuditState | null>(null);
+  const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
+  const [executionMode, setExecutionMode] = useState<ExecutionMode | null>(null);
+  const [executionPanelOpen, setExecutionPanelOpen] = useState(false);
+  const [activeExecutionTurnId, setActiveExecutionTurnId] = useState<string>();
+  const [executionTraceLoading, setExecutionTraceLoading] = useState(false);
+  const [executionTraceError, setExecutionTraceError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
+  const [activeRunTurnId, setActiveRunTurnId] = useState<string>();
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const pendingStartedRef = useRef(false);
   const activeAbortControllerRef = useRef<AbortController | null>(null);
+  const executionTraceRequestRef = useRef(0);
 
   const loadConversation = useCallback(async () => {
     /** 同时拉取会话详情和消息列表，用于刷新标题与聊天记录。 */
 
-    const data = await apiGet("/api/conversations", {
-      conversation_id: conversationId,
-      include_messages: true,
-    });
+    try {
+      const data = await apiGet("/api/conversations", {
+        conversation_id: conversationId,
+        include_messages: true,
+      });
+      const history = data as ConversationHistoryData;
+      const turnsById = new Map(
+        (history.turns ?? []).map((turn) => [turn.turn_id, turn]),
+      );
+      const groupedOutputs = outputsByTurn(history);
+      const latestTurn = history.turns?.at(-1);
 
-    setConversation(data.conversation);
-    setMessages((data.messages ?? []).map(toAssistantMessage));
-    setIsLoading(false);
+      setConversation(history.conversation ?? null);
+      setExecutionMode(latestTurn?.execution_mode ?? null);
+      setMessages(
+        (history.messages ?? []).map((message) =>
+          toAssistantMessage(
+            message,
+            message.turn_id
+              ? displayOutputForMessage(groupedOutputs.get(message.turn_id))
+              : undefined,
+            message.turn_id ? turnsById.get(message.turn_id) : undefined,
+          ),
+        ),
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "无法加载会话历史";
+      setError(`会话历史加载失败：${message}`);
+    } finally {
+      setIsLoading(false);
+    }
   }, [conversationId]);
 
   const sendQuestion = useCallback(
@@ -417,14 +659,14 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       } as ThreadMessageLike;
 
       setError("");
-      setSteps([]);
-      setActiveRunId("");
-      setGeneratedSql("");
-      setSqlGeneration(null);
-      setSqlReview(null);
-      setTableArtifact(null);
-      setSources(null);
-      setAudit(null);
+      setDebugEvents([]);
+      setExecutionMode(null);
+      setExecutionPanelOpen(false);
+      setActiveExecutionTurnId(undefined);
+      setExecutionTraceLoading(false);
+      setExecutionTraceError("");
+      setActiveRunTurnId(undefined);
+      executionTraceRequestRef.current += 1;
       setIsRunning(true);
       setMessages((current) => [...current, userMessage, assistantMessage]);
 
@@ -435,6 +677,10 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       let visibleAssistantText = "";
       let failedMessage = "";
       let typewriterRunning = false;
+      let responseMeta: ConversationTurnMeta | undefined;
+      let currentTurnId: string | undefined;
+      const startedAt = Date.now();
+      let terminalEventReceived = false;
 
       const updateAssistantMessage = (text: string, status: ThreadMessageLike["status"]) => {
         /** 更新本地 assistant 消息，用于打字机逐步刷新气泡内容。 */
@@ -446,6 +692,9 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
                   ...message,
                   content: [{ type: "text", text }],
                   status,
+                  ...(responseMeta
+                    ? { metadata: { custom: { conversation: responseMeta } } }
+                    : {}),
                 } as ThreadMessageLike)
               : message,
           ),
@@ -483,38 +732,35 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       };
 
       try {
-        setActiveRunId(crypto.randomUUID());
-
-        for await (const runEvent of streamAnalysisEvents(
+        for await (const runEvent of streamAgentEvents(
           conversationId,
           normalizedQuestion,
           abortController.signal,
         )) {
-          const payload = runEvent.data ?? {};
+          const payload = runEvent;
+          setDebugEvents((current) => appendExecutionEvent(current, runEvent as StreamEvent));
 
-          if (runEvent.type === "run.started" && payload.run_id) {
-            setActiveRunId(payload.run_id);
+          if (runEvent.type === "run.started" && typeof payload.turn_id === "string") {
+            currentTurnId = payload.turn_id;
+            setActiveRunTurnId(payload.turn_id);
           }
 
-          if (runEvent.type === "step.started") {
-            setSteps((current) =>
-              upsertStep(current, {
-                step: payload.step,
-                name: payload.name,
-                status: "running",
-              }),
-            );
-          }
-
-          if (runEvent.type === "step.completed") {
-            setSteps((current) =>
-              upsertStep(current, {
-                step: payload.step,
-                name: payload.name,
-                status: "completed",
-                summary: payload.summary,
-              }),
-            );
+          if (runEvent.type === "question_route") {
+            const mode = asExecutionMode(payload.execution_mode);
+            if (mode) {
+              setExecutionMode(mode);
+              if (currentTurnId && (mode === "analysis" || mode === "single_query")) {
+                responseMeta = {
+                  turn_id: currentTurnId,
+                  execution_mode: mode,
+                  response_type: mode === "analysis" ? "analysis" : "simple_data",
+                  assistant_text: assistantText,
+                  status: "running",
+                  elapsed_seconds: Math.max(0, (Date.now() - startedAt) / 1000),
+                };
+                updateAssistantMessage(visibleAssistantText, { type: "running" });
+              }
+            }
           }
 
           if (runEvent.type === "message.delta" && payload.content) {
@@ -524,82 +770,53 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
 
           if (runEvent.type === "message.completed" && payload.content) {
             assistantText = payload.content;
+            const mode = asExecutionMode(payload.execution_mode);
+            if (mode) {
+              setExecutionMode(mode);
+            }
+            const outputType = typeof payload.output_type === "string"
+              ? payload.output_type
+              : undefined;
+            responseMeta = buildConversationMeta(
+              assistantText,
+              outputType,
+              asRecord(payload.output),
+              {
+                turn_id: typeof payload.turn_id === "string" ? payload.turn_id : undefined,
+                execution_mode: mode,
+              },
+              Math.max(0, (Date.now() - startedAt) / 1000),
+            );
+            if (mode && responseMeta) responseMeta = { ...responseMeta, execution_mode: mode };
             void drainTypewriter();
           }
 
-          if (runEvent.type === "sql.generated") {
-            setGeneratedSql(payload.sql ?? "");
-            setSqlGeneration({
-              generation_mode: payload.generation_mode,
-              reasoning: payload.reasoning,
-              tables: payload.tables ?? [],
-              metrics: payload.metrics ?? [],
-              dimensions: payload.dimensions ?? [],
-              expected_limit: payload.expected_limit,
-            });
-          }
-
-          if (runEvent.type === "sql.reviewed") {
-            setSqlReview({
-              passed: payload.passed,
-              risk_level: payload.risk_level,
-              summary: payload.summary,
-              checks: payload.checks ?? [],
-            });
-          }
-
-          if (runEvent.type === "sources.created") {
-            setSources({
-              tables: payload.tables ?? [],
-              fields: payload.fields ?? [],
-              metrics: payload.metrics ?? [],
-              dimensions: payload.dimensions ?? [],
-              semantic_source: payload.semantic_source,
-              conversation_asset_count: payload.conversation_asset_count,
-              used_global_assets: payload.used_global_assets,
-              used_conversation_assets: payload.used_conversation_assets,
-              vector_fallback_used: payload.vector_fallback_used,
-              stale_vector_record: payload.stale_vector_record,
-            });
-          }
-
-          if (runEvent.type === "artifact.created" && payload.artifact_type === "table") {
-            setTableArtifact({
-              title: payload.title,
-              columns: payload.columns ?? [],
-              rows: payload.rows ?? [],
-              row_count: payload.row_count,
-              elapsed_ms: payload.elapsed_ms,
-            });
-          }
-
-          if (runEvent.type === "audit.created") {
-            setAudit({
-              risk_level: payload.risk_level,
-              review_passed: payload.review_passed,
-              checks: payload.checks ?? [],
-              row_count: payload.row_count,
-              elapsed_ms: payload.elapsed_ms,
-              limit: payload.limit,
-              execution_status: payload.execution_status,
-              error: payload.error,
-              human_confirmation_required: payload.human_confirmation_required,
-              vector_fallback_used: payload.vector_fallback_used,
-              stale_vector_record: payload.stale_vector_record,
-            });
-          }
-
           if (runEvent.type === "run.completed") {
+            terminalEventReceived = true;
+            const mode = asExecutionMode(payload.execution_mode);
+            if (mode) setExecutionMode(mode);
             await waitForTypewriterIdle();
             updateAssistantMessage(assistantText, { type: "complete", reason: "stop" });
             setIsRunning(false);
-            await loadConversation();
+            try {
+              await loadConversation();
+            } catch {
+              // 历史刷新失败时保留刚刚完成的本地消息，避免误报为运行失败。
+            }
             notifyConversationsChanged();
             break;
           }
 
           if (runEvent.type === "run.failed") {
+            terminalEventReceived = true;
             failedMessage = payload.message ?? "运行失败";
+            responseMeta = buildConversationMeta(
+              failedMessage,
+              "failure",
+              { message: failedMessage },
+              { turn_id: currentTurnId },
+              Math.max(0, (Date.now() - startedAt) / 1000),
+            );
             break;
           }
         }
@@ -607,17 +824,48 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
         if (failedMessage) {
           setError(failedMessage);
           updateAssistantMessage(failedMessage, { type: "incomplete", reason: "error" });
+          await loadConversation();
+          notifyConversationsChanged();
+        } else if (!terminalEventReceived) {
+          const message = "执行连接已结束，但没有收到最终状态。";
+          setError(message);
+          responseMeta = buildConversationMeta(
+            message,
+            "failure",
+            { message },
+            { turn_id: currentTurnId },
+            Math.max(0, (Date.now() - startedAt) / 1000),
+          );
+          updateAssistantMessage(message, { type: "incomplete", reason: "error" });
+          try {
+            await loadConversation();
+          } catch {
+            // 历史刷新失败时保留本地终态消息，避免覆盖可见错误。
+          }
         }
       } catch (err) {
         if (!abortController.signal.aborted) {
           const message = err instanceof Error ? err.message : "运行失败";
           setError(message);
+          responseMeta = buildConversationMeta(
+            message,
+            "failure",
+            { message },
+            { turn_id: currentTurnId },
+            Math.max(0, (Date.now() - startedAt) / 1000),
+          );
           updateAssistantMessage(message, { type: "incomplete", reason: "error" });
+          try {
+            await loadConversation();
+          } catch {
+            // 历史刷新失败时保留本地终态消息，避免覆盖可见错误。
+          }
         }
       } finally {
         if (activeAbortControllerRef.current === abortController) {
           activeAbortControllerRef.current = null;
         }
+        setActiveRunTurnId(undefined);
         setIsRunning(false);
       }
     },
@@ -645,14 +893,14 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
   useEffect(() => {
     setIsLoading(true);
     setError("");
-    setSteps([]);
-    setActiveRunId("");
-    setGeneratedSql("");
-    setSqlGeneration(null);
-    setSqlReview(null);
-    setTableArtifact(null);
-    setSources(null);
-    setAudit(null);
+    setDebugEvents([]);
+    setExecutionMode(null);
+    setExecutionPanelOpen(false);
+    setActiveExecutionTurnId(undefined);
+    setExecutionTraceLoading(false);
+    setExecutionTraceError("");
+    setActiveRunTurnId(undefined);
+    executionTraceRequestRef.current += 1;
     pendingStartedRef.current = false;
     activeAbortControllerRef.current?.abort();
     activeAbortControllerRef.current = null;
@@ -671,22 +919,98 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
     void sendQuestion(pendingQuestion);
   }, [conversationId, isLoading, sendQuestion]);
 
+  const hasProcessOutput = messages.some((message) => {
+    const meta = conversationMeta(message);
+    return meta?.response_type === "analysis" || meta?.response_type === "simple_data";
+  });
+  const showExecutionPanel = executionPanelOpen && (
+    shouldShowExecutionPanel(executionMode) || hasProcessOutput
+  );
+
+  const toggleExecutionProcess = useCallback((turnId?: string) => {
+    /** 打开指定轮次的执行过程；当前运行复用内存事件，历史轮次按需读取。 */
+
+    if (executionPanelOpen && activeExecutionTurnId === turnId) {
+      executionTraceRequestRef.current += 1;
+      setExecutionTraceLoading(false);
+      setExecutionTraceError("");
+      setExecutionPanelOpen(false);
+      return;
+    }
+
+    setActiveExecutionTurnId(turnId);
+    setExecutionTraceError("");
+    setExecutionPanelOpen(true);
+
+    if (turnId && turnId === activeRunTurnId && isRunning) {
+      setExecutionTraceLoading(false);
+      return;
+    }
+
+    if (!turnId) {
+      setDebugEvents([]);
+      setExecutionTraceLoading(false);
+      return;
+    }
+
+    const requestId = executionTraceRequestRef.current + 1;
+    executionTraceRequestRef.current = requestId;
+    setDebugEvents([]);
+    setExecutionTraceLoading(true);
+    void apiGet("/api/conversations/execution-trace", {
+      conversation_id: conversationId,
+      turn_id: turnId,
+    })
+      .then((data) => {
+        if (executionTraceRequestRef.current !== requestId) return;
+        const payload = asRecord(data?.payload);
+        const traceEvents = Array.isArray(payload.events)
+          ? payload.events.filter((event): event is StreamEvent => Boolean(
+              event &&
+              typeof event === "object" &&
+              typeof (event as Record<string, unknown>).type === "string",
+            ))
+          : [];
+        setDebugEvents(traceEvents.reduce<DebugEvent[]>(
+          (events, event) => appendExecutionEvent(events, event),
+          [],
+        ));
+        if (data?.available === false || !traceEvents.length) {
+          setExecutionTraceError("该轮次没有保存执行过程。");
+        }
+      })
+      .catch((err) => {
+        if (executionTraceRequestRef.current !== requestId) return;
+        setExecutionTraceError(err instanceof Error ? err.message : "执行过程加载失败");
+      })
+      .finally(() => {
+        if (executionTraceRequestRef.current === requestId) {
+          setExecutionTraceLoading(false);
+        }
+      });
+  }, [activeExecutionTurnId, activeRunTurnId, conversationId, executionPanelOpen, isRunning]);
+
   return (
-    <div className="flex-1 flex overflow-hidden bg-slate-50">
-      <section className="flex-1 min-w-0 flex flex-col border-r border-slate-200">
+    <ExecutionProcessContext.Provider
+      value={{
+        open: executionPanelOpen,
+        activeTurnId: activeExecutionTurnId,
+        toggle: toggleExecutionProcess,
+      }}
+    >
+      <div className="flex-1 flex overflow-hidden bg-slate-50">
+        <section className="flex-1 min-w-0 flex flex-col border-r border-slate-200">
         <div className="bg-white border-b border-slate-200 px-6 py-4">
           <div className="flex items-start justify-between gap-4">
             <div>
               <div className="flex items-center gap-2 text-[11px] font-bold text-blue-600 mb-1">
                 <MessageSquare className="w-4 h-4" />
-                <span>普通聊天最小链路</span>
+                <span>聊天会话</span>
               </div>
               <h2 className="text-xl font-extrabold text-slate-900">
                 {conversation?.title ?? "加载会话中..."}
               </h2>
-              <p className="text-xs text-slate-500 mt-1">
-                当前使用 assistant-ui 接管消息状态和输入框，后端仍通过 run + SSE 驱动执行详情。
-              </p>
+              <p className="text-xs text-slate-500 mt-1">支持日常聊天、简单问数和数据分析。</p>
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
@@ -722,311 +1046,17 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
             {error}
           </div>
         )}
-      </section>
+        </section>
 
-      <aside className="w-[360px] bg-white shrink-0 flex flex-col">
-        <div className="p-5 border-b border-slate-200">
-          <h3 className="text-sm font-extrabold text-slate-900">执行详情</h3>
-          <p className="text-xs text-slate-500 mt-1">Phase 4 + Phase 6 最小链路事件</p>
-        </div>
-
-        <div className="p-5 space-y-4 overflow-y-auto">
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <div className="flex items-center gap-2 text-xs font-extrabold text-slate-700 mb-3">
-              <Database className="w-4 h-4 text-emerald-600" />
-              <span>当前状态</span>
-            </div>
-            <div className="space-y-2 text-xs text-slate-500">
-              <div className="flex justify-between">
-                <span>会话状态</span>
-                <span className="font-mono text-slate-700">
-                  {isRunning ? "running" : conversation?.status ?? "--"}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>当前 Run</span>
-                <span className="font-mono text-slate-700 truncate max-w-[180px]">
-                  {activeRunId || "--"}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span>数据源</span>
-                <span className="font-mono text-slate-700">{conversation?.data_source_id ?? "olist"}</span>
-              </div>
-            </div>
-          </div>
-
-          <Tabs defaultValue="steps" className="min-h-0 flex-1">
-            <TabsList
-              variant="line"
-              className="grid h-9 w-full grid-cols-4 border-b border-slate-200 p-0 text-xs font-bold"
-            >
-              <TabsTrigger value="steps" className="rounded-none text-xs data-active:text-blue-600">
-                Steps
-              </TabsTrigger>
-              <TabsTrigger value="sql" className="rounded-none text-xs data-active:text-blue-600">
-                SQL
-              </TabsTrigger>
-              <TabsTrigger value="sources" className="rounded-none text-xs data-active:text-blue-600">
-                Sources
-              </TabsTrigger>
-              <TabsTrigger value="audit" className="rounded-none text-xs data-active:text-blue-600">
-                Audit
-              </TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="steps" className="mt-4 space-y-3">
-              {steps.length === 0 && (
-                <div className="rounded-xl border border-dashed border-slate-200 px-4 py-6 text-center text-xs text-slate-400">
-                  等待下一次运行事件
-                </div>
-              )}
-              {steps.map((step) => (
-                <div key={step.step} className="rounded-xl border border-slate-200 bg-white p-3">
-                  <div className="flex items-center gap-2">
-                    {step.status === "completed" ? (
-                      <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                    ) : (
-                      <Clock className="w-4 h-4 text-blue-600 animate-pulse" />
-                    )}
-                    <span className="text-sm font-bold text-slate-800">{step.name}</span>
-                    <span className="ml-auto text-[10px] font-mono text-slate-400">{step.status}</span>
-                  </div>
-                  {step.summary && <p className="text-xs text-slate-500 mt-2 leading-5">{step.summary}</p>}
-                </div>
-              ))}
-            </TabsContent>
-
-            <TabsContent value="sql" className="mt-4 space-y-4">
-              {sqlGeneration && (
-                <div className="rounded-xl border border-blue-100 bg-blue-50/60 p-3 text-xs text-slate-600">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="font-extrabold text-slate-800">SQL 生成模式</span>
-                    <span className="rounded-full bg-white px-2 py-0.5 font-mono text-[10px] font-bold text-blue-600">
-                      {sqlGeneration.generation_mode ?? "--"}
-                    </span>
-                  </div>
-                  {sqlGeneration.reasoning && (
-                    <p className="mt-2 leading-5 text-slate-500">{sqlGeneration.reasoning}</p>
-                  )}
-                  <div className="mt-2 space-y-1 font-mono text-[10px] text-slate-500">
-                    <div>tables: {(sqlGeneration.tables ?? []).join(", ") || "--"}</div>
-                    <div>metrics: {(sqlGeneration.metrics ?? []).join(", ") || "--"}</div>
-                    <div>dimensions: {(sqlGeneration.dimensions ?? []).join(", ") || "--"}</div>
-                    <div>expected_limit: {sqlGeneration.expected_limit ?? "--"}</div>
-                  </div>
-                </div>
-              )}
-
-              {generatedSql ? (
-                <pre className="max-h-[420px] overflow-auto rounded-xl border border-slate-200 bg-slate-950 p-3 text-[11px] leading-5 text-blue-50">
-                  <code>{generatedSql}</code>
-                </pre>
-              ) : (
-                <div className="rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center text-xs text-slate-400">
-                  等待 SQL 生成事件
-                </div>
-              )}
-
-              {tableArtifact ? (
-                <div className="rounded-xl border border-slate-200 bg-white">
-                  <div className="flex items-center justify-between border-b border-slate-100 px-3 py-2">
-                    <div>
-                      <div className="text-xs font-extrabold text-slate-800">
-                        {tableArtifact.title ?? "查询结果"}
-                      </div>
-                      <div className="mt-0.5 text-[10px] font-medium text-slate-400">
-                        返回 {tableArtifact.row_count ?? tableArtifact.rows.length} 行
-                        {typeof tableArtifact.elapsed_ms === "number" ? ` · ${tableArtifact.elapsed_ms} ms` : ""}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="max-h-[280px] overflow-auto">
-                    <table className="w-full min-w-[520px] text-left text-[11px]">
-                      <thead className="sticky top-0 bg-slate-50 text-slate-500">
-                        <tr>
-                          {tableArtifact.columns.map((column) => (
-                            <th key={column} className="border-b border-slate-100 px-3 py-2 font-extrabold">
-                              {column}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {tableArtifact.rows.map((row, rowIndex) => (
-                          <tr key={rowIndex} className="border-b border-slate-50 last:border-0">
-                            {tableArtifact.columns.map((column) => (
-                              <td key={column} className="px-3 py-2 font-mono text-slate-600">
-                                {String(row[column] ?? "--")}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              ) : (
-                <div className="rounded-xl border border-dashed border-slate-200 px-4 py-6 text-center text-xs text-slate-400">
-                  等待真实查询结果
-                </div>
-              )}
-            </TabsContent>
-
-            <TabsContent value="sources" className="mt-4">
-              {sources ? (
-                <div className="space-y-3">
-                  <div className="rounded-xl border border-slate-200 bg-white p-3">
-                    <div className="text-xs font-extrabold text-slate-800">来源概览</div>
-                    <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
-                      <div className="rounded-lg bg-slate-50 p-2">
-                        <div className="text-slate-400">语义来源</div>
-                        <div className="mt-1 font-mono text-slate-700">{sources.semantic_source ?? "--"}</div>
-                      </div>
-                      <div className="rounded-lg bg-slate-50 p-2">
-                        <div className="text-slate-400">会话资产数</div>
-                        <div className="mt-1 font-mono text-slate-700">{sources.conversation_asset_count ?? 0}</div>
-                      </div>
-                      <div className="rounded-lg bg-slate-50 p-2">
-                        <div className="text-slate-400">全局语义资产</div>
-                        <div className="mt-1 font-bold text-slate-700">{sources.used_global_assets ? "已使用" : "未使用"}</div>
-                      </div>
-                      <div className="rounded-lg bg-slate-50 p-2">
-                        <div className="text-slate-400">向量兜底</div>
-                        <div className="mt-1 font-bold text-slate-700">
-                          {sources.vector_fallback_used ? "已使用" : "未使用"}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl border border-slate-200 bg-white p-3">
-                    <div className="text-xs font-extrabold text-slate-800">数据表</div>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {sources.tables.length ? (
-                        sources.tables.map((table) => (
-                          <span key={table} className="rounded-full bg-blue-50 px-2 py-1 font-mono text-[10px] text-blue-600">
-                            {table}
-                          </span>
-                        ))
-                      ) : (
-                        <span className="text-xs text-slate-400">暂无表来源</span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl border border-slate-200 bg-white p-3">
-                    <div className="text-xs font-extrabold text-slate-800">字段</div>
-                    <div className="mt-2 max-h-[120px] overflow-auto font-mono text-[10px] leading-5 text-slate-500">
-                      {sources.fields.length ? sources.fields.join(", ") : "暂无字段来源"}
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl border border-slate-200 bg-white p-3">
-                    <div className="text-xs font-extrabold text-slate-800">指标 / 维度</div>
-                    <div className="mt-2 space-y-1 text-[11px] text-slate-500">
-                      <div>metrics: {(sources.metrics ?? []).join(", ") || "--"}</div>
-                      <div>dimensions: {(sources.dimensions ?? []).join(", ") || "--"}</div>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center text-xs leading-5 text-slate-400">
-                  等待 Sources 事件
-                  <br />
-                  Phase 8 会展示使用的数据表、字段、指标和维度来源。
-                </div>
-              )}
-            </TabsContent>
-
-            <TabsContent value="audit" className="mt-4">
-              {sqlReview || audit ? (
-                <div className="space-y-3">
-                  {sqlReview && (
-                    <div className="rounded-xl border border-slate-200 bg-white p-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm font-bold text-slate-800">SQL 审核</span>
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-[10px] font-black ${
-                            sqlReview.passed ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600"
-                          }`}
-                        >
-                          {sqlReview.passed ? "通过" : "未通过"}
-                        </span>
-                      </div>
-                      <p className="mt-2 text-xs leading-5 text-slate-500">{sqlReview.summary}</p>
-                      <div className="mt-3 space-y-2">
-                        {(sqlReview.checks ?? []).map((check) => (
-                          <div key={check.name} className="flex items-center justify-between text-xs">
-                            <span className="text-slate-500">{check.name}</span>
-                            <span className={check.passed ? "text-emerald-600" : "text-rose-600"}>
-                              {check.passed ? "通过" : "失败"}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {audit && (
-                    <div className="rounded-xl border border-slate-200 bg-white p-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm font-bold text-slate-800">执行审计</span>
-                        <span className="rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[10px] font-bold text-slate-600">
-                          {audit.execution_status ?? "--"}
-                        </span>
-                      </div>
-                      <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
-                        <div className="rounded-lg bg-slate-50 p-2">
-                          <div className="text-slate-400">风险等级</div>
-                          <div className="mt-1 font-mono text-slate-700">{audit.risk_level ?? "--"}</div>
-                        </div>
-                        <div className="rounded-lg bg-slate-50 p-2">
-                          <div className="text-slate-400">返回行数</div>
-                          <div className="mt-1 font-mono text-slate-700">{audit.row_count ?? 0}</div>
-                        </div>
-                        <div className="rounded-lg bg-slate-50 p-2">
-                          <div className="text-slate-400">执行耗时</div>
-                          <div className="mt-1 font-mono text-slate-700">{audit.elapsed_ms ?? 0} ms</div>
-                        </div>
-                        <div className="rounded-lg bg-slate-50 p-2">
-                          <div className="text-slate-400">LIMIT</div>
-                          <div className="mt-1 font-mono text-slate-700">{audit.limit ?? "--"}</div>
-                        </div>
-                      </div>
-                      <div className="mt-3 space-y-2 text-xs">
-                        <div className="flex items-center justify-between">
-                          <span className="text-slate-500">需要人工确认</span>
-                          <span className="font-bold text-slate-700">
-                            {audit.human_confirmation_required ? "是" : "否"}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className="text-slate-500">向量兜底</span>
-                          <span className="font-bold text-slate-700">{audit.vector_fallback_used ? "是" : "否"}</span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className="text-slate-500">向量记录过期</span>
-                          <span className="font-bold text-slate-700">{audit.stale_vector_record ? "是" : "否"}</span>
-                        </div>
-                      </div>
-                      {audit.error && (
-                        <div className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-600">
-                          {audit.error}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="rounded-xl border border-dashed border-slate-200 px-4 py-8 text-center text-xs text-slate-400">
-                  等待 SQL 审核事件
-                </div>
-              )}
-            </TabsContent>
-          </Tabs>
-        </div>
-      </aside>
-    </div>
+        {showExecutionPanel && (
+          <ExecutionPanel
+            running={isRunning}
+            debugEvents={debugEvents}
+            loading={executionTraceLoading}
+            error={executionTraceError}
+          />
+        )}
+      </div>
+    </ExecutionProcessContext.Provider>
   );
 }

@@ -11,3 +11,9 @@ export async function POST(request: Request) {
 
   return proxyToFastApi(request, "conversations");
 }
+
+export async function DELETE(request: Request) {
+  /** 代理删除会话接口。 */
+
+  return proxyToFastApi(request, "conversations");
+}

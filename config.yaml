@@ -4,6 +4,8 @@
 app:
   name: AI Data Analysis
   version: 0.1.0
+  # 当前尚未接入登录系统，服务端使用这个开发用户标识；正式认证接入后替换来源。
+  default_user_id: dev-user
 
 mysql:
   host: 127.0.0.1
@@ -16,12 +18,38 @@ mysql:
   pool_pre_ping: true
   pool_recycle: 3600
 
+postgres:
+  # Agent 平台会话历史和 LangGraph Checkpointer 使用 PostgreSQL；分析数据仍在 MySQL。
+  host: 127.0.0.1
+  port: 5432
+  user: ${oc.env:POSTGRES_USER,z523}
+  password: ${oc.env:POSTGRES_PASSWORD,""}
+  database: agent_app
+  pool_pre_ping: true
+  pool_recycle: 3600
+
+neo4j:
+  # Semantic Memory 的实体关系投影使用 Neo4j；其他记忆类型不写入图数据库。
+  uri: ${oc.env:NEO4J_URI,bolt://127.0.0.1:7687}
+  user: ${oc.env:NEO4J_USER,neo4j}
+  password: ${oc.env:NEO4J_PASSWORD,password}
+  database: ${oc.env:NEO4J_DATABASE,neo4j}
+  # 控制 Neo4j 驱动连接池大小，避免记忆模块创建过多连接。
+  max_connection_pool_size: 50
+
 qdrant:
   url: http://127.0.0.1:6333
   tables_collection: meta_tables_semantic
   columns_collection: meta_columns_semantic
   metrics_collection: meta_metrics_semantic
   dimension_values_collection: meta_dimension_values_semantic
+  # 以下 collection 专供记忆模块，避免和业务元数据向量混用。
+  memory_episodic_collection: agent_memory_episodic_v1
+  memory_semantic_collection: agent_memory_semantic_v1
+  memory_perceptual_text_collection: agent_memory_perceptual_text_v1
+  memory_perceptual_image_collection: agent_memory_perceptual_image_v1
+  memory_perceptual_audio_collection: agent_memory_perceptual_audio_v1
+  memory_perceptual_video_collection: agent_memory_perceptual_video_v1
   vector_size: 1024
   distance: Cosine
   upsert_batch_size: 64
@@ -68,6 +96,26 @@ logging:
   format: "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 
 llm:
-  model_name: Pro/zai-org/GLM-5.1
-  api_key: ${oc.env:LLM_API_KEY}
-  base_url: https://api.siliconflow.cn/v1
+  # Agent 只依赖 AutoLLM；切换兼容服务时修改本段配置，不修改业务节点。
+  provider: openai-compatible
+  # 当前使用阿里云百炼的 OpenAI 兼容接口；API Key 不写入配置文件。
+  model_name: ${oc.env:DASHSCOPE_MODEL,qwen3.7-plus}
+  api_key: ${oc.env:DASHSCOPE_API_KEY,""}
+  base_url: ${oc.env:DASHSCOPE_BASE_URL,https://dashscope.aliyuncs.com/compatible-mode/v1}
+  # LLM 响应连续 30 分钟没有返回时超时；流式收到事件后重新计时。
+  timeout_seconds: 1800
+  # null 和空对象表示采用当前模型服务的默认输出长度与思考参数。
+  max_tokens: null
+  request_options: {}
+  include_usage: true
+  stream_only: false
+
+  # 原 SiliconFlow 配置先保留在这里，后续切回时只需取消注释并注释上面的百炼配置。
+  # model_name: Pro/zai-org/GLM-5.1
+  # api_key: ${oc.env:LLM_API_KEY}
+  # base_url: https://api.siliconflow.cn/v1
+  # timeout_seconds: 1800
+  # max_tokens: null
+  # request_options: {}
+  # include_usage: true
+  # stream_only: false

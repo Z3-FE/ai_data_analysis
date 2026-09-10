@@ -164,6 +164,35 @@ def _exact_value_columns(table_infos: list[dict[str, Any]]) -> set[str]:
     }
 
 
+def _resolve_table_id(table_id: str, tables_by_id: dict[str, dict[str, Any]]) -> str:
+    """将唯一的短表名解析为候选上下文中的正式表 ID。
+
+    LLM 偶尔会省略 schema。只有候选表中存在唯一同名后缀时才自动补齐，
+    避免在多个 schema 存在同名表时凭空选择错误的表。
+    """
+    normalized_table_id = table_id.strip().strip("'")
+    if normalized_table_id in tables_by_id:
+        return normalized_table_id
+
+    matches = [
+        candidate_id
+        for candidate_id in tables_by_id
+        if candidate_id.rsplit(".", 1)[-1] == normalized_table_id
+    ]
+    if len(matches) == 1:
+        logger.warning(
+            "模型返回短表名，已按唯一候选补齐正式表 ID：%s -> %s",
+            table_id,
+            matches[0],
+        )
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(
+            f"模型选择的表名不唯一：{table_id}，候选表为 {sorted(matches)}"
+        )
+    return normalized_table_id
+
+
 def _copy_filtered_tables(
     table_infos: list[dict[str, Any]],
     selected_columns_by_table: dict[str, set[str]],
@@ -202,7 +231,7 @@ async def reconcile_filtered_context(
     """将 LLM 选择清单校验、裁剪，并补齐指标和关系依赖。"""
     writer = runtime.stream_writer
     step = "补全过滤后的上下文"
-    writer({"type": "progress", "step": step, "status": "running"})
+    writer({"type": "progress", "step": step, "node": "reconcile_filtered_context", "status": "running"})
 
     table_infos = state.get("table_infos", [])
     metric_infos = state.get("metric_infos", [])
@@ -222,7 +251,8 @@ async def reconcile_filtered_context(
         raise ValueError(f"模型选择了不存在的指标：{sorted(unknown_metrics)}")
 
     selected_columns_by_table: dict[str, set[str]] = {}
-    for table_id, column_ids in table_selection.items():
+    for raw_table_id, column_ids in table_selection.items():
+        table_id = _resolve_table_id(str(raw_table_id), tables_by_id)
         if table_id not in tables_by_id:
             raise ValueError(f"模型选择了不存在的表：{table_id}")
         available_columns = columns_by_table[table_id]
@@ -333,6 +363,7 @@ async def reconcile_filtered_context(
         {
             "type": "filtered_context",
             "step": step,
+            "node": "reconcile_filtered_context",
             "status": "success",
             "table_ids": sorted(final_table_ids),
             "metric_ids": [metric["metric_id"] for metric in final_metric_infos],

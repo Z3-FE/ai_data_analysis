@@ -64,6 +64,16 @@ class FakeMetaCatalogRepository:
         return []
 
 
+class FakeConversationRepository:
+    """提供会话生命周期保存所需的最小异步接口。"""
+
+    async def start_turn(self, **kwargs) -> None:
+        return None
+
+    async def finish_turn(self, **kwargs) -> None:
+        return None
+
+
 class AgentGraphTest(unittest.TestCase):
     """验证最小 LangGraph 能正常返回结果。"""
 
@@ -78,7 +88,8 @@ class AgentGraphTest(unittest.TestCase):
             meta_dimension_values_semantic_repository=FakeSemanticRepository(),
             meta_catalog_repository=FakeMetaCatalogRepository(),
             dw_repository=FakeDwRepository(),
-        ).run("你好")
+            conversation_repository=FakeConversationRepository(),
+        ).run("你好", "test-conversation")
 
         self.assertEqual(result["input_text"], "你好")
         self.assertIn("keywords", result)

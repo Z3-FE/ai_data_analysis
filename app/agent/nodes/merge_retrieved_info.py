@@ -88,7 +88,7 @@ relationship_infos：表之间如何 JOIN
 """
 
 import logging
-from dataclasses import asdict, fields
+from dataclasses import MISSING, asdict, fields
 from typing import Any, TypeVar
 
 from langgraph.runtime import Runtime
@@ -96,8 +96,8 @@ from langgraph.runtime import Runtime
 from app.agent.context import AgentContext
 from app.agent.state import AgentState
 from app.entities.agent.agent_merge_context import (
-    MatchedSource,
     MatchedDimensionValue,
+    MatchedSource,
     MergedColumnInfo,
     MergedMetricInfo,
     MergedTableInfo,
@@ -113,8 +113,17 @@ EntityType = TypeVar("EntityType")
 def _build_entity(entity_type: type[EntityType], payload: dict[str, Any]) -> EntityType:
     """只取实体声明的字段，把召回 payload 还原为业务实体。"""
     # 只保留目标实体声明的业务字段，忽略向量检索产生的辅助字段。
-    field_names: set[str] = {field.name for field in fields(entity_type)}
-    entity_payload = {key: payload[key] for key in field_names}
+    # 新增 Meta 字段在旧向量中可能不存在，因此优先使用实体默认值兼容旧数据。
+    entity_payload = {}
+    for field in fields(entity_type):
+        if field.name in payload:
+            entity_payload[field.name] = payload[field.name]
+        elif field.default is not MISSING:
+            entity_payload[field.name] = field.default
+        elif field.default_factory is not MISSING:
+            entity_payload[field.name] = field.default_factory()
+        else:
+            raise KeyError(f"Meta payload 缺少实体字段：{field.name}")
     return entity_type(**entity_payload)
 
 def _build_matched_value(candidate: dict[str, Any]) -> MatchedDimensionValue:
@@ -184,7 +193,7 @@ async def merge_retrieved_info(
     """合并四路召回结果，并补齐结构化 Meta MySQL 上下文。"""
     writer = runtime.stream_writer
     step = "合并召回信息"
-    writer({"type": "progress", "step": step, "status": "running"})
+    writer({"type": "progress", "step": step, "node": "merge_retrieved_info", "status": "running"})
     repository = runtime.context["meta_catalog_repository"]
 
     # 步骤 1：把 State 中的召回字典还原为内部业务实体，并按业务主键建立 Map。
@@ -352,8 +361,8 @@ async def merge_retrieved_info(
         # 指标和维度之间的可分析关系
         "metric_dimension_infos": metric_dimension_states,
     }
-    writer({"type": "progress", "step": step, "status": "success"})
-    writer({"type": "retrieved_info", "step": step, **result})
+    writer({"type": "progress", "step": step, "node": "merge_retrieved_info", "status": "success"})
+    writer({"type": "retrieved_info", "step": step, "node": "merge_retrieved_info", **result})
     logger.info(
         "召回合并完成 tables=%s columns=%s metrics=%s dimensions=%s "
         "relationships=%s metric_dimensions=%s",

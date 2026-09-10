@@ -63,7 +63,7 @@ async def retrieve_columns(
     """召回和用户问题相关的字段元数据。"""
     writer = runtime.stream_writer
     step = "召回columns字段信息"
-    writer({"type": "progress", "step": step, "status": "running"})
+    writer({"type": "progress", "step": step, "node": "retrieve_columns", "status": "running"})
 
     question = state.get("input_text", "")
     keywords = state["keywords"]
@@ -81,6 +81,7 @@ async def retrieve_columns(
         {
             "type": "columns",
             "step": step,
+            "node": "retrieve_columns",
             "status": "success",
             "column_recall_terms": recall_terms,
             "column_candidates": column_candidates,

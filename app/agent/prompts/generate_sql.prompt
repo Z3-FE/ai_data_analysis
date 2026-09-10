@@ -4,14 +4,25 @@
 
 规则：
 1. 只允许使用 SQL 上下文中出现的表、字段和关系。
-2. 指标必须严格使用 metric_context 中的 expression_sql，不要自行改变指标口径。
-3. 精确维度值使用 filter_context.raw_value 作为数据库真实值。
-4. relationship_type=filter_exists 时必须使用 EXISTS，不要直接 JOIN 后聚合，避免一对多关系造成重复统计。
-5. 年份和月份筛选必须使用 dim_date.year_month_value。用户只说年份时，使用 year_month_value LIKE '2023-%'；用户说具体月份时，使用 year_month_value = '2023-01'。
-6. date_key 是整数代理键，只用于 JOIN，禁止对 date_key 使用 LIKE 或把它直接当作年份、月份字段筛选。
-7. 用户没有明确指定日期口径时，只能使用 relationship_context 中已经保留的默认日期关系，不要自行改用其他日期字段。
-8. 只生成查询语句，不要生成 INSERT、UPDATE、DELETE、DROP、ALTER 或其他修改数据的语句。
-9. 只输出 SQL 本身，不要输出 Markdown 代码块、解释文字或前后缀。
+2. 先阅读 table_context.grain，确认每张表“一行代表什么”；再阅读 metric_context.base_table_grain，确认指标原本在哪个粒度上计算。
+3. 指标必须严格使用 metric_context 中的 expression_sql，不要自行改变指标口径。
+4. 精确维度值使用 filter_context.raw_value 作为数据库真实值。
+5. relationship_type=filter_exists 时必须使用 EXISTS，不要直接 JOIN 后聚合，避免一对多关系造成重复统计。该关系只能用于筛选，不能把被筛选侧字段直接放入 SELECT 或 GROUP BY。
+6. 对普通 JOIN 也要比较关系两端的 grain；如果 JOIN 会把指标基础表的一行展开成多行，不能直接对展开后的指标表达式聚合。
+7. 年份和月份筛选必须使用 dim_date.year_month_value。用户只说年份时，使用 year_month_value LIKE '2023-%'；用户说具体月份时，使用 year_month_value = '2023-01'。
+8. date_key 是整数代理键，只用于 JOIN，禁止对 date_key 使用 LIKE 或把它直接当作年份、月份字段筛选。
+9. 用户没有明确指定日期口径时，只能使用 relationship_context 中已经保留的默认日期关系，不要自行改用其他日期字段。
+10. 如果 metric_dimension_context 中某个指标与维度的 support_level 为 unsupported，或 supported 为 false，不得把该组合当作已验证的安全口径；如果为 conditional，必须遵守 usage_note。不要为了满足问题强行跨粒度 JOIN 或重复聚合。
+11. 只生成查询语句，不要生成 INSERT、UPDATE、DELETE、DROP、ALTER 或其他修改数据的语句。
+12. 所有聚合表达式（例如 SUM、COUNT、AVG、MIN、MAX）都必须使用 AS 明确别名；优先使用 metric_context 中对应的 metric_id 作为别名，例如 expression_sql 为 SUM(price) 且 metric_id 为 gmv 时，输出 SUM(price) AS gmv。
+13. 已有物理维度字段优先使用 column_name 作为结果别名；动态派生指标允许使用有业务含义的当前任务别名，但禁止使用 col_1、value、result 等无法追溯的名称。若动态派生指标与同名已登记指标的口径不同，display_name 必须明确说明去重、筛选范围或分母等口径差异，不能沿用已登记指标的业务名称造成误解。例如 COUNT(DISTINCT fact_order_item.order_id) 按卖家州分组时，应说明为“包含该卖家州商品的去重订单数”，不能只写“订单量”。
+14. 返回 JSON 对象，字段为 sql 和 result_columns；result_columns 中声明最终 SELECT 返回的字段。
+15. result_columns.source_column_id 只能填写 column_notes 中真实存在的 column_id；result_columns.source_metric_id 只能填写 metric_context 中真实存在的 metric_id。
+16. 物理维度字段的 source_fields 填空数组；动态派生指标的 source_fields 只填写它依赖的其他结果字段名。filter_conditions 只记录该结果字段特有的派生筛选条件；整条查询共用的 WHERE 条件不重复写入字段契约。
+17. 如果问题同时涉及两个或以上时期，并且要求比较、环比、下降、变化或差值，必须把时期字段（通常是 dim_date.year_month_value）放入 SELECT，并按“分析维度 + 时期字段” GROUP BY。禁止把多个时期聚合成一行后交给后续计算。
+18. 多时期比较任务的结果必须至少包含：分析维度、时期字段和指标字段。例如按商品类别比较两个月时，必须返回 category_display_name、year_month_value、gmv 三列；不能只返回 category_display_name、gmv。
+19. 如果用户问题只要求多个时期的合计而不要求比较，可以不按时期分组；但只要任务目的包含环比、下降、差值或变化率，就必须按时期保留结果粒度。
+20. source_column_id 或 source_metric_id 没有对应来源时使用空字符串，不要使用 null；维度通常只填写 source_column_id，指标通常只填写 source_metric_id。
 
 用户问题：
 {query}
@@ -19,4 +30,11 @@
 SQL 上下文：
 {extra_context}
 
-请输出 SQL：
+请输出一个 JSON 对象，包含 sql 和 result_columns 两个字段。
+result_columns 是数组；每个元素包含 result_name、field_role、display_name、
+source_column_id、source_metric_id、source_fields、filter_conditions。
+field_role 只能使用 dimension、metric、derived_metric 或 unknown；普通度量字段使用 metric，
+不要使用 measure。若字段是当前 SQL 临时计算出来且不对应已登记指标，使用 derived_metric，
+并填写真实依赖字段；不要仅因结果别名与某个 Meta 指标同名就填写 source_metric_id。
+filter_conditions 中每项必须是对象，格式为 {{"column_id": "完整 Meta 字段 ID", "operator": "=", "raw_value": "数据库原始值"}}；没有字段特有筛选时填写空数组，不要直接填写字符串。
+不要输出 Markdown 代码块或解释文字。

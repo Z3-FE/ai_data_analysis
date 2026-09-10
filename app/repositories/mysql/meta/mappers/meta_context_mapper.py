@@ -26,4 +26,6 @@ class MetaContextMapper:
             metric_id=model.metric_id,
             dimension_id=model.dimension_id,
             compatibility_note=model.compatibility_note,
+            support_level=model.support_level,
+            usage_note=model.usage_note,
         )

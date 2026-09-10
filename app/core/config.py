@@ -22,6 +22,7 @@ class AppConfig:
 
     name: str
     version: str
+    default_user_id: str
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,55 @@ class MysqlConfig:
 
 
 @dataclass(frozen=True)
+class PostgresConfig:
+    """Agent 平台 PostgreSQL 连接配置。"""
+
+    host: str
+    port: int
+    user: str
+    password: str
+    database: str
+    pool_pre_ping: bool
+    pool_recycle: int
+
+    def _credentials(self) -> str:
+        """返回适合放入连接 URL 的账号部分。"""
+        from urllib.parse import quote_plus
+
+        user = quote_plus(self.user)
+        if not self.password:
+            return user
+        return f"{user}:{quote_plus(self.password)}"
+
+    @property
+    def database_url(self) -> str:
+        """返回 SQLAlchemy 使用的异步 PostgreSQL URL。"""
+        return (
+            f"postgresql+psycopg://{self._credentials()}"
+            f"@{self.host}:{self.port}/{self.database}"
+        )
+
+    @property
+    def checkpointer_url(self) -> str:
+        """返回官方 AsyncPostgresSaver 使用的 PostgreSQL URL。"""
+        return (
+            f"postgresql://{self._credentials()}"
+            f"@{self.host}:{self.port}/{self.database}"
+        )
+
+
+@dataclass(frozen=True)
+class Neo4jConfig:
+    """Semantic Memory 使用的 Neo4j 图数据库配置。"""
+
+    uri: str
+    user: str
+    password: str
+    database: str
+    max_connection_pool_size: int
+
+
+@dataclass(frozen=True)
 class QdrantConfig:
     """Qdrant 向量数据库配置。"""
 
@@ -65,6 +115,12 @@ class QdrantConfig:
     columns_collection: str
     metrics_collection: str
     dimension_values_collection: str
+    memory_episodic_collection: str
+    memory_semantic_collection: str
+    memory_perceptual_text_collection: str
+    memory_perceptual_image_collection: str
+    memory_perceptual_audio_collection: str
+    memory_perceptual_video_collection: str
     vector_size: int
     distance: str
     upsert_batch_size: int
@@ -109,9 +165,15 @@ class DimensionValueSearchConfig:
 class LlmConfig:
     """LLM 调用配置。"""
 
+    provider: str
     model_name: str
     api_key: str
     base_url: str
+    timeout_seconds: float
+    max_tokens: int | None
+    request_options: dict[str, Any]
+    include_usage: bool
+    stream_only: bool
 
 
 @dataclass(frozen=True)
@@ -128,6 +190,8 @@ class Settings:
 
     app: AppConfig
     mysql: MysqlConfig
+    postgres: PostgresConfig
+    neo4j: Neo4jConfig
     qdrant: QdrantConfig
     elasticsearch: ElasticsearchConfig
     dimension_value_search: DimensionValueSearchConfig
@@ -169,6 +233,8 @@ def load_settings(path: Path = CONFIG_PATH) -> Settings:
     return Settings(
         app=AppConfig(**raw["app"]),
         mysql=MysqlConfig(**raw["mysql"]),
+        postgres=PostgresConfig(**raw["postgres"]),
+        neo4j=Neo4jConfig(**raw["neo4j"]),
         qdrant=QdrantConfig(**raw["qdrant"]),
         elasticsearch=ElasticsearchConfig(**raw["elasticsearch"]),
         dimension_value_search=DimensionValueSearchConfig(
