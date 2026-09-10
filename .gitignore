@@ -6,6 +6,7 @@ __pycache__/
 build/
 dist/
 wheels/
+docker/
 *.egg-info
 ./hello-agent-project
 # Virtual environments
