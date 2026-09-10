@@ -13,3 +13,5 @@ wheels/
 
 # Local environment variables
 .env
+# 外部参考项目，不入库
+hello-agent-project/
