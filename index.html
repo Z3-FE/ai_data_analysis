@@ -5,9 +5,113 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>数据智能体技术文档</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/docsify@4/lib/themes/vue.css">
+  <style>
+    :root {
+      --docs-bg: #ffffff;
+      --docs-text: #34495e;
+      --docs-heading: #2c3e50;
+      --docs-sidebar: #ffffff;
+      --docs-border: rgba(0, 0, 0, 0.08);
+      --docs-muted: #6b7280;
+      --docs-accent: #00a86b;
+    }
+    body.theme-dark {
+      --docs-bg: #111827;
+      --docs-text: #d1d5db;
+      --docs-heading: #f3f4f6;
+      --docs-sidebar: #0b1220;
+      --docs-border: rgba(255, 255, 255, 0.12);
+      --docs-muted: #9ca3af;
+      --docs-accent: #34d399;
+    }
+    html, body, .sidebar {
+      background: var(--docs-bg);
+    }
+    body, .markdown-section {
+      color: var(--docs-text);
+    }
+    .sidebar {
+      background: var(--docs-sidebar);
+      border-right: 1px solid var(--docs-border);
+    }
+    .markdown-section h1, .markdown-section h2, .markdown-section h3,
+    .markdown-section h4, .markdown-section strong {
+      color: var(--docs-heading);
+    }
+    .markdown-section a, .sidebar-nav li.active > a,
+    .sidebar-nav li > a:hover {
+      color: var(--docs-accent);
+    }
+    .markdown-section blockquote {
+      border-left-color: var(--docs-accent);
+    }
+    .markdown-section code, .markdown-section pre {
+      background: color-mix(in srgb, var(--docs-text) 7%, var(--docs-bg));
+    }
+    .markdown-section table tr:nth-child(2n), .markdown-section th {
+      background: color-mix(in srgb, var(--docs-text) 5%, var(--docs-bg));
+    }
+    .markdown-section table td, .markdown-section table th {
+      border-color: var(--docs-border);
+    }
+    .sidebar-nav > ul > li > p {
+      margin: 1.4rem 0 0.35rem;
+      color: var(--docs-muted);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .theme-toggle {
+      position: fixed;
+      top: 1rem;
+      right: 1.25rem;
+      z-index: 20;
+      min-width: 5.5rem;
+      height: 2.25rem;
+      padding: 0 0.75rem;
+      border: 1px solid var(--docs-border);
+      border-radius: 4px;
+      background: var(--docs-sidebar);
+      color: var(--docs-text);
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.82rem;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+    }
+    .theme-toggle:hover {
+      border-color: var(--docs-accent);
+      color: var(--docs-accent);
+    }
+    @media (max-width: 768px) {
+      .theme-toggle {
+        top: 0.75rem;
+        right: 0.75rem;
+      }
+    }
+  </style>
 </head>
 <body>
+  <button class="theme-toggle" type="button" aria-label="切换主题" title="切换黑白主题"></button>
   <div id="app">正在加载文档...</div>
+  <script>
+    (function () {
+      var storageKey = 'ai-data-analysis-theme';
+      var button = document.querySelector('.theme-toggle');
+      var savedTheme = localStorage.getItem(storageKey) || 'light';
+      var applyTheme = function (theme) {
+        document.body.classList.toggle('theme-dark', theme === 'dark');
+        button.textContent = theme === 'dark' ? '浅色模式' : '深色模式';
+        button.setAttribute('aria-pressed', theme === 'dark' ? 'true' : 'false');
+      };
+      applyTheme(savedTheme);
+      button.addEventListener('click', function () {
+        var nextTheme = document.body.classList.contains('theme-dark') ? 'light' : 'dark';
+        localStorage.setItem(storageKey, nextTheme);
+        applyTheme(nextTheme);
+      });
+    }());
+  </script>
   <script>
     window.$docsify = {
       name: '数据智能体技术文档',
@@ -39,3 +143,6 @@
   <script src="https://cdn.jsdelivr.net/npm/docsify-pagination@2/dist/docsify-pagination.min.js"></script>
 </body>
 </html>
+    .content, .main, .search .search input {
+      background: var(--docs-bg);
+    }
