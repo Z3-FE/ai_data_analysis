@@ -17,3 +17,14 @@ class MetaMetricDimensionModel(Base):
         String(128), ForeignKey("meta.dimensions.dimension_id"), primary_key=True, comment="维度标识"
     )
     compatibility_note: Mapped[str] = mapped_column(Text, nullable=False, comment="指标与维度的兼容说明")
+    support_level: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="supported",
+        comment="支持级别：supported、conditional 或 unsupported",
+    )
+    usage_note: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        comment="按该维度分析时的使用说明",
+    )

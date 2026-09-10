@@ -75,6 +75,8 @@ CREATE TABLE metrics (
   base_table_id VARCHAR(128) NOT NULL COMMENT '指标默认事实表',
   expression_sql TEXT NOT NULL COMMENT '指标 SQL 表达式',
   aggregation_type VARCHAR(32) NOT NULL COMMENT '聚合类型',
+  calculation_grain TEXT NOT NULL COMMENT '指标计算粒度，说明指标每一行或每个计算集合代表什么',
+  aggregation_rule TEXT NOT NULL COMMENT '指标聚合规则和跨粒度使用限制',
   unit VARCHAR(32) NULL COMMENT '指标单位',
   description TEXT NOT NULL COMMENT '指标业务口径',
   aliases JSON NULL COMMENT '指标的别名、同义词、业务叫法，用于向量检索召回增强',
@@ -93,11 +95,13 @@ CREATE TABLE dimensions (
   CONSTRAINT fk_meta_dimensions_table FOREIGN KEY (table_id) REFERENCES tables(table_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='维度定义表，记录日期、品类、客户地区、卖家等分析角度';
 
--- 指标与维度兼容关系：限制 AI 不要组合明显不合理的指标和维度。
+-- 指标与维度分析口径：记录指标按维度分析时是否支持，以及必要的使用限制。
 CREATE TABLE metric_dimensions (
   metric_id VARCHAR(128) NOT NULL COMMENT '指标 ID',
   dimension_id VARCHAR(128) NOT NULL COMMENT '维度 ID',
   compatibility_note TEXT NOT NULL COMMENT '兼容说明',
+  support_level ENUM('supported', 'conditional', 'unsupported') NOT NULL DEFAULT 'supported' COMMENT '支持级别：支持、有条件支持或不支持',
+  usage_note TEXT NOT NULL COMMENT '按该维度分析时的聚合、关联和粒度说明',
   PRIMARY KEY (metric_id, dimension_id),
   CONSTRAINT fk_meta_metric_dimensions_metric FOREIGN KEY (metric_id) REFERENCES metrics(metric_id),
   CONSTRAINT fk_meta_metric_dimensions_dimension FOREIGN KEY (dimension_id) REFERENCES dimensions(dimension_id)
@@ -254,18 +258,18 @@ INSERT INTO relationships VALUES
 
 INSERT INTO metrics (
   metric_id, metric_name, business_name, base_table_id, expression_sql,
-  aggregation_type, unit, description
+  aggregation_type, calculation_grain, aggregation_rule, unit, description
 ) VALUES
-('gmv', 'gmv', '销售额', 'dw.fact_order_item', 'SUM(price)', 'sum', 'currency', '商品成交金额之和，第一版口径不含运费。'),
-('freight_amount', 'freight_amount', '运费金额', 'dw.fact_order_item', 'SUM(freight_value)', 'sum', 'currency', '订单明细运费金额之和。'),
-('order_count', 'order_count', '订单量', 'dw.fact_order', 'SUM(order_count)', 'sum', 'order', '订单事实表每行一个订单，按 order_count 求和。'),
-('item_count', 'item_count', '商品明细数', 'dw.fact_order_item', 'SUM(item_count)', 'sum', 'item', '订单明细事实表每行一个商品明细，按 item_count 求和。'),
-('avg_order_value', 'avg_order_value', '平均客单价', 'dw.fact_order_item', 'SUM(price) / COUNT(DISTINCT order_id)', 'ratio', 'currency/order', '商品成交金额除以订单数。'),
-('payment_amount', 'payment_amount', '支付金额', 'dw.fact_payment', 'SUM(payment_value)', 'sum', 'currency', '支付记录金额之和。'),
-('avg_review_score', 'avg_review_score', '平均评分', 'dw.fact_review', 'AVG(review_score)', 'avg', 'score', '评价分数平均值。'),
-('good_review_rate', 'good_review_rate', '好评率', 'dw.fact_review', 'SUM(CASE WHEN review_score >= 4 THEN 1 ELSE 0 END) / COUNT(*)', 'ratio', 'percent', '评分大于等于 4 的评价占比。'),
-('delay_rate', 'delay_rate', '延迟率', 'dw.fact_order', 'SUM(CASE WHEN is_delayed = 1 THEN 1 ELSE 0 END) / COUNT(*)', 'ratio', 'percent', '实际送达晚于预计送达的订单占比。'),
-('avg_delivery_days', 'avg_delivery_days', '平均配送天数', 'dw.fact_order', 'AVG(customer_delivery_days)', 'avg', 'day', '下单到客户收货的平均天数。');
+('gmv', 'gmv', '销售额', 'dw.fact_order_item', 'SUM(price)', 'sum', '一个 order_id + order_item_id 一行', '直接汇总订单明细金额；可以按订单明细可安全关联的商品、品类、卖家和日期维度分析；不要为了订单属性直接 JOIN 一对多事实表。', 'currency', '商品成交金额之和，第一版口径不含运费。'),
+('freight_amount', 'freight_amount', '运费金额', 'dw.fact_order_item', 'SUM(freight_value)', 'sum', '一个 order_id + order_item_id 一行', '直接汇总订单明细运费；按商品、品类、卖家和日期维度分析时保留订单明细粒度。', 'currency', '订单明细运费金额之和。'),
+('order_count', 'order_count', '订单量', 'dw.fact_order', 'SUM(order_count)', 'sum', '一个 order_id 一行', '只能在订单事实粒度上汇总；不要直接 JOIN fact_order_item、fact_payment 或 fact_review 后再 SUM(order_count)，否则一条订单会被一对多明细展开而重复计数。', 'order', '订单事实表每行一个订单，按 order_count 求和。'),
+('item_count', 'item_count', '商品明细数', 'dw.fact_order_item', 'SUM(item_count)', 'sum', '一个 order_id + order_item_id 一行', '直接汇总订单明细行数；可以按订单明细侧可安全关联的商品、品类和卖家维度分析。', 'item', '订单明细事实表每行一个商品明细，按 item_count 求和。'),
+('avg_order_value', 'avg_order_value', '平均客单价', 'dw.fact_order_item', 'SUM(price) / COUNT(DISTINCT order_id)', 'ratio', '按当前分析维度聚合后的订单明细集合', '分子是订单明细销售额，分母是当前分组内去重订单数；不要与 fact_order 的订单量直接 JOIN 后聚合。', 'currency/order', '商品成交金额除以当前分组内的去重订单数。'),
+('payment_amount', 'payment_amount', '支付金额', 'dw.fact_payment', 'SUM(payment_value)', 'sum', '一条订单支付记录一行', '直接汇总支付记录；不要与商品明细或评价事实直接 JOIN 后聚合，跨事实表筛选使用 EXISTS。', 'currency', '支付记录金额之和。'),
+('avg_review_score', 'avg_review_score', '平均评分', 'dw.fact_review', 'AVG(review_score)', 'avg', '一条评价记录一行', '按评价记录计算平均评分；不要与商品明细、支付记录直接 JOIN 后聚合。', 'score', '评价分数平均值。'),
+('good_review_rate', 'good_review_rate', '好评率', 'dw.fact_review', 'SUM(CASE WHEN review_score >= 4 THEN 1 ELSE 0 END) / COUNT(*)', 'ratio', '一条评价记录一行', '按评价记录计算评分大于等于 4 的占比；跨订单条件筛选使用 EXISTS。', 'percent', '评分大于等于 4 的评价占比。'),
+('delay_rate', 'delay_rate', '延迟率', 'dw.fact_order', 'SUM(CASE WHEN is_delayed = 1 THEN 1 ELSE 0 END) / COUNT(*)', 'ratio', '一个 order_id 一行', '只能在订单事实粒度计算；不要直接 JOIN 一对多订单明细、支付或评价后聚合。', 'percent', '实际送达晚于预计送达的订单占比。'),
+('avg_delivery_days', 'avg_delivery_days', '平均配送天数', 'dw.fact_order', 'AVG(customer_delivery_days)', 'avg', '一个 order_id 一行', '只能在订单事实粒度计算；不要直接 JOIN 一对多事实表后聚合。', 'day', '下单到客户收货的平均天数。');
 
 UPDATE tables SET aliases = JSON_ARRAY(), status = 'active';
 UPDATE columns SET aliases = JSON_ARRAY(), status = 'active';
@@ -282,7 +286,12 @@ INSERT INTO dimensions VALUES
 ('is_delayed', 'is_delayed', '是否延迟', 'dw.fact_order', 'is_delayed', '按是否延迟送达分析。');
 
 INSERT INTO metric_dimensions
-SELECT metric_id, dimension_id, '第一版允许该指标按此维度拆分。'
+SELECT
+  metric_id,
+  dimension_id,
+  '已登记为支持的指标与维度组合。',
+  'supported',
+  '按照指标基础表粒度和已登记关系建立查询，避免跨事实表直接 JOIN 后聚合。'
 FROM metrics
 JOIN dimensions
 WHERE
@@ -290,6 +299,27 @@ WHERE
   OR (metric_id IN ('order_count', 'delay_rate', 'avg_delivery_days') AND dimension_id IN ('purchase_month', 'customer_state', 'order_status', 'is_delayed'))
   OR (metric_id IN ('payment_amount') AND dimension_id IN ('purchase_month', 'payment_type', 'customer_state'))
   OR (metric_id IN ('avg_review_score', 'good_review_rate') AND dimension_id IN ('purchase_month', 'review_score', 'customer_state', 'product_category'));
+
+-- 明确登记两个高风险组合，避免模型把“没有兼容记录”误解为“没有额外说明”。
+-- 订单量的基础粒度是 fact_order 的一个订单一行；卖家州和商品品类来自订单明细侧，
+-- 不能通过 fact_order -> fact_order_item 的 filter_exists 关系直接成为订单量的分组维度。
+INSERT INTO metric_dimensions (
+  metric_id, dimension_id, compatibility_note, support_level, usage_note
+) VALUES
+(
+  'order_count',
+  'seller_state',
+  '订单量不支持直接按卖家州拆分。',
+  'unsupported',
+  '卖家州来自 fact_order_item 侧；一个订单可能包含多个卖家州，直接 JOIN 会展开订单并改变订单量口径。若业务必须分析，应先明确“包含该卖家州商品的去重订单数”这一新口径。'
+),
+(
+  'order_count',
+  'product_category',
+  '订单量不支持直接按商品品类拆分。',
+  'unsupported',
+  '商品品类来自 fact_order_item 侧；一个订单可能包含多个商品品类，直接 JOIN 会展开订单并改变订单量口径。若业务必须分析，应先明确按品类归属的去重订单数口径。'
+);
 
 INSERT INTO subject_areas VALUES
 ('sales', '销售分析', '围绕销售额、订单量、商品销量、客单价进行分析。'),

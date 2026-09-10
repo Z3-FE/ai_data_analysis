@@ -2,66 +2,99 @@
 
 当前链路已经落地关键词抽取和字段召回。外部依赖通过 AgentContext 注入，
 节点只读写 AgentState 中的业务中间结果。
+
+入口先经过问题路由：日常聊天进入文本回答节点，简单查询进入 Query Agent，
+复杂问题进入分析计划，缺少关键信息则停在澄清边界。分析侧再通过
+query_graph 复用现有问数链。
 """
+
+from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
 from app.agent.context import AgentContext
-from app.agent.nodes.extract_keywords import extract_keywords_node
-from app.agent.nodes.retrieve_columns import retrieve_columns
-from app.agent.nodes.retrieve_tables import retrieve_tables
-from app.agent.nodes.retrieve_metrics import retrieve_metrics
-from app.agent.nodes.retrieve_dimension_values import retrieve_dimension_values
-from app.agent.nodes.merge_retrieved_info import merge_retrieved_info
-from app.agent.nodes.filter_metric import filter_metric
-from app.agent.nodes.filter_table import filter_table
-from app.agent.nodes.reconcile_filtered_context import reconcile_filtered_context
-from app.agent.nodes.add_extra_context import add_extra_context
-from app.agent.nodes.generate_sql import generate_sql
-from app.agent.nodes.execute_sql import execute_sql
+from app.agent.nodes.daily_chat import daily_chat
+from app.agent.nodes.execute_analysis import execute_analysis
+from app.agent.nodes.finalize_turn import finalize_turn
+from app.agent.nodes.generate_report_plan import generate_report_plan
+from app.agent.nodes.plan_analysis import plan_analysis
+from app.agent.nodes.render_report import render_report
+from app.agent.nodes.route_question import route_question
+from app.agent.query_graph import add_query_flow
 from app.agent.state import AgentState
 
 
-def build_agent_graph():
-    """构建并返回当前阶段的 LangGraph。"""
+def _route_after_question(state: AgentState) -> str:
+    """把路由节点的结构化结果映射到图分支。
+
+这里是结构化字段到 LangGraph 条件边名称的唯一转换点。
+"""
+    return state.get("execution_mode", "single_query")
+
+
+async def _clarification_route_boundary(
+    state: AgentState,
+    runtime,
+) -> AgentState:
+    """返回路由节点生成的最小澄清问题。
+
+澄清分支不进入 Query Agent，避免在用户信息不足时生成无依据的 SQL。
+"""
+    message = state.get("clarification_question") or "请补充问题中的关键指标或范围。"
+    runtime.stream_writer(
+        {
+            "type": "route_boundary",
+            "step": "问题路由",
+            "node": "clarification_route_boundary",
+            "status": "success",
+            "execution_mode": "clarification",
+            "message": message,
+        }
+    )
+    return {"output_text": message}
+
+
+def build_agent_graph(checkpointer: Any = None):
+    """构建并返回当前阶段的 LangGraph。
+
+路由节点是四个执行分支的边界；分析任务内部的依赖调度由
+execute_analysis 负责，不在 LangGraph 中为每个动态任务创建节点。
+"""
     graph = StateGraph(state_schema=AgentState, context_schema=AgentContext)
-    graph.add_node("extract_keywords", extract_keywords_node)
-    graph.add_node("retrieve_columns", retrieve_columns)
-    graph.add_node("retrieve_tables", retrieve_tables)
-    graph.add_node("retrieve_metrics", retrieve_metrics)
-    graph.add_node("retrieve_dimension_values", retrieve_dimension_values)
-    graph.add_node("merge_retrieved_info", merge_retrieved_info)
-    graph.add_node("filter_metric", filter_metric)
-    graph.add_node("filter_table", filter_table)
-    graph.add_node("reconcile_filtered_context", reconcile_filtered_context)
-    graph.add_node("add_extra_context", add_extra_context)
-    graph.add_node("generate_sql", generate_sql)
-    graph.add_node("execute_sql", execute_sql)
+    # 先判断问题是否需要多步查询和确定性计算。
+    graph.add_node("route_question", route_question)
+    graph.add_node("daily_chat", daily_chat)
+    graph.add_node("plan_analysis", plan_analysis)
+    graph.add_node("execute_analysis", execute_analysis)
+    graph.add_node("generate_report_plan", generate_report_plan)
+    graph.add_node("render_report", render_report)
+    graph.add_node("clarification_route_boundary", _clarification_route_boundary)
+    graph.add_node("finalize_turn", finalize_turn)
+    # 普通问数和复杂分析都先生成报告规划，再绑定真实数据。
+    add_query_flow(graph, terminal_node="generate_report_plan")
 
-    graph.add_edge(START, "extract_keywords")
-    # 关键词抽取后并行执行表、字段、指标和维度值四路召回。
-    graph.add_edge("extract_keywords", "retrieve_columns")
-    graph.add_edge("extract_keywords", "retrieve_tables")
-    graph.add_edge("extract_keywords", "retrieve_metrics")
-    graph.add_edge("extract_keywords", "retrieve_dimension_values")
-
-    # 四路召回全部完成后，再统一进入召回信息合并节点。
-    graph.add_edge("retrieve_columns", "merge_retrieved_info")
-    graph.add_edge("retrieve_tables", "merge_retrieved_info")
-    graph.add_edge("retrieve_metrics", "merge_retrieved_info")
-    graph.add_edge("retrieve_dimension_values", "merge_retrieved_info")
-    # 指标和表字段过滤彼此独立，因此在合并完成后并行执行。
-    # 两个节点只负责返回 LLM 的选择结果，最终由 reconcile 节点统一校验、裁剪和补全。
-    graph.add_edge("merge_retrieved_info", "filter_metric")
-    graph.add_edge("merge_retrieved_info", "filter_table")
-    # 这里是汇合点：必须等指标过滤和表字段过滤都完成后再进行依赖补全。
-    graph.add_edge("filter_metric", "reconcile_filtered_context")
-    graph.add_edge("filter_table", "reconcile_filtered_context")
-    graph.add_edge("reconcile_filtered_context", "add_extra_context")
-    graph.add_edge("add_extra_context", "generate_sql")
-    graph.add_edge("generate_sql", "execute_sql")
-    graph.add_edge("execute_sql", END)
-    return graph.compile()
+    graph.add_edge(START, "route_question")
+    # 路由结果决定进入日常聊天、现有问数链、分析链或澄清边界。
+    graph.add_conditional_edges(
+        "route_question",
+        _route_after_question,
+        {
+            "daily_chat": "daily_chat",
+            "single_query": "extract_keywords",
+            "analysis": "plan_analysis",
+            "clarification": "clarification_route_boundary",
+        },
+    )
+    graph.add_edge("plan_analysis", "execute_analysis")
+    # 分析证据完成后由 LLM 生成规划，再由后端渲染最终报告。
+    graph.add_edge("execute_analysis", "generate_report_plan")
+    graph.add_edge("generate_report_plan", "render_report")
+    # 所有成功路由统一写入 Working Memory，业务节点不各自维护 messages。
+    graph.add_edge("render_report", "finalize_turn")
+    graph.add_edge("clarification_route_boundary", "finalize_turn")
+    graph.add_edge("daily_chat", "finalize_turn")
+    graph.add_edge("finalize_turn", END)
+    return graph.compile(checkpointer=checkpointer)
 
 
 agent_graph = build_agent_graph()

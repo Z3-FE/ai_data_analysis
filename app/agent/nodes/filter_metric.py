@@ -21,10 +21,19 @@ async def filter_metric(
     """让 LLM 选择指标 ID，程序只保存选择结果。"""
     writer = runtime.stream_writer
     step = "过滤指标信息"
-    writer({"type": "progress", "step": step, "status": "running"})
+    writer({"type": "progress", "step": step, "node": "filter_metric", "status": "running"})
 
     metric_infos = state.get("metric_infos", [])
     if not metric_infos:
+        writer(
+            {
+                "type": "filter_metric",
+                "step": step,
+                "node": "filter_metric",
+                "status": "success",
+                "selected_metric_ids": [],
+            }
+        )
         return {"metric_selection": []}
     prompt = PromptTemplate(
         template=load_prompt("filter_metric_info"),
@@ -56,6 +65,7 @@ async def filter_metric(
         {
             "type": "filter_metric",
             "step": step,
+            "node": "filter_metric",
             "status": "success",
             "selected_metric_ids": selected_metric_ids,
         }

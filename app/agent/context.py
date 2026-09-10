@@ -6,13 +6,23 @@ state 合并，避免把连接类、客户端对象塞进业务状态。
 
 from typing import Any, TypedDict
 
-from app.repositories.es.es_dimension_value_repository import DimensionValueSearch
 from app.repositories.dw_repository import DwRepository
-from app.repositories.mysql.meta.mysql_meta_catalog_repository import MetaCatalogRepository
-from app.repositories.qdrant.qa_meta_columns_repository import MetaColumnsSemanticRepository
-from app.repositories.qdrant.qa_meta_dimension_values_repository import MetaDimensionValuesSemanticRepository
-from app.repositories.qdrant.qa_meta_metrics_repository import MetaMetricsSemanticRepository
-from app.repositories.qdrant.qa_meta_tables_repository import MetaTablesSemanticRepository
+from app.repositories.es.es_dimension_value_repository import DimensionValueSearch
+from app.repositories.mysql.meta.mysql_meta_catalog_repository import (
+    MetaCatalogRepository,
+)
+from app.repositories.qdrant.qa_meta_columns_repository import (
+    MetaColumnsSemanticRepository,
+)
+from app.repositories.qdrant.qa_meta_dimension_values_repository import (
+    MetaDimensionValuesSemanticRepository,
+)
+from app.repositories.qdrant.qa_meta_metrics_repository import (
+    MetaMetricsSemanticRepository,
+)
+from app.repositories.qdrant.qa_meta_tables_repository import (
+    MetaTablesSemanticRepository,
+)
 
 
 class AgentContext(TypedDict):
@@ -27,3 +37,6 @@ class AgentContext(TypedDict):
     meta_dimension_values_semantic_repository: MetaDimensionValuesSemanticRepository
     meta_catalog_repository: MetaCatalogRepository
     dw_repository: DwRepository
+    # LLM 流式响应的空闲超时时间，由 config.yaml 的 llm.timeout_seconds 注入。
+    # 每收到一条流式事件都会重新计时，不限制整个节点的累计执行时长。
+    llm_timeout_seconds: float

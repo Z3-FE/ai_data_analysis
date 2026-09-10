@@ -17,3 +17,6 @@ class MetaMetrics:
     aliases: list[str]
     status: str
     unit: str | None = None
+    # expression_sql 之外的粒度和跨表限制，供 SQL 生成上下文使用。
+    calculation_grain: str = ""
+    aggregation_rule: str = ""

@@ -1,6 +1,6 @@
 """`meta.metrics` ORM 模型。"""
 
-from sqlalchemy import ForeignKey, JSON, String, Text
+from sqlalchemy import JSON, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -18,6 +18,8 @@ class MetaMetricModel(Base):
     )
     expression_sql: Mapped[str] = mapped_column(Text, nullable=False, comment="指标计算表达式")
     aggregation_type: Mapped[str] = mapped_column(String(32), nullable=False, comment="聚合方式")
+    calculation_grain: Mapped[str] = mapped_column(Text, nullable=False, comment="指标计算粒度")
+    aggregation_rule: Mapped[str] = mapped_column(Text, nullable=False, comment="指标聚合规则和粒度限制")
     unit: Mapped[str | None] = mapped_column(String(32), nullable=True, comment="指标单位")
     description: Mapped[str] = mapped_column(Text, nullable=False, comment="指标业务说明")
     aliases: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, comment="指标业务别名列表")

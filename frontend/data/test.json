@@ -1,0 +1,1273 @@
+{
+  "type": "rendered_report",
+  "step": "渲染最终报告",
+  "node": "render_report",
+  "status": "success",
+  "rendered_report": {
+    "status": "success",
+    "title": "2017年销售额下降最明显月份及归因分析报告",
+    "summary": "本报告分析了2017年销售额下降最明显的月份及其背后的商品类别和卖家地区因素。数据显示，2017年12月销售额环比下降最为显著，其中“床上浴室与餐桌用品”类别和“圣保罗州”地区的销售额下降金额最大。",
+    "sections": [
+      {
+        "title": "2017年销售额月度趋势与核心发现",
+        "layout": {
+          "type": "stack",
+          "columns": 1
+        },
+        "components": [
+          {
+            "component_id": "核心结论",
+            "component_type": "text",
+            "chart_type": null,
+            "title": "核心结论",
+            "content": "2017年销售额下降最明显的月份为12月。该月总销售额为743,914.17，相较于11月的1,010,271.37，环比下降266,357.2，降幅达26.36%。",
+            "source_task_id": "",
+            "dimension_field": "",
+            "metric_fields": [],
+            "value_field": "",
+            "presentation": {
+              "orientation": "vertical",
+              "sort": "none",
+              "top_n": null,
+              "show_labels": true,
+              "show_legend": false,
+              "color_scheme": "blue"
+            },
+            "span": 1,
+            "binding_status": "bound",
+            "binding_error": "",
+            "value": null,
+            "columns": [],
+            "data": [],
+            "row_count": 0,
+            "truncated": false
+          },
+          {
+            "component_id": "12月销售额下降金额",
+            "component_type": "kpi",
+            "chart_type": null,
+            "title": "12月销售额下降金额",
+            "content": "",
+            "source_task_id": "monthly_sales_2016_2017",
+            "dimension_field": "",
+            "metric_fields": [],
+            "value_field": "",
+            "presentation": {
+              "orientation": "vertical",
+              "sort": "none",
+              "top_n": null,
+              "show_labels": true,
+              "show_legend": false,
+              "color_scheme": "blue"
+            },
+            "span": 1,
+            "binding_status": "bound",
+            "binding_error": "",
+            "value": {
+              "target_period": "2017-12",
+              "compare_period": "2017-11",
+              "target_value": 743914.17,
+              "compare_value": 1010271.37,
+              "difference": -266357.2,
+              "decrease_amount": 266357.2,
+              "change_rate": -0.263649
+            },
+            "columns": [],
+            "data": [],
+            "row_count": 0,
+            "truncated": false
+          },
+          {
+            "component_id": "12月环比变化率",
+            "component_type": "kpi",
+            "chart_type": null,
+            "title": "12月环比变化率",
+            "content": "",
+            "source_task_id": "monthly_sales_2016_2017",
+            "dimension_field": "",
+            "metric_fields": [],
+            "value_field": "",
+            "presentation": {
+              "orientation": "vertical",
+              "sort": "none",
+              "top_n": null,
+              "show_labels": true,
+              "show_legend": false,
+              "color_scheme": "blue"
+            },
+            "span": 1,
+            "binding_status": "bound",
+            "binding_error": "",
+            "value": {
+              "target_period": "2017-12",
+              "compare_period": "2017-11",
+              "target_value": 743914.17,
+              "compare_value": 1010271.37,
+              "difference": -266357.2,
+              "decrease_amount": 266357.2,
+              "change_rate": -0.263649
+            },
+            "columns": [],
+            "data": [],
+            "row_count": 0,
+            "truncated": false
+          },
+          {
+            "component_id": "2016年12月至2017年12月销售额趋势",
+            "component_type": "chart",
+            "chart_type": "line",
+            "title": "2016年12月至2017年12月销售额趋势",
+            "content": "",
+            "source_task_id": "monthly_sales_2016_2017",
+            "dimension_field": "year_month_value",
+            "metric_fields": [
+              "gmv"
+            ],
+            "value_field": "",
+            "presentation": {
+              "orientation": "vertical",
+              "sort": "asc",
+              "top_n": null,
+              "show_labels": true,
+              "show_legend": false,
+              "color_scheme": "blue"
+            },
+            "span": 1,
+            "binding_status": "bound",
+            "binding_error": "",
+            "value": null,
+            "columns": [
+              {
+                "result_name": "year_month_value",
+                "display_name": "下单月份",
+                "field_role": "dimension",
+                "unit": null
+              },
+              {
+                "result_name": "gmv",
+                "display_name": "销售额",
+                "field_role": "metric",
+                "unit": "currency"
+              }
+            ],
+            "data": [
+              {
+                "year_month_value": "2016-12",
+                "gmv": "10.90"
+              },
+              {
+                "year_month_value": "2017-01",
+                "gmv": "120312.87"
+              },
+              {
+                "year_month_value": "2017-02",
+                "gmv": "247303.02"
+              },
+              {
+                "year_month_value": "2017-03",
+                "gmv": "374344.30"
+              },
+              {
+                "year_month_value": "2017-04",
+                "gmv": "359927.23"
+              },
+              {
+                "year_month_value": "2017-05",
+                "gmv": "506071.14"
+              },
+              {
+                "year_month_value": "2017-06",
+                "gmv": "433038.60"
+              },
+              {
+                "year_month_value": "2017-07",
+                "gmv": "498031.48"
+              },
+              {
+                "year_month_value": "2017-08",
+                "gmv": "573971.68"
+              },
+              {
+                "year_month_value": "2017-09",
+                "gmv": "624401.69"
+              },
+              {
+                "year_month_value": "2017-10",
+                "gmv": "664219.43"
+              },
+              {
+                "year_month_value": "2017-11",
+                "gmv": "1010271.37"
+              },
+              {
+                "year_month_value": "2017-12",
+                "gmv": "743914.17"
+              }
+            ],
+            "row_count": 13,
+            "truncated": false
+          }
+        ]
+      },
+      {
+        "title": "12月销售额下降最多的商品类别分析",
+        "layout": {
+          "type": "stack",
+          "columns": 1
+        },
+        "components": [
+          {
+            "component_id": "类别下降分析",
+            "component_type": "text",
+            "chart_type": null,
+            "title": "类别下降分析",
+            "content": "在2017年12月，销售额下降最多的商品类别为“床上浴室与餐桌用品”（bed_bath_table）。该类别销售额从11月的89,412.54下降至12月的50,505.85，环比下降38,906.69，降幅高达43.51%。",
+            "source_task_id": "",
+            "dimension_field": "",
+            "metric_fields": [],
+            "value_field": "",
+            "presentation": {
+              "orientation": "vertical",
+              "sort": "none",
+              "top_n": null,
+              "show_labels": true,
+              "show_legend": false,
+              "color_scheme": "blue"
+            },
+            "span": 1,
+            "binding_status": "bound",
+            "binding_error": "",
+            "value": null,
+            "columns": [],
+            "data": [],
+            "row_count": 0,
+            "truncated": false
+          },
+          {
+            "component_id": "该类别销售额下降金额",
+            "component_type": "kpi",
+            "chart_type": null,
+            "title": "该类别销售额下降金额",
+            "content": "",
+            "source_task_id": "category_sales_target_month",
+            "dimension_field": "",
+            "metric_fields": [],
+            "value_field": "",
+            "presentation": {
+              "orientation": "vertical",
+              "sort": "none",
+              "top_n": null,
+              "show_labels": true,
+              "show_legend": false,
+              "color_scheme": "blue"
+            },
+            "span": 1,
+            "binding_status": "bound",
+            "binding_error": "",
+            "value": {
+              "category_display_name": "bed_bath_table",
+              "target_period": "2017-12",
+              "compare_period": "2017-11",
+              "target_value": 50505.85,
+              "compare_value": 89412.54,
+              "difference": -38906.69,
+              "decrease_amount": 38906.69,
+              "change_rate": -0.435137
+            },
+            "columns": [],
+            "data": [],
+            "row_count": 0,
+            "truncated": false
+          },
+          {
+            "component_id": "11月与12月部分商品类别销售额对比",
+            "component_type": "table",
+            "chart_type": null,
+            "title": "11月与12月部分商品类别销售额对比",
+            "content": "",
+            "source_task_id": "category_sales_target_month",
+            "dimension_field": "",
+            "metric_fields": [],
+            "value_field": "",
+            "presentation": {
+              "orientation": "vertical",
+              "sort": "none",
+              "top_n": null,
+              "show_labels": true,
+              "show_legend": false,
+              "color_scheme": "blue"
+            },
+            "span": 1,
+            "binding_status": "bound",
+            "binding_error": "",
+            "value": null,
+            "columns": [
+              {
+                "result_name": "category_display_name",
+                "display_name": "商品品类",
+                "field_role": "dimension",
+                "unit": null
+              },
+              {
+                "result_name": "year_month_value",
+                "display_name": "下单月份",
+                "field_role": "dimension",
+                "unit": null
+              },
+              {
+                "result_name": "gmv",
+                "display_name": "销售额",
+                "field_role": "metric",
+                "unit": "currency"
+              }
+            ],
+            "data": [
+              {
+                "category_display_name": "电脑配件",
+                "year_month_value": "2017-11",
+                "gmv": "72656.00"
+              },
+              {
+                "category_display_name": "园艺工具",
+                "year_month_value": "2017-11",
+                "gmv": "45972.18"
+              },
+              {
+                "category_display_name": "婴儿用品",
+                "year_month_value": "2017-11",
+                "gmv": "21738.78"
+              },
+              {
+                "category_display_name": "手表与礼品",
+                "year_month_value": "2017-11",
+                "gmv": "97724.57"
+              },
+              {
+                "category_display_name": "床上浴室与餐桌用品",
+                "year_month_value": "2017-11",
+                "gmv": "89412.54"
+              },
+              {
+                "category_display_name": "健康美容",
+                "year_month_value": "2017-11",
+                "gmv": "79120.40"
+              },
+              {
+                "category_display_name": "创意用品",
+                "year_month_value": "2017-11",
+                "gmv": "56295.24"
+              },
+              {
+                "category_display_name": "汽车用品",
+                "year_month_value": "2017-11",
+                "gmv": "34955.38"
+              },
+              {
+                "category_display_name": "文具",
+                "year_month_value": "2017-11",
+                "gmv": "16699.09"
+              },
+              {
+                "category_display_name": "通用图书",
+                "year_month_value": "2017-11",
+                "gmv": "2664.96"
+              },
+              {
+                "category_display_name": "音乐CD与DVD",
+                "year_month_value": "2017-11",
+                "gmv": "195.00"
+              },
+              {
+                "category_display_name": "运动休闲",
+                "year_month_value": "2017-11",
+                "gmv": "64874.05"
+              },
+              {
+                "category_display_name": "手机通讯",
+                "year_month_value": "2017-11",
+                "gmv": "26564.88"
+              },
+              {
+                "category_display_name": "玩具",
+                "year_month_value": "2017-11",
+                "gmv": "64320.89"
+              },
+              {
+                "category_display_name": "家居舒适用品",
+                "year_month_value": "2017-11",
+                "gmv": "5355.39"
+              },
+              {
+                "category_display_name": "箱包配件",
+                "year_month_value": "2017-11",
+                "gmv": "8538.95"
+              },
+              {
+                "category_display_name": "乐器",
+                "year_month_value": "2017-11",
+                "gmv": "16509.90"
+              },
+              {
+                "category_display_name": "客厅家具",
+                "year_month_value": "2017-11",
+                "gmv": "6212.95"
+              },
+              {
+                "category_display_name": "香水",
+                "year_month_value": "2017-11",
+                "gmv": "31831.81"
+              },
+              {
+                "category_display_name": "家具装饰",
+                "year_month_value": "2017-11",
+                "gmv": "63223.97"
+              },
+              {
+                "category_display_name": "家居用品",
+                "year_month_value": "2017-11",
+                "gmv": "34855.32"
+              },
+              {
+                "category_display_name": "男装",
+                "year_month_value": "2017-11",
+                "gmv": "929.99"
+              },
+              {
+                "category_display_name": "圣诞用品",
+                "year_month_value": "2017-11",
+                "gmv": "1340.58"
+              },
+              {
+                "category_display_name": "时尚箱包与配饰",
+                "year_month_value": "2017-11",
+                "gmv": "13414.89"
+              },
+              {
+                "category_display_name": "小家电",
+                "year_month_value": "2017-11",
+                "gmv": "7826.82"
+              },
+              {
+                "category_display_name": "游戏机与游戏",
+                "year_month_value": "2017-11",
+                "gmv": "12608.88"
+              },
+              {
+                "category_display_name": "空调",
+                "year_month_value": "2017-11",
+                "gmv": "4076.62"
+              },
+              {
+                "category_display_name": "电脑",
+                "year_month_value": "2017-11",
+                "gmv": "9768.00"
+              },
+              {
+                "category_display_name": "宠物用品",
+                "year_month_value": "2017-11",
+                "gmv": "11325.68"
+              },
+              {
+                "category_display_name": "市场商品",
+                "year_month_value": "2017-11",
+                "gmv": "1355.98"
+              },
+              {
+                "category_display_name": "电子产品",
+                "year_month_value": "2017-11",
+                "gmv": "10026.14"
+              },
+              {
+                "category_display_name": "办公家具",
+                "year_month_value": "2017-11",
+                "gmv": "18048.20"
+              },
+              {
+                "category_display_name": "鞋类",
+                "year_month_value": "2017-11",
+                "gmv": "1777.70"
+              },
+              {
+                "category_display_name": "食品与饮料",
+                "year_month_value": "2017-11",
+                "gmv": "2445.57"
+              },
+              {
+                "category_display_name": "厨房餐厅洗衣与花园家具",
+                "year_month_value": "2017-11",
+                "gmv": "5007.39"
+              },
+              {
+                "category_display_name": "园艺施工工具",
+                "year_month_value": "2017-11",
+                "gmv": "1218.50"
+              },
+              {
+                "category_display_name": "施工工具",
+                "year_month_value": "2017-11",
+                "gmv": "269.50"
+              },
+              {
+                "category_display_name": "平板打印与影像",
+                "year_month_value": "2017-11",
+                "gmv": "350.40"
+              },
+              {
+                "category_display_name": "音频设备",
+                "year_month_value": "2017-11",
+                "gmv": "3677.23"
+              },
+              {
+                "category_display_name": "DVD与蓝光",
+                "year_month_value": "2017-11",
+                "gmv": "79.79"
+              },
+              {
+                "category_display_name": "进口图书",
+                "year_month_value": "2017-11",
+                "gmv": "324.00"
+              },
+              {
+                "category_display_name": "建筑安全工具",
+                "year_month_value": "2017-11",
+                "gmv": "3318.59"
+              },
+              {
+                "category_display_name": "家用电器二类",
+                "year_month_value": "2017-11",
+                "gmv": "4854.93"
+              },
+              {
+                "category_display_name": "家庭装修",
+                "year_month_value": "2017-11",
+                "gmv": "4936.72"
+              },
+              {
+                "category_display_name": "建筑施工工具",
+                "year_month_value": "2017-11",
+                "gmv": "6993.56"
+              },
+              {
+                "category_display_name": "建筑照明工具",
+                "year_month_value": "2017-11",
+                "gmv": "2199.48"
+              },
+              {
+                "category_display_name": "农业工业与商业",
+                "year_month_value": "2017-11",
+                "gmv": "13932.49"
+              },
+              {
+                "category_display_name": "鲜花",
+                "year_month_value": "2017-11",
+                "gmv": "187.80"
+              },
+              {
+                "category_display_name": "食品",
+                "year_month_value": "2017-11",
+                "gmv": "556.95"
+              },
+              {
+                "category_display_name": "工业商业用品",
+                "year_month_value": "2017-11",
+                "gmv": "2074.77"
+              },
+              {
+                "category_display_name": "内衣与沙滩服饰",
+                "year_month_value": "2017-11",
+                "gmv": "1221.60"
+              },
+              {
+                "category_display_name": "家用电器",
+                "year_month_value": "2017-11",
+                "gmv": "4515.94"
+              },
+              {
+                "category_display_name": "标识与安防",
+                "year_month_value": "2017-11",
+                "gmv": "596.79"
+              },
+              {
+                "category_display_name": "卧室家具",
+                "year_month_value": "2017-11",
+                "gmv": "873.00"
+              },
+              {
+                "category_display_name": "饮料",
+                "year_month_value": "2017-11",
+                "gmv": "748.61"
+              },
+              {
+                "category_display_name": "家居舒适二类",
+                "year_month_value": "2017-11",
+                "gmv": "38.70"
+              },
+              {
+                "category_display_name": "女装",
+                "year_month_value": "2017-11",
+                "gmv": "79.88"
+              },
+              {
+                "category_display_name": "派对用品",
+                "year_month_value": "2017-11",
+                "gmv": "870.69"
+              },
+              {
+                "category_display_name": "床垫与软体家具",
+                "year_month_value": "2017-11",
+                "gmv": "334.00"
+              },
+              {
+                "category_display_name": "运动服饰",
+                "year_month_value": "2017-11",
+                "gmv": "59.90"
+              },
+              {
+                "category_display_name": "固定电话",
+                "year_month_value": "2017-11",
+                "gmv": "943.98"
+              },
+              {
+                "category_display_name": "专业技术图书",
+                "year_month_value": "2017-11",
+                "gmv": "768.90"
+              },
+              {
+                "category_display_name": "摄影摄像",
+                "year_month_value": "2017-11",
+                "gmv": "242.00"
+              },
+              {
+                "category_display_name": "艺术品",
+                "year_month_value": "2017-11",
+                "gmv": "75.00"
+              },
+              {
+                "category_display_name": "厨房用品",
+                "year_month_value": "2017-11",
+                "gmv": "137.00"
+              },
+              {
+                "category_display_name": "香水",
+                "year_month_value": "2017-12",
+                "gmv": "27864.43"
+              },
+              {
+                "category_display_name": "健康美容",
+                "year_month_value": "2017-12",
+                "gmv": "61264.66"
+              },
+              {
+                "category_display_name": "手表与礼品",
+                "year_month_value": "2017-12",
+                "gmv": "71727.62"
+              },
+              {
+                "category_display_name": "园艺工具",
+                "year_month_value": "2017-12",
+                "gmv": "27689.69"
+              },
+              {
+                "category_display_name": "电脑配件",
+                "year_month_value": "2017-12",
+                "gmv": "37880.65"
+              },
+              {
+                "category_display_name": "床上浴室与餐桌用品",
+                "year_month_value": "2017-12",
+                "gmv": "50505.85"
+              },
+              {
+                "category_display_name": "家具装饰",
+                "year_month_value": "2017-12",
+                "gmv": "32011.75"
+              },
+              {
+                "category_display_name": "游戏机与游戏",
+                "year_month_value": "2017-12",
+                "gmv": "9075.01"
+              },
+              {
+                "category_display_name": "电子产品",
+                "year_month_value": "2017-12",
+                "gmv": "8537.51"
+              },
+              {
+                "category_display_name": "文具",
+                "year_month_value": "2017-12",
+                "gmv": "25731.00"
+              },
+              {
+                "category_display_name": "建筑施工工具",
+                "year_month_value": "2017-12",
+                "gmv": "5830.35"
+              },
+              {
+                "category_display_name": "创意用品",
+                "year_month_value": "2017-12",
+                "gmv": "39011.54"
+              },
+              {
+                "category_display_name": "运动休闲",
+                "year_month_value": "2017-12",
+                "gmv": "59792.66"
+              },
+              {
+                "category_display_name": "玩具",
+                "year_month_value": "2017-12",
+                "gmv": "57194.14"
+              },
+              {
+                "category_display_name": "时尚箱包与配饰",
+                "year_month_value": "2017-12",
+                "gmv": "10028.46"
+              },
+              {
+                "category_display_name": "婴儿用品",
+                "year_month_value": "2017-12",
+                "gmv": "19943.08"
+              },
+              {
+                "category_display_name": "家居用品",
+                "year_month_value": "2017-12",
+                "gmv": "25921.95"
+              },
+              {
+                "category_display_name": "宠物用品",
+                "year_month_value": "2017-12",
+                "gmv": "7227.23"
+              },
+              {
+                "category_display_name": "手机通讯",
+                "year_month_value": "2017-12",
+                "gmv": "13611.01"
+              },
+              {
+                "category_display_name": "固定电话",
+                "year_month_value": "2017-12",
+                "gmv": "998.77"
+              },
+              {
+                "category_display_name": "饮料",
+                "year_month_value": "2017-12",
+                "gmv": "2132.84"
+              },
+              {
+                "category_display_name": "农业工业与商业",
+                "year_month_value": "2017-12",
+                "gmv": "5291.70"
+              },
+              {
+                "category_display_name": "乐器",
+                "year_month_value": "2017-12",
+                "gmv": "10823.50"
+              },
+              {
+                "category_display_name": "客厅家具",
+                "year_month_value": "2017-12",
+                "gmv": "2316.01"
+              },
+              {
+                "category_display_name": "施工工具",
+                "year_month_value": "2017-12",
+                "gmv": "349.40"
+              },
+              {
+                "category_display_name": "空调",
+                "year_month_value": "2017-12",
+                "gmv": "668.80"
+              },
+              {
+                "category_display_name": "家用电器二类",
+                "year_month_value": "2017-12",
+                "gmv": "1990.16"
+              },
+              {
+                "category_display_name": "汽车用品",
+                "year_month_value": "2017-12",
+                "gmv": "39287.64"
+              },
+              {
+                "category_display_name": "家用电器",
+                "year_month_value": "2017-12",
+                "gmv": "1331.00"
+              },
+              {
+                "category_display_name": "鞋类",
+                "year_month_value": "2017-12",
+                "gmv": "1099.00"
+              },
+              {
+                "category_display_name": "家庭装修",
+                "year_month_value": "2017-12",
+                "gmv": "6735.30"
+              },
+              {
+                "category_display_name": "通用图书",
+                "year_month_value": "2017-12",
+                "gmv": "2397.10"
+              },
+              {
+                "category_display_name": "小家电",
+                "year_month_value": "2017-12",
+                "gmv": "8913.77"
+              },
+              {
+                "category_display_name": "厨房餐厅洗衣与花园家具",
+                "year_month_value": "2017-12",
+                "gmv": "4277.30"
+              },
+              {
+                "category_display_name": "办公家具",
+                "year_month_value": "2017-12",
+                "gmv": "6964.36"
+              },
+              {
+                "category_display_name": "专业技术图书",
+                "year_month_value": "2017-12",
+                "gmv": "670.69"
+              },
+              {
+                "category_display_name": "建筑安全工具",
+                "year_month_value": "2017-12",
+                "gmv": "1384.92"
+              },
+              {
+                "category_display_name": "箱包配件",
+                "year_month_value": "2017-12",
+                "gmv": "6248.21"
+              },
+              {
+                "category_display_name": "家居舒适用品",
+                "year_month_value": "2017-12",
+                "gmv": "2257.80"
+              },
+              {
+                "category_display_name": "鲜花",
+                "year_month_value": "2017-12",
+                "gmv": "82.70"
+              },
+              {
+                "category_display_name": "食品与饮料",
+                "year_month_value": "2017-12",
+                "gmv": "1098.68"
+              },
+              {
+                "category_display_name": "平板打印与影像",
+                "year_month_value": "2017-12",
+                "gmv": "419.40"
+              },
+              {
+                "category_display_name": "食品",
+                "year_month_value": "2017-12",
+                "gmv": "978.19"
+              },
+              {
+                "category_display_name": "床垫与软体家具",
+                "year_month_value": "2017-12",
+                "gmv": "803.70"
+              },
+              {
+                "category_display_name": "内衣与沙滩服饰",
+                "year_month_value": "2017-12",
+                "gmv": "1173.10"
+              },
+              {
+                "category_display_name": "电脑",
+                "year_month_value": "2017-12",
+                "gmv": "16741.00"
+              },
+              {
+                "category_display_name": "园艺施工工具",
+                "year_month_value": "2017-12",
+                "gmv": "928.90"
+              },
+              {
+                "category_display_name": "艺术品",
+                "year_month_value": "2017-12",
+                "gmv": "115.25"
+              },
+              {
+                "category_display_name": "圣诞用品",
+                "year_month_value": "2017-12",
+                "gmv": "493.90"
+              },
+              {
+                "category_display_name": "进口图书",
+                "year_month_value": "2017-12",
+                "gmv": "231.00"
+              },
+              {
+                "category_display_name": "派对用品",
+                "year_month_value": "2017-12",
+                "gmv": "515.20"
+              },
+              {
+                "category_display_name": "市场商品",
+                "year_month_value": "2017-12",
+                "gmv": "703.25"
+              },
+              {
+                "category_display_name": "男装",
+                "year_month_value": "2017-12",
+                "gmv": "450.89"
+              },
+              {
+                "category_display_name": "建筑照明工具",
+                "year_month_value": "2017-12",
+                "gmv": "176.00"
+              },
+              {
+                "category_display_name": "尿布与卫生用品",
+                "year_month_value": "2017-12",
+                "gmv": "76.00"
+              },
+              {
+                "category_display_name": "工业商业用品",
+                "year_month_value": "2017-12",
+                "gmv": "1828.50"
+              },
+              {
+                "category_display_name": "音频设备",
+                "year_month_value": "2017-12",
+                "gmv": "2686.93"
+              },
+              {
+                "category_display_name": "运动服饰",
+                "year_month_value": "2017-12",
+                "gmv": "59.90"
+              },
+              {
+                "category_display_name": "标识与安防",
+                "year_month_value": "2017-12",
+                "gmv": "770.00"
+              },
+              {
+                "category_display_name": "DVD与蓝光",
+                "year_month_value": "2017-12",
+                "gmv": "119.90"
+              },
+              {
+                "category_display_name": "音乐CD与DVD",
+                "year_month_value": "2017-12",
+                "gmv": "65.00"
+              },
+              {
+                "category_display_name": "卧室家具",
+                "year_month_value": "2017-12",
+                "gmv": "185.00"
+              }
+            ],
+            "row_count": 127,
+            "truncated": false
+          }
+        ]
+      },
+      {
+        "title": "12月销售额下降最多的卖家地区分析",
+        "layout": {
+          "type": "stack",
+          "columns": 1
+        },
+        "components": [
+          {
+            "component_id": "地区下降分析",
+            "component_type": "text",
+            "chart_type": null,
+            "title": "地区下降分析",
+            "content": "从卖家地区来看，2017年12月销售额下降最多的地区为“圣保罗州”（SP）。该地区销售额从11月的622,301.92下降至12月的475,972.4，环比下降146,329.52，降幅为23.51%。",
+            "source_task_id": "",
+            "dimension_field": "",
+            "metric_fields": [],
+            "value_field": "",
+            "presentation": {
+              "orientation": "vertical",
+              "sort": "none",
+              "top_n": null,
+              "show_labels": true,
+              "show_legend": false,
+              "color_scheme": "blue"
+            },
+            "span": 1,
+            "binding_status": "bound",
+            "binding_error": "",
+            "value": null,
+            "columns": [],
+            "data": [],
+            "row_count": 0,
+            "truncated": false
+          },
+          {
+            "component_id": "该地区销售额下降金额",
+            "component_type": "kpi",
+            "chart_type": null,
+            "title": "该地区销售额下降金额",
+            "content": "",
+            "source_task_id": "region_sales_target_month",
+            "dimension_field": "",
+            "metric_fields": [],
+            "value_field": "",
+            "presentation": {
+              "orientation": "vertical",
+              "sort": "none",
+              "top_n": null,
+              "show_labels": true,
+              "show_legend": false,
+              "color_scheme": "blue"
+            },
+            "span": 1,
+            "binding_status": "bound",
+            "binding_error": "",
+            "value": {
+              "target_period": "2017-12",
+              "compare_period": "2017-11",
+              "target_value": 475972.4,
+              "compare_value": 622301.92,
+              "difference": -146329.52,
+              "decrease_amount": 146329.52,
+              "change_rate": -0.235142,
+              "seller_state": "SP"
+            },
+            "columns": [],
+            "data": [],
+            "row_count": 0,
+            "truncated": false
+          },
+          {
+            "component_id": "11月与12月部分卖家地区销售额对比",
+            "component_type": "table",
+            "chart_type": null,
+            "title": "11月与12月部分卖家地区销售额对比",
+            "content": "",
+            "source_task_id": "region_sales_target_month",
+            "dimension_field": "",
+            "metric_fields": [],
+            "value_field": "",
+            "presentation": {
+              "orientation": "vertical",
+              "sort": "none",
+              "top_n": null,
+              "show_labels": true,
+              "show_legend": false,
+              "color_scheme": "blue"
+            },
+            "span": 1,
+            "binding_status": "bound",
+            "binding_error": "",
+            "value": null,
+            "columns": [
+              {
+                "result_name": "seller_state",
+                "display_name": "卖家州",
+                "field_role": "dimension",
+                "unit": null
+              },
+              {
+                "result_name": "year_month_value",
+                "display_name": "下单月份",
+                "field_role": "dimension",
+                "unit": null
+              },
+              {
+                "result_name": "gmv",
+                "display_name": "销售额",
+                "field_role": "metric",
+                "unit": "currency"
+              }
+            ],
+            "data": [
+              {
+                "seller_state": "圣保罗州",
+                "year_month_value": "2017-11",
+                "gmv": "622301.92"
+              },
+              {
+                "seller_state": "圣埃斯皮里图州",
+                "year_month_value": "2017-11",
+                "gmv": "4005.39"
+              },
+              {
+                "seller_state": "巴伊亚州",
+                "year_month_value": "2017-11",
+                "gmv": "23131.08"
+              },
+              {
+                "seller_state": "里约热内卢州",
+                "year_month_value": "2017-11",
+                "gmv": "86336.87"
+              },
+              {
+                "seller_state": "圣卡塔琳娜州",
+                "year_month_value": "2017-11",
+                "gmv": "51303.02"
+              },
+              {
+                "seller_state": "巴拉那州",
+                "year_month_value": "2017-11",
+                "gmv": "92972.46"
+              },
+              {
+                "seller_state": "米纳斯吉拉斯州",
+                "year_month_value": "2017-11",
+                "gmv": "77508.56"
+              },
+              {
+                "seller_state": "巴西联邦区",
+                "year_month_value": "2017-11",
+                "gmv": "6921.82"
+              },
+              {
+                "seller_state": "戈亚斯州",
+                "year_month_value": "2017-11",
+                "gmv": "1498.74"
+              },
+              {
+                "seller_state": "南里奥格兰德州",
+                "year_month_value": "2017-11",
+                "gmv": "33411.69"
+              },
+              {
+                "seller_state": "南马托格罗索州",
+                "year_month_value": "2017-11",
+                "gmv": "289.90"
+              },
+              {
+                "seller_state": "伯南布哥州",
+                "year_month_value": "2017-11",
+                "gmv": "1892.56"
+              },
+              {
+                "seller_state": "马托格罗索州",
+                "year_month_value": "2017-11",
+                "gmv": "2436.70"
+              },
+              {
+                "seller_state": "北里奥格兰德州",
+                "year_month_value": "2017-11",
+                "gmv": "1174.00"
+              },
+              {
+                "seller_state": "塞尔希培州",
+                "year_month_value": "2017-11",
+                "gmv": "855.80"
+              },
+              {
+                "seller_state": "帕拉伊巴州",
+                "year_month_value": "2017-11",
+                "gmv": "2838.50"
+              },
+              {
+                "seller_state": "帕拉州",
+                "year_month_value": "2017-11",
+                "gmv": "513.00"
+              },
+              {
+                "seller_state": "朗多尼亚州",
+                "year_month_value": "2017-11",
+                "gmv": "740.36"
+              },
+              {
+                "seller_state": "塞阿拉州",
+                "year_month_value": "2017-11",
+                "gmv": "139.00"
+              },
+              {
+                "seller_state": "圣保罗州",
+                "year_month_value": "2017-12",
+                "gmv": "475972.40"
+              },
+              {
+                "seller_state": "米纳斯吉拉斯州",
+                "year_month_value": "2017-12",
+                "gmv": "51997.09"
+              },
+              {
+                "seller_state": "巴拉那州",
+                "year_month_value": "2017-12",
+                "gmv": "59724.05"
+              },
+              {
+                "seller_state": "圣埃斯皮里图州",
+                "year_month_value": "2017-12",
+                "gmv": "1987.00"
+              },
+              {
+                "seller_state": "南里奥格兰德州",
+                "year_month_value": "2017-12",
+                "gmv": "20742.88"
+              },
+              {
+                "seller_state": "里约热内卢州",
+                "year_month_value": "2017-12",
+                "gmv": "55327.65"
+              },
+              {
+                "seller_state": "圣卡塔琳娜州",
+                "year_month_value": "2017-12",
+                "gmv": "43016.96"
+              },
+              {
+                "seller_state": "巴伊亚州",
+                "year_month_value": "2017-12",
+                "gmv": "21074.18"
+              },
+              {
+                "seller_state": "戈亚斯州",
+                "year_month_value": "2017-12",
+                "gmv": "2295.80"
+              },
+              {
+                "seller_state": "巴西联邦区",
+                "year_month_value": "2017-12",
+                "gmv": "4526.41"
+              },
+              {
+                "seller_state": "马托格罗索州",
+                "year_month_value": "2017-12",
+                "gmv": "1274.00"
+              },
+              {
+                "seller_state": "帕拉伊巴州",
+                "year_month_value": "2017-12",
+                "gmv": "2099.00"
+              },
+              {
+                "seller_state": "帕拉州",
+                "year_month_value": "2017-12",
+                "gmv": "39.00"
+              },
+              {
+                "seller_state": "北里奥格兰德州",
+                "year_month_value": "2017-12",
+                "gmv": "2350.80"
+              },
+              {
+                "seller_state": "伯南布哥州",
+                "year_month_value": "2017-12",
+                "gmv": "828.95"
+              },
+              {
+                "seller_state": "朗多尼亚州",
+                "year_month_value": "2017-12",
+                "gmv": "59.00"
+              },
+              {
+                "seller_state": "塞阿拉州",
+                "year_month_value": "2017-12",
+                "gmv": "599.00"
+              }
+            ],
+            "row_count": 36,
+            "truncated": false
+          }
+        ]
+      },
+      "new_value"
+    ],
+    "limitations": [
+      "报告中的商品类别和卖家地区名称优先使用了上下文提供的 display_name（如“床上浴室与餐桌用品”、“圣保罗州”），部分未提供映射的原始值可能仍显示为英文或缩写。",
+      "表格仅展示了数据预览中的部分商品类别和卖家地区明细，完整数据需参考底层数据源。",
+      "本分析仅基于销售额的环比变化进行客观描述，未深入探究导致销售额下降的具体业务根因。"
+    ]
+  }
+}

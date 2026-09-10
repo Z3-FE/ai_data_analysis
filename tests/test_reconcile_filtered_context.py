@@ -2,7 +2,10 @@
 
 import unittest
 
-from app.agent.nodes.reconcile_filtered_context import _find_table_path
+from app.agent.nodes.reconcile_filtered_context import (
+    _find_table_path,
+    _resolve_table_id,
+)
 
 
 def make_relationship(relationship_id: str, source: str, column_name: str) -> dict:
@@ -73,6 +76,27 @@ class FindTablePathDatePriorityTest(unittest.TestCase):
         )
 
         self.assertEqual(path[0]["relationship_id"], "review_answer")
+
+
+class ResolveTableIdTest(unittest.TestCase):
+    """验证 LLM 省略 schema 时只进行唯一候选解析。"""
+
+    def test_resolves_unique_short_table_name(self):
+        tables = {"dw.dim_category": {"table_id": "dw.dim_category"}}
+
+        self.assertEqual(
+            _resolve_table_id("dim_category", tables),
+            "dw.dim_category",
+        )
+
+    def test_rejects_ambiguous_short_table_name(self):
+        tables = {
+            "dw.dim_category": {"table_id": "dw.dim_category"},
+            "ods.dim_category": {"table_id": "ods.dim_category"},
+        }
+
+        with self.assertRaisesRegex(ValueError, "不唯一"):
+            _resolve_table_id("dim_category", tables)
 
 
 if __name__ == "__main__":

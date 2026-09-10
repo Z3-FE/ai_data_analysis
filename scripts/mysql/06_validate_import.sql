@@ -35,6 +35,16 @@ UNION ALL SELECT 'meta.dimension_values', COUNT(*) FROM meta.dimension_values
 UNION ALL SELECT 'meta.metric_dimensions', COUNT(*) FROM meta.metric_dimensions
 UNION ALL SELECT 'meta.subject_areas', COUNT(*) FROM meta.subject_areas;
 
+-- 校验本次补充的指标粒度和维度支持级别。
+SELECT metric_id, calculation_grain, aggregation_rule
+FROM meta.metrics
+ORDER BY metric_id;
+
+SELECT metric_id, dimension_id, support_level, compatibility_note, usage_note
+FROM meta.metric_dimensions
+WHERE support_level <> 'supported'
+ORDER BY metric_id, dimension_id;
+
 -- 校验销售核心事实：销售额、运费、明细行数、包含明细的订单数。
 SELECT
   SUM(price) AS gmv,

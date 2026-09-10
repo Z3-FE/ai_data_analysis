@@ -8,19 +8,35 @@ from typing import Annotated, Any, TypeVar
 
 from fastapi import Depends
 
-from app.clients.embedding_client import embedding_client_manager
+from app.agent.memory.formation_service import MemoryFormationService
 from app.clients.elasticsearch_client import elasticsearch_client_manager
+from app.clients.embedding_client import embedding_client_manager
 from app.clients.llm_client import llm_client_manager
-from app.clients.mysql_client import meta_mysql_client_manager
-from app.clients.mysql_client import dw_mysql_client_manager
+from app.clients.memory_client import memory_client_manager
+from app.clients.mysql_client import (
+    dw_mysql_client_manager,
+    meta_mysql_client_manager,
+)
+from app.clients.postgres_client import postgres_client_manager
 from app.clients.qdrant_client import qdrant_client_manager
-from app.repositories.es.es_dimension_value_repository import DimensionValueSearch
+from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.dw_repository import DwRepository
-from app.repositories.mysql.meta.mysql_meta_catalog_repository import MetaCatalogRepository
-from app.repositories.qdrant.qa_meta_columns_repository import MetaColumnsSemanticRepository
-from app.repositories.qdrant.qa_meta_dimension_values_repository import MetaDimensionValuesSemanticRepository
-from app.repositories.qdrant.qa_meta_metrics_repository import MetaMetricsSemanticRepository
-from app.repositories.qdrant.qa_meta_tables_repository import MetaTablesSemanticRepository
+from app.repositories.es.es_dimension_value_repository import DimensionValueSearch
+from app.repositories.mysql.meta.mysql_meta_catalog_repository import (
+    MetaCatalogRepository,
+)
+from app.repositories.qdrant.qa_meta_columns_repository import (
+    MetaColumnsSemanticRepository,
+)
+from app.repositories.qdrant.qa_meta_dimension_values_repository import (
+    MetaDimensionValuesSemanticRepository,
+)
+from app.repositories.qdrant.qa_meta_metrics_repository import (
+    MetaMetricsSemanticRepository,
+)
+from app.repositories.qdrant.qa_meta_tables_repository import (
+    MetaTablesSemanticRepository,
+)
 from app.services.agent_service import AgentService
 
 T = TypeVar("T")
@@ -51,6 +67,15 @@ async def get_meta_session():
     )
     async with session_factory() as session:
         yield session
+
+
+def get_conversation_repository() -> ConversationRepository:
+    """获取 PostgreSQL 会话历史仓储。"""
+    session_factory = _require_initialized(
+        postgres_client_manager.session_factory,
+        "Agent App PostgreSQL Session 工厂",
+    )
+    return ConversationRepository(session_factory=session_factory)
 
 
 async def get_meta_catalog_repository(
@@ -103,6 +128,12 @@ def get_dimension_value_search() -> DimensionValueSearch:
     return DimensionValueSearch(client=client)
 
 
+def get_memory_formation_service() -> MemoryFormationService | None:
+    """获取 M3 记忆形成服务；Runtime 未启用时保持现有 Agent 可用。"""
+    runtime = memory_client_manager.runtime
+    return runtime.formation_service if runtime is not None else None
+
+
 def get_agent_service(
     llm_client: Annotated[Any, Depends(get_llm_client)],
     embedding_client: Annotated[Any, Depends(get_embedding_client)],
@@ -127,6 +158,12 @@ def get_agent_service(
         MetaCatalogRepository, Depends(get_meta_catalog_repository)
     ],
     dw_repository: Annotated[DwRepository, Depends(get_dw_repository)],
+    conversation_repository: Annotated[
+        ConversationRepository, Depends(get_conversation_repository)
+    ],
+    memory_formation_service: Annotated[
+        MemoryFormationService | None, Depends(get_memory_formation_service)
+    ],
 ) -> AgentService:
     """组装一次 Agent 执行所需的服务。"""
     return AgentService(
@@ -139,4 +176,7 @@ def get_agent_service(
         meta_dimension_values_semantic_repository=meta_dimension_values_semantic_repository,
         meta_catalog_repository=meta_catalog_repository,
         dw_repository=dw_repository,
+        conversation_repository=conversation_repository,
+        graph=postgres_client_manager.checkpointed_agent_graph,
+        memory_formation_service=memory_formation_service,
     )
