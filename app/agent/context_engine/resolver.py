@@ -68,7 +68,7 @@ class ContextReferenceResolver:
         mentions_asset = any(cue in query for cue in self._asset_cues)
         current_ids = tuple(dict.fromkeys(request.asset_ids))
         valid_current, current_errors = await self._validate_assets(
-            current_ids, request.user_id
+            current_ids, request.user_id, strict=True
         )
 
         historical_groups = self._historical_asset_groups(working)
@@ -168,7 +168,7 @@ class ContextReferenceResolver:
         return groups
 
     async def _validate_assets(
-        self, asset_ids: Sequence[str], user_id: str
+        self, asset_ids: Sequence[str], user_id: str, *, strict: bool = False
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         valid: list[str] = []
         errors: list[str] = []
@@ -177,6 +177,10 @@ class ContextReferenceResolver:
                 asset_id, user_id
             )
             if asset is None:
+                if strict:
+                    raise PermissionError(
+                        f"附件 {asset_id} 不存在或当前用户无权访问"
+                    )
                 errors.append(f"附件 {asset_id} 不存在或当前用户无权访问")
             else:
                 valid.append(asset.asset_id)

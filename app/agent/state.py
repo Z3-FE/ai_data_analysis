@@ -5,17 +5,11 @@ from typing import Annotated, TypedDict
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
-"""LangGraph 状态定义。"""
-
 from app.agent.harness.state import HarnessControlState
 
 
 class AgentState(TypedDict, total=False):
-    """Agent 图共享的中间状态。
-
-    字段按生命周期分组：路由和分析字段由分析入口写入，
-    问数字段由可复用 Query Agent 写入，最后由服务层整理成接口响应。
-    """
+    """Agent 图共享的中间状态。"""
 
     input_text: str
     user_id: str
@@ -24,33 +18,21 @@ class AgentState(TypedDict, total=False):
     turn_id: str
     run_id: str
     original_question: str
-    # 本轮明确关联的附件 ID；收尾节点会把它写入用户消息元数据。
     asset_ids: list[str]
-    # 同一 thread_id 下的短期对话消息，由 Checkpointer 持久化并通过 reducer 追加。
     messages: Annotated[list[AnyMessage], add_messages]
-
-    # 问题路由和分析计划字段。
     execution_mode: str
     route_reason: str
     analysis_goals: list[str]
     route_confidence: float
     clarification_question: str
     route_output: str
-    # LLM 生成的复杂分析任务和依赖计划。
     analysis_plan: dict
-    # 全部任务的完整 TaskResult，服务依赖执行、审计和展示数据绑定。
     analysis_task_results: list[dict]
-    # 从完整任务结果提取的精简可信证据，服务结论总结器。
     analysis_evidence: dict
-    # LLM 生成的报告规划，只包含文字、组件引用和布局意图。
     report_plan: dict
-    # 报告规划节点的状态和错误说明，供渲染节点决定是否返回失败报告。
     report_plan_status: str
     report_plan_error: str
-    # 后端绑定真实 TaskResult 后生成的唯一前端报告。
     rendered_report: dict
-
-    # Query Agent 的关键词、召回候选和结构化 SQL 上下文。
     llm_keywords: list[str]
     jieba_keywords: list[str]
     keywords: list[str]
@@ -70,8 +52,6 @@ class AgentState(TypedDict, total=False):
     metric_selection: list[str]
     table_selection: dict[str, list[str]]
     extra_context: dict
-
-    # Query Agent 的最终 SQL、查询结果和普通问数输出。
     sql: str
     sql_reasoning: str
     sql_result: list[dict]
@@ -81,5 +61,14 @@ class AgentState(TypedDict, total=False):
     mapping_limitations: list[str]
     output_text: str
     llm_output: str
-    # Harness 控制状态；旧图业务字段保持扁平并继续兼容。
-    harness: "HarnessControlState"
+    harness: HarnessControlState
+
+
+class HarnessGraphState(AgentState, total=False):
+    """现有 AgentState 加 Harness 控制字段的组合状态。"""
+
+    project_id: str | None
+    harness: HarnessControlState
+
+
+__all__ = ["AgentState", "HarnessGraphState"]

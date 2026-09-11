@@ -7,7 +7,10 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.agent.harness.context_contracts import RuntimeContext
 
 from app.agent.memory.enums import MemoryType
 
@@ -111,6 +114,8 @@ class ContextRequest:
     enable_rag: bool = False
     # 覆盖 ContextPolicy 的本轮预算；为空时使用策略默认值。
     token_budget: int | None = None
+    # Harness 运行态的受控只读投影；None 保持旧消息序列。
+    runtime_context: "RuntimeContext | None" = None
 
 
 @dataclass(frozen=True, slots=True)

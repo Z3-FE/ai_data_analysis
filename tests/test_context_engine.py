@@ -282,6 +282,19 @@ class ContextPlannerAndResolverTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.historical_asset_ids, ("asset-1",))
         self.assertEqual(result.unresolved_references, ())
 
+    async def test_explicit_inaccessible_attachment_fails_closed(self) -> None:
+        with self.assertRaises(PermissionError):
+            await ContextReferenceResolver(FakeMemoryReader()).resolve(
+                ContextRequest(
+                    user_id="user-1",
+                    conversation_id="conversation-1",
+                    query="分析附件",
+                    system_instructions="回答问题",
+                    asset_ids=("asset-not-owned",),
+                ),
+                [],
+            )
+
     async def test_ambiguous_attachment_reference_is_not_guessed(self) -> None:
         reader = FakeMemoryReader(
             assets={
