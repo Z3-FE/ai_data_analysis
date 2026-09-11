@@ -81,11 +81,32 @@ final_answer -> Finalization -> 会话收尾 -> MemoryFormationService.submit
 | Meta RAG | **现有能力**：数据目录检索 | **已确认边界**：不是企业知识库 | 保留为 Data Catalog |
 | 企业知识库 | 未发现独立实现 | 不能假设存在 | 暂不启用 |
 
-## 5. 核心 DTO 和枚举
+## 5. 核心设计原则与职责边界
+
+**需要重构/需要新增的统一约束**：保留现有 AgentState 与 messages reducer；只有 M5 推进控制状态。M2 编译上下文、M3 提出动作、M4 执行工具、M6 收尾并提交 Formation，各自不得越界。优先复用正式接口，只有旧节点与新工具确实共享业务逻辑时才提取 Service，不机械增加字段复制 Adapter。外部客户端由应用注入。Checkpointer 保存可恢复状态，业务 PostgreSQL 保存事实与协调账本，Qdrant/Neo4j 只做投影。当前不做用户级工具权限校验，运行身份一致性和结果隔离仍必须保留。
+### 正式接口汇总
+
+以下接口以各模块中的完整定义为准，本表用于检查跨模块调用方向，不另建同名 DTO 或薄 Adapter。
+
+| 接口 | 正式签名 | 调用者 | 实现者 | 失败边界与 Mock 方式 |
+| --- | --- | --- | --- | --- |
+| ContextEngine | `build(ContextRequest) -> CompiledContext` | M5 | 现有 `ContextEngine`，M2 扩展请求 | 原异常映射为 `RunError(CONTEXT)`；单测注入 Fake builder |
+| PlanningAgent | `plan(PlannerInput, issuance=ActionIssuanceContext) -> NextAction` | M5 | M3 | 失败抛 `PlannerFailure(RunError)`；Fake 返回三类动作 |
+| ActionCommitter | `commit(ActionCommitRequest) -> ActionCommitResult` | M5 | M3/M5 协调层 | 并发或摘要冲突抛 `ActionCommitFailure(CONFLICT)`；Fake 模拟崩溃点 |
+| ToolRegistry | `get(name) -> Tool`、`list_specs() -> tuple[ToolSpec, ...]` | M3/M4/M5 | M4 | 未注册或禁用工具返回稳定校验错误；单测使用本地 Registry |
+| Tool | `execute(ToolCall, request=ToolExecutionRequest, dependencies=AgentContext) -> ToolHandlerResult` | M4 Dispatcher | M4 各高层工具 | handler 只抛可归一化异常；Fake 不连接外部依赖 |
+| ToolRuntime | `execute(ToolExecutionRequest) -> ToolResult` | M5 | M4 | 所有错误归一化为 `ToolResult` 或运行冲突；Fake 按 attempt 返回结果 |
+| LoopController | `start/restore/resume/cancel(...) -> LoopRunResult` | HarnessRunner | M5 | `restore` 只处理进程恢复，`resume` 只处理确认恢复；只返回暂停或终态 |
+| FinalizationService | `finalize(FinalizationInput) -> FinalizationResult`、`reconcile(HarnessRunRef) -> FinalizationResult` | M5 | M6 | 主收尾失败抛受控 Finalization 错误；终态 checkpoint 对账不回到 M5；Formation 失败写独立状态 |
+| MemoryFormationService | `submit(TurnMemoryInput) -> MemoryFormationResult` | M6 | 现有服务，M6 增加幂等 | Fake 返回 pending/skipped/failed；不得绕过 Governance |
+
+`ActionCommitResult` 只证明动作已经提交，不携带完整 `NextAction`；M5 使用同一个已校验 `next_action` 做后续分派。`ToolHandlerResult` 只在 M4 内部存在；跨模块只传 `ToolResult`。`CompiledContext` 仍是现有 ContextEngine 的唯一输出。
+
+## 6. 核心 DTO 和枚举
 
 **现有能力**：`app/agent/harness/contracts.py` 已有 `StrEnum`、Pydantic 基础 DTO 和 `AgentState` 所需的 Harness 枚举；`AgentState` 继续保持 TypedDict。**需要重构**：补齐统一字段约束、checkpoint schema version、恢复校验和状态转换。Checkpoint 只保存可恢复的控制状态和必要业务字段，写入前使用 `model_dump(mode="json")`，恢复时使用 `model_validate`。禁止以无语义裸 `dict` 作为跨模块接口。
 
-### 5.1 状态落点与字段所有权
+### 6.1 状态落点与字段所有权
 `HarnessGraphState` 是 LangGraph 节点边界的组合状态；`HarnessControlState` 只承载 Harness 控制信息；现有 `AgentState` 的业务字段继续由旧节点读写。`CompiledContext`、`NextAction`、`ToolResult` 和 `FinalizationResult` 是单次调用或事件 DTO，不回写成同名状态字段。
 
 | 字段 | 所有者 | 写入时机 | 约束 |
@@ -99,12 +120,12 @@ final_answer -> Finalization -> 会话收尾 -> MemoryFormationService.submit
 | `last_error`、重试计数 | Loop Controller | 受控失败时 | 按 `action_id` 或阶段计数，不能无限重试 |
 | `messages` 及现有分析/问数/报告字段 | 现有 AgentState/旧节点 | 业务节点执行时 | 不因 Harness 引入平行字段 |
 
-### 5.2 枚举和不变量
+### 6.2 枚举和不变量
 只有 `running` 状态可以执行规划或工具动作；`waiting_confirmation` 必须保持暂停，所有终态都不可继续执行动作。统一 `NextAction` 契约在 M3 定义 `tool_call`、`ask_user` 与 `final_answer` 三种动作，三者必须严格互斥：`tool_call` 必须包含完整 `ToolCall`，`ask_user` 必须包含结构化确认请求，`final_answer` 必须包含非空文本。M3 只负责定义和校验 `ask_user`，不启用真实暂停、Checkpoint 和恢复 API；这些能力由 M5 接管并单独验收。所有 ID 在 DTO 中使用非空字符串，`iteration >= 0`，重试计数不得小于 0。
 
 `action_seq` 是 Harness 状态层维护的单调递增序号，表示最近一次已经通过结构、工具、参数、能力和答案资格校验并提交的正式动作；它不是 LLM 输出字段。Loop Controller 根据 `state.harness.action_seq + 1` 计算候选序号，校验失败、Planner 异常或重试不会推进已提交的 `action_seq`。M3 的 `ActionNormalizer` 只能生成带候选序号的待提交 `NextAction`；M5 的动作提交边界必须再次检查期望序号，并通过 `prepared -> checkpoint -> committed` 协议协调提交 `action_seq`、正式动作记录和 checkpoint。`tool_call.action_id` 必须由 `run_id`、`iteration` 和本次候选 `action_seq`（提交后成为正式序号）通过 `ActionIdFactory` 生成，不能由模型提供或覆盖。同一 `run_id` 的并发规划必须由运行锁、租约 fencing 或带版本条件的原子更新串行化，不能让两个动作取得同一序号。
 
-### 5.3 最小 DTO 契约
+### 6.3 最小 DTO 契约
 以下是核心运行闭环的最小协议示例。M1冻结运行请求、状态快照、计划进度、观察、错误和确认边界；具体工具参数 schema 由模块 4 的 Tool Registry 绑定，确认触发和 Finalization DTO 的调用流程留给对应模块实现。**需要重构**：当前 `app/agent/harness/contracts.py::PlannerInput` 仍使用 `context: Any`，目标契约将其收紧为现有 `CompiledContext`，字段名统一为 `compiled_context`；当前实现不应被误认为已经完成。
 ```python
 from datetime import datetime
@@ -269,26 +290,25 @@ class ToolResult(ContractModel):
 
 实现时使用不可变 tuple 或 `Field(default_factory=list)`，不要使用可变默认值；`ActionType` 目标枚举必须包含 `tool_call`、`ask_user`、`final_answer`，但 M3 只启用三类动作的结构校验，`ask_user` 的暂停副作用留给 M5。当前仓库的 `ActionType` 尚无 `ASK_USER`，属于需要重构，不得把本示例当作已实现代码。`ToolResult` 的 `summary` 只能是受控、可序列化摘要；`result_ref` 指向完整结果或工具产物，`evidence_refs` 指向可追溯证据。`tool_call_id` 与 `ToolCall.action_id` 的值必须相同，前者只是 Tool Runtime 输出协议使用的字段名；`error_category/error_code/error_message/retryable` 是 `RunError` 的扁平线协议投影，不再维护另一套错误来源。
 
-### 5.4 状态转换与恢复
+### 6.4 状态转换与恢复
 新增纯函数 `transition_harness_state()` 和 `restore_harness_state()`，由 `LoopController` 唯一调用。M1 只冻结状态、身份和 checkpoint 恢复边界；确认回复的业务语义与 `confirmation_id` 对应关系留到暂停恢复模块。进程恢复命令 `RestoreRunCommand` 只允许恢复 `running` 或 `running/finalization`；用户确认恢复命令 `ResumeRunCommand` 只允许从 `waiting_confirmation` 进入 `running/restore_run`；终态一律不能通过普通恢复继续执行。两类恢复都必须校验 `user_id`、`conversation_id`、`thread_id`、`turn_id`、`run_id` 五个身份字段，并保留原 `original_goal`、`observations`、`plan_progress`。终态 Checkpoint 已写但收尾账本未完成时，不走普通恢复，改由 M6 的 `FinalizationService.reconcile()` 对账。
 
 终态不能从业务阶段直接写入。必须先从任意 `running/*` 进入 `running/finalization`，并在 `terminal_intent` 中记录目标终态；收尾成功后才写入 `completed`、`failed`、`cancelled` 或 `timeout`。非法转换归类为 `ErrorCategory.CONFLICT`，不得静默覆盖 checkpoint。
 
-### 5.5 第一阶段研发任务和验收
+### 6.5 第一阶段研发任务和验收
 1. 重构 `app/agent/harness/contracts.py`：补齐 schema version、确认 DTO、状态快照、终态意图、非空/范围校验和 JSON 序列化测试。
 2. 重构 `app/agent/harness/state.py`：控制状态默认值、合法转换、running/waiting_confirmation 恢复边界、完整身份校验和 checkpoint 版本边界。
 3. 保持并校验 `app/agent/state.py`：保留已有可选 `harness` 字段、旧业务字段和 `messages` reducer，验证旧图节点仍可按原字段读写。
 4. 修改 `app/services/agent_service.py`：明确新 run、进程 restore 与用户确认 resume 的边界；具体 Harness 入口接入留到 Loop Controller 模块。
 5. 验收：新建、合法/非法转换、终态保护、身份保留、JSON 往返、版本校验和旧图回归测试通过；暂停确认与 action 幂等不在 M1 单独验收。
 
+## 7. 统一 Harness 运行状态层
 
-## 6. 六个目标模块
-
-### 模块 1：统一 Harness 运行状态层
+> 架构模块 1；本章小节沿用模块内编号，研发阶段编号见第 21 节。
 
 > 本节是 M1 的最终设计基线。`app/agent/harness/` 当前仅有最小实现，以下契约优先于现有实验性代码；本节完成的是设计收口，不代表 M1 代码已经全部实现。
 
-#### 1.1 模块职责
+### 1.1 模块职责
 
 **一句话职责**：在不替换现有 `AgentState` 的前提下，统一保存一次 Harness Run 的可恢复控制状态。
 
@@ -305,7 +325,7 @@ class ToolResult(ContractModel):
 
 **不负责**：调用 LLM、选择工具、执行工具、构建 `CompiledContext`、保存会话最终结果、写长期记忆、实现 action 幂等或决定重试策略。M1 只冻结暂停相关 DTO 的结构，不实现暂停 API 和确认业务。
 
-#### 1.2 输入与输出
+### 1.2 输入与输出
 
 | 项目 | 类型 | 必填 | 来源/去向 | 校验与边界 |
 | --- | --- | --- | --- | --- |
@@ -320,7 +340,7 @@ class ToolResult(ContractModel):
 
 输出不是新的完整运行状态对象，而是写回现有 `AgentState` 的 `harness` 字段，并通过同一个 `AsyncPostgresSaver` 持久化。`PlannerStateView` 是给后续 Planning Agent 的受控投影，不得当作完整 checkpoint。
 
-#### 1.3 与现有 AgentState 的组合关系
+### 1.3 与现有 AgentState 的组合关系
 
 **现有能力**：`app/agent/state.py::AgentState` 是 `TypedDict(total=False)`；业务字段保持扁平，`messages` 使用 `Annotated[list[AnyMessage], add_messages]`。当前工作树已有 `harness: HarnessControlState` 字段。
 
@@ -334,7 +354,7 @@ HarnessGraphState
 
 身份字段唯一来源仍是 `AgentState`。当前已验证 `app/services/agent_service.py::_new_identity()` 固定 `thread_id == conversation_id`，新请求创建 `turn_id` 和 `run_id`；任何恢复命令都不得调用 `_new_identity()` 或 `_new_turn_state()` 清空现场。进程恢复使用 `RestoreRunCommand`；用户确认接口直接构造 `ResumeRunCommand`，不能让 Loop Controller 根据裸字典猜测恢复语义。
 
-#### 1.4 DTO 与 Protocol 契约
+### 1.4 DTO 与 Protocol 契约
 
 以下代码是设计语法，不是待执行代码。现有 `app/agent/harness/contracts.py` 中已有的基础枚举和 DTO 需要按此契约补齐；所有列表和字典使用 `Field(default_factory=...)`。
 
@@ -568,7 +588,7 @@ class CheckpointCodec(Protocol):
 
 `HarnessGraphState` 是对现有 `AgentState` 的目标组合类型说明，不是当前仓库已经导出的独立类型，也不是第二份运行时状态；M1 实现时应在现有状态边界中提供该组合类型，或使用等价的 TypedDict 组合。`project_id` 是需要新增到现有扁平业务状态的可选字段，不放入 `HarnessControlState`；当前 API 未提供时固定为 `None`。`CheckpointCodec` 只负责 `state.harness` 的校验和 JSON 编码，不负责调用或替代 `AsyncPostgresSaver`。`RunObservation` 与 M4 `ToolResult` 统一使用 `result_ref`、`evidence_refs` 和 `limitations`，完整结果不进入运行态正文。
 
-#### 1.5 状态、阶段与转换规则
+### 1.5 状态、阶段与转换规则
 
 当前 `app/agent/harness/contracts.py` 已有 `HarnessStatus`：`running`、`waiting_confirmation`、`completed`、`failed`、`cancelled`、`timeout`；已有 `LoopPhase`：`start_run`、`restore_run`、`build_context`、`plan`、`validate_action`、`execute_tool`、`handle_tool_result`、`record_observation`、`wait_confirmation`、`finalization`。后续模块不得另造同义枚举。`ConfirmationStatus` 需要新增，值为 `not_required`、`pending`、`confirmed`、`rejected`，仅表达确认业务状态；`ConfirmationVisibility` 的 `prepared/published` 只表达跨 Checkpointer 与业务表协调时的发布可见性，不能混入 `ConfirmationStatus`。状态机必须先调用 `validate_combination()` 校验当前组合，再校验目标组合和转换矩阵；不能只检查 HarnessStatus 是否变化。
 
@@ -605,7 +625,7 @@ class CheckpointCodec(Protocol):
 
 终态不能从业务阶段直接写入。必须先进入 `running/finalization`，由 `terminal_intent` 记录目标终态；只有 Finalization 成功后才落到 terminal status。收尾失败时保持 `running/finalization`，不得误报 `completed`。`waiting_confirmation` 不得直接转换为 terminal；拒绝或取消必须先取得执行租约并进入 `running/finalization + terminal_intent=cancelled`。`waiting_confirmation` 不得调用 Planner 或 Tool Runtime；终态不得继续执行动作；计数不得为负；`original_goal` 不得在同一 run 中覆盖；同一终态重复提交只能返回幂等成功。
 
-#### 1.6 初始化、更新、暂停和恢复
+### 1.6 初始化、更新、暂停和恢复
 
 ```text
 start_new_run(request):
@@ -666,7 +686,7 @@ encode_harness(state):
 
 M1 不把进程恢复限定为某一个业务阶段：进程可能在任意业务阶段或 `finalization` 阶段中断。`RestoreRunCommand` 只处理这类无用户回复的进程恢复；`waiting_confirmation` 必须由 M5 的 `ResumeRunCommand` 校验确认 ID、过期时间和回答语义后再转为 `running/restore_run`。M1 只要求保留 `pending_confirmation` 的 JSON 边界。
 
-#### 1.7 Checkpointer 边界与旧图兼容
+### 1.7 Checkpointer 边界与旧图兼容
 
 **现有能力**：`app/clients/postgres_client.py` 已使用 `AsyncPostgresSaver.from_conn_string()`、`await checkpointer.setup()` 并将 Saver 传入 `build_agent_graph(checkpointer=checkpointer)`。
 
@@ -677,7 +697,7 @@ M1 不把进程恢复限定为某一个业务阶段：进程可能在任意业�
 - 旧固定图继续读取扁平字段；M1 不删除 `build_agent_graph()`，也不要求旧业务节点理解 Harness 控制字段。
 - 过渡期间必须明确同一个 `thread_id` 的唯一写入图；在默认入口切换前，不允许旧图和 Harness 图并发写同一 run。
 
-#### 1.8 文件级任务、测试与验收
+### 1.8 文件级任务、测试与验收
 
 | 任务 | 类型 | 文件 | 产出 | 前置 |
 | --- | --- | --- | --- | --- |
@@ -698,11 +718,13 @@ M1 验收标准：
 
 **完善判定**：M1 已覆盖统一状态落点、DTO、状态转换、终态保护、身份恢复、Checkpointer 边界、旧图兼容、文件任务、测试和进入 M2 的门槛，文档层面判定为完善；代码层面仍属于需要重构/新增，必须完成 M1.1～M1.5 并通过测试后才算实现完成。
 
-### 模块 2：ContextEngine 集成
+## 8. ContextEngine 集成
+
+> 架构模块 2；本章小节沿用模块内编号，研发阶段编号见第 21 节。
 
 > 本节是 M2 的文档设计基线。M2 只完成 Harness 到现有 ContextEngine 的集成契约，不实现 Planning Agent、Tool Runtime、Loop Controller 或暂停 API。
 
-#### 2.1 模块职责
+### 2.1 模块职责
 
 **一句话职责**：把 M1 的 Harness 运行状态投影为现有 `ContextRequest`，直接调用现有 `ContextEngine.build()`，生成供一次 Planning Agent 调用使用的唯一 `CompiledContext`。
 
@@ -726,7 +748,7 @@ M1 验收标准：
 
 **不负责**：选择下一步工具；执行 SQL、Python 或报告渲染；修改完整 `AgentState`；决定重试、暂停、取消或终止；写入长期记忆；保存完整工具结果；替代 Checkpointer。
 
-#### 2.2 已验证基线与增量结论
+### 2.2 已验证基线与增量结论
 
 `app/agent/context_engine/engine.py` 的真实入口为：
 
@@ -772,7 +794,7 @@ validate request
 
 **现有测试基线**：`tests/test_context_engine.py` 已覆盖 `ContextReferenceResolver` 的历史/附件解析、摘要增量更新、候选去重与选择、明确附件注入、最终消息 token 预算、`ContextBuildTrace` 的正文隔离和 ContextStore 完成审计。当前没有 `runtime_context` 兼容性、Harness 状态投影、运行态消息预算或显式附件越权映射测试；这些属于 M2 必须新增的验证面。
 
-#### 2.3 输入 DTO 与校验
+### 2.3 输入 DTO 与校验
 
 M2 的目标上游是 M1 的 `HarnessGraphState`、应用级 Agent 配置和已注入的 `ContextEngine`。当前仓库实际只有 `app/agent/state.py::AgentState`，因此在 M1 完成组合类型之前，M2 不得直接新增一个平行状态对象或假设该符号已经可导入。输入字段如下：
 
@@ -914,7 +936,7 @@ class ContextRequest:
 
 这是对现有 DTO 的兼容扩展，不是新建 `ContextRequestWithRuntime`。旧调用不传 `runtime_context` 时，默认行为、消息顺序和 `CompiledContext` 字段必须保持不变。
 
-#### 2.4 输出 DTO 与存储边界
+### 2.4 输出 DTO 与存储边界
 
 输出仍然只有现有 `CompiledContext`：
 
@@ -945,7 +967,7 @@ system_instructions
 
 `runtime background block` 使用独立的受控标记和明确的“仅作为运行数据读取”边界；不得拼接进 `system_instructions`，也不得覆盖现有 `ContextSections`。它虽然可能以 `system` role 传递给模型，但不是新的系统指令。`ContextCompiler.base_token_count()` 必须把 `system_instructions`、运行态块和当前 query 一起计入基础预算；`compile()` 的最终消息 token 数仍以现有 `TokenCounter.count_messages()` 的结果为准。
 
-#### 2.5 字段级数据流
+### 2.5 字段级数据流
 
 | 上游模块 | 上游字段 | 当前模块如何消费 | 当前模块输出字段 | 下游模块 | 下游用途 |
 | --- | --- | --- | --- | --- | --- |
@@ -967,7 +989,7 @@ system_instructions
 
 `RuntimeContext` 不等于新的召回来源，也不替代 `ContextRetrievalPlan`。M2 默认只把运行态编译为补充背景；是否召回 Working、Semantic、Episodic、Perceptual 或 RAG 仍由现有 `ContextRequest` 策略、`ContextReferenceResolver` 和 `ContextPlanner` 决定。运行态中的工具摘要不得被当作长期记忆事实自动写回 Memory，也不得改变 `user_id`、`conversation_id`、`asset_ids` 的访问边界。
 
-#### 2.6 与现有代码的衔接点
+### 2.6 与现有代码的衔接点
 
 **现有能力，直接复用**：
 
@@ -999,7 +1021,7 @@ system_instructions
 
 **待验证**：LangGraph Checkpointer 对嵌套 `harness` 状态的实际 JSON 往返；运行态背景块在目标 ChatModel 中的消息角色和 token 计数；显式附件越权是否需要由 Resolver 抛错还是由 Harness 集成层统一升级；同一会话恢复时 Working loader 与 `conversation_id == thread_id` 的一致性。
 
-#### 2.7 接口契约
+### 2.7 接口契约
 
 以下接口使用 Protocol；接口只表达边界，不实现外部调用：
 
@@ -1039,7 +1061,7 @@ class ContextRequestFactory(Protocol):
 
 `ContextBuilder` 仅用于单元测试替换现有 `ContextEngine`；生产对象仍是 `ContextEngine`。`ContextRequestFactory` 只做字段映射和 DTO 校验，不创建 PostgreSQL、Qdrant、Neo4j、RAG 或 LLM 客户端。`project_id` 必须固定从 `state.get("project_id")` 读取，工厂不提供可覆盖状态的同名参数；这样恢复和最终收尾使用同一项目边界。构造错误归类为 `validation`；`ContextEngine.build()` 失败由 Harness 集成层转换为 `RunError(category=ErrorCategory.CONTEXT, ...)`，ContextEngine 本身不依赖 Harness 错误枚举。
 
-#### 2.8 核心伪代码
+### 2.8 核心伪代码
 
 ```text
 project_runtime(harness_state):
@@ -1097,7 +1119,7 @@ build_context(state, config):
 
 伪代码只描述本模块的状态投影、请求构造和 ContextEngine 调用。成功路径只返回现有 `CompiledContext`；失败路径抛出集成层受控异常，由 Loop Controller 映射为 M1 `RunError`，不能返回一个与 `ContextBuilder` 契约不一致的错误 DTO。`classified_context_error()` 只是错误分类伪函数，不是当前仓库已有接口。`build_id` 和 token 统计由 Loop Controller 通过 M1 状态转换函数记录，ContextEngine 不直接修改 `HarnessControlState`。状态转换、重试、暂停、恢复和下一步调度由后续 Loop Controller 负责。工具结果不是最终答案，而是下一次规划的新证据；`success` 或 `partial` 结果写入 M1 `RunObservation` 后，必须重新执行 `build_context()`。`needs_user` 结果先回交暂停流程，恢复后再 build。
 
-#### 2.9 重建、预算与错误边界
+### 2.9 重建、预算与错误边界
 
 | 事件 | 是否重新 build | 原因 |
 | --- | --- | --- |
@@ -1127,7 +1149,7 @@ build_context(state, config):
 - 当前 `ContextEngine.build()` 已记录应用日志、调用 `ContextStore.fail_build()` 并重新抛出原异常；M2 保留该行为。
 - 集成层只保存 `ErrorCategory`、稳定错误码、脱敏消息和 retryable 标志，不保存异常对象、完整堆栈或原始 prompt。
 
-#### 2.10 文件级任务与测试验收
+### 2.10 文件级任务与测试验收
 
 | 任务 | 类型 | 文件 | 产出 | 前置 |
 | --- | --- | --- | --- | --- |
@@ -1168,11 +1190,13 @@ build_context(state, config):
 
 **完善判定**：M2 已覆盖现有 `ContextEngine.build()` 的唯一入口、`RuntimeContext` 投影、五类运行态字段、预算、RAG/Memory 边界、错误分类、身份与附件访问校验、字段流、文件任务、测试和进入 M3 的门槛，文档层面判定为完善；代码层面仍属于需要重构/新增，必须完成 M2.1a～M2.5b 并通过测试后才算实现完成。
 
-### 模块 3：Planning Agent
+## 9. Planning Agent
+
+> 架构模块 3；本章小节沿用模块内编号，研发阶段编号见第 21 节。
 
 > 本节是 M3 的文档设计基线。M3 只定义统一 Planning Agent 的输入、结构化输出和动作校验边界；不实现 Tool Runtime、Loop Controller、真实暂停恢复或 Finalization。
 
-#### 3.1 模块职责
+### 3.1 模块职责
 
 **一句话职责**：读取一次 Harness 循环生成的 `CompiledContext`、受控 `PlannerStateView` 和当前已注册的 `ToolSpec`，先生成并校验动作草稿，再由 Harness 发行候选序号并输出尚未提交、尚未执行的 `NextAction`。
 
@@ -1199,13 +1223,13 @@ build_context(state, config):
 
 **暂不修改**：`app/agent/nodes/route_question.py`、`app/agent/nodes/plan_analysis.py` 和 `app/agent/graph.py` 继续服务现有固定图，不在 M3 直接改造成 Harness Planner。
 
-#### 3.2 规划边界
+### 3.2 规划边界
 
 Planning Agent 负责理解当前目标、读取已确认条件和计划进度、识别信息缺口、从传入的 ToolSpec 中选择高层工具、判断是否需要用户澄清，以及判断证据是否足以生成最终答案。LLM/解析器的直接输出是无 `action_id`、无 `action_seq` 的 `PlannerActionDraft`；动作校验通过后，Planner 再由 Harness 生成带候选 `action_seq` 和 `action_id` 的待提交 `NextAction`，但不执行动作、不写入状态。
 
 Planning Agent 不负责执行工具、访问数据库或业务仓储、生成/执行 SQL、执行 Python、写 Memory、写 Checkpoint、管理重试、控制循环、暂停恢复或保存隐藏思考。`rationale_summary` 如果保留，只能是短的面向审计的理由摘要，不是 reasoning 转储。
 
-#### 3.3 输入 DTO 与 Protocol 契约
+### 3.3 输入 DTO 与 Protocol 契约
 
 M3 的输入由 M2 的 `CompiledContext`、M1 的 `PlannerStateView` 和 M4 `ToolRegistry.list_specs()` 的结果组成。目标接口如下，代码只表达边界，不在本模块实现业务逻辑。LLM/解析器阶段的结果是无 Harness 元数据的 `PlannerActionDraft`；对外 `PlanningAgent.plan()` 只返回经过校验、已发行候选 `action_seq` 的待提交 `NextAction`。这里的“已发行”只表示已完成 Harness 侧 ID/序号归一化，不表示已写入状态或已执行工具；真正的原子提交由 M5 负责。
 
@@ -1321,6 +1345,8 @@ class ActionCommitRequest(ContractModel):
     action: NextAction
     expected_action_seq: int = Field(ge=1)
     expected_state_version: int = Field(ge=0)
+    # Harness 协调层修订号；映射 Saver checkpoint_id，不假设 Saver 原生支持整数 CAS。
+    expected_checkpoint_version: int = Field(ge=0)
     execution_fence: RunExecutionFence
 
     @model_validator(mode="after")
@@ -1440,9 +1466,9 @@ class PlannerRetryPolicy(ContractModel):
     feedback_max_chars: int = Field(default=1_000, ge=0, le=4_000)
 ```
 
-`PlannerInput` 沿用第 5.3 节的唯一核心 DTO 定义，不在 M3 重复声明；其字段固定为 `compiled_context: CompiledContext`、`state_view: PlannerStateView` 和 `tool_specs: tuple[ToolSpec, ...]`。字段约束：`compiled_context` 是唯一上下文快照，不允许传整个 `AgentState`；`state_view` 只允许受控摘要、进度、观察、错误和确认条件；`tool_specs` 必须来自调用方的 Registry 启用工具快照，Planner 不自行发现工具，也不得臆造 schema。
+`PlannerInput` 沿用第 6.3 节的唯一核心 DTO 定义，不在 M3 重复声明；其字段固定为 `compiled_context: CompiledContext`、`state_view: PlannerStateView` 和 `tool_specs: tuple[ToolSpec, ...]`。字段约束：`compiled_context` 是唯一上下文快照，不允许传整个 `AgentState`；`state_view` 只允许受控摘要、进度、观察、错误和确认条件；`tool_specs` 必须来自调用方的 Registry 启用工具快照，Planner 不自行发现工具，也不得臆造 schema。
 
-#### 3.3.1 用户权限边界
+### 3.3.1 用户权限边界
 
 当前阶段**不校验用户级工具权限**。代码基线中未发现统一认证、RBAC 或 ACL 服务，因此 `ToolSpec.permission` 只能作为未来预留的能力描述，不能被解释为当前授权结果，也不能把缺失的权限服务伪装成已实现能力。
 
@@ -1456,26 +1482,26 @@ class PlannerRetryPolicy(ContractModel):
 
 `allow_context_only_final_answer` 只允许在当前 `CompiledContext` 有效、没有阻塞条件且业务场景明确允许直接基于上下文回答时使用；它不能绕过数据证据要求，也不能把 Planner 自己生成的文本当作工具观察。
 
-#### 3.4 输出 DTO 与动作不变量
+### 3.4 输出 DTO 与动作不变量
 
-**需要重构**：`ActionType` 目标值为 `tool_call`、`ask_user`、`final_answer`，并按第 5.3 节唯一的 `AskUserRequest`、`NextAction` DTO 完成三路 payload 互斥校验。M3 不重复定义这些核心 DTO；第 5.3 节是跨模块类型来源，本节只补充 Planner 草稿、候选序号和提交边界。
+**需要重构**：`ActionType` 目标值为 `tool_call`、`ask_user`、`final_answer`，并按第 6.3 节唯一的 `AskUserRequest`、`NextAction` DTO 完成三路 payload 互斥校验。M3 不重复定义这些核心 DTO；第 6.3 节是跨模块类型来源，本节只补充 Planner 草稿、候选序号和提交边界。
 
-`ask_user` 不携带 `confirmation_id`：确认请求 ID 由 M5 创建和持久化，避免 Planner 伪造恢复凭证。第 5.3 节已经定义的 `NextAction` 是本模块唯一使用的动作 DTO；其 `action_seq` 在提交前是候选序号，提交成功后才成为所有正式动作共有的顺序号。`tool_call.action_id` 由 Harness 侧根据 `run_id + iteration + action_seq` 生成，不能由 LLM 通过重复输出制造幂等冲突。`final_answer` 不是数据库写入结果，最终保存和 Memory Formation 由 M6 负责。
+`ask_user` 不携带 `confirmation_id`：确认请求 ID 由 M5 创建和持久化，避免 Planner 伪造恢复凭证。第 6.3 节已经定义的 `NextAction` 是本模块唯一使用的动作 DTO；其 `action_seq` 在提交前是候选序号，提交成功后才成为所有正式动作共有的顺序号。`tool_call.action_id` 由 Harness 侧根据 `run_id + iteration + action_seq` 生成，不能由 LLM 通过重复输出制造幂等冲突。`final_answer` 不是数据库写入结果，最终保存和 Memory Formation 由 M6 负责。
 
-#### 3.4.1 输出持久化边界
+### 3.4.1 输出持久化边界
 
 `PlannerActionDraft` 只存在于一次 Planner 调用的临时内存中，不进入 Checkpointer、PostgreSQL 或 SSE；完整 raw output、隐藏 reasoning 和 Prompt 也不保存。校验通过后，`ActionNormalizer` 使用 `ActionIssuanceContext` 生成带候选 `action_seq` 的待提交 `NextAction`，并为 `tool_call` 生成 `action_id`；此时仍未写入 `HarnessControlState`、数据库或 checkpoint。正式动作的结构化摘要、动作类型、动作 ID、参数摘要/哈希和提交状态由 M5 的 `ActionCommitter` 在提交边界处理。
 
 `tool_call` 的受控参数由 M4 接收并再次校验，完整工具结果不回写 Planner 输出；`ask_user` 只把问题和原因交给 M5 创建 `ConfirmationRequest`；`final_answer` 交给 M6 的 `FinalizationInput`，最终文本和结果引用由 M6 保存到会话结果表并返回 API/SSE。
 
-#### 3.4.2 输出字段与动作提交边界
+### 3.4.2 输出字段与动作提交边界
 
 `PlanningAgent.plan()` 返回的是候选动作。只有 `M5 ActionCommitter.commit()` 成功后，`NextAction` 才能被称为本次 run 的正式动作，并允许进入 M4、M5 或 M6 的下游处理。M3 不得通过返回对象、事件或回调隐式完成提交。
 
 | 输出字段 | 生成与校验方 | 提交前状态 | 提交成功后的规则 | 持久化与下游用途 |
 | --- | --- | --- | --- | --- |
 | `action_type` | `PlannerActionDraft` 经 `ActionValidator` 校验 | 候选动作类型；只能是三类之一 | 写入正式动作记录，并决定唯一的下游分支 | M5 动作记录；按类型分派到 M4、M5 或 M6 |
-| `action_seq` | M1 `ActionIssuanceContext` + `ActionNormalizer` | 候选序号，必须等于 `expected_action_seq` | 与状态中的 `HarnessControlState.action_seq` 一起原子推进；成为最近一次已提交序号 | M5 状态、动作记录和 checkpoint 的一致性与顺序控制 |
+| `action_seq` | M5 `ActionIssuanceContext` + `ActionNormalizer` | 候选序号，必须等于 `expected_action_seq` | 经 prepared/checkpoint/committed 对账后推进；candidate checkpoint 不授予执行权 | M5 状态、动作记录和 checkpoint 的一致性与顺序控制 |
 | `tool_call.action_id` | Harness 注入的 `ActionIdFactory` | 由 `run_id + iteration + action_seq` 确定的候选幂等键 | 与工具动作记录一起提交；同一键同一 payload 重复提交只能幂等成功 | M5 幂等记录；提交成功后供 M4 识别动作身份 |
 | `tool_call.arguments` | `ActionValidator` 按 `ToolSpec.input_schema` 校验 | 仅保留在受控内存对象中，不能因 Planner 返回就执行 | 提交成功后交给 M4；M4 执行前必须再次做 schema、状态和运行身份校验 | M4 工具调用输入；动作记录默认只保存脱敏摘要或哈希，完整参数按安全策略处理 |
 | `ask_user` | `PlannerActionDraft` / `ActionValidator` | 问题、原因和 `required_fields` 的候选请求 | 提交成功后由 M5 创建 `ConfirmationRequest` 和恢复凭证，再进入 `waiting_confirmation` | M5 确认请求与 checkpoint；Planner 不生成 `confirmation_id` |
@@ -1494,7 +1520,7 @@ class PlannerRetryPolicy(ContractModel):
 
 这里的“协调提交”要求实现层提供业务记录的条件更新、checkpoint digest 对账、fencing 校验和明确的可见性状态；不能把动作记录、状态序号、幂等记录和 checkpoint 拆成无条件的独立写入。该协议的下游可见状态只有 `committed`，`prepared` 仅用于恢复和审计。
 
-#### 3.5 Prompt、解析和动作校验
+### 3.5 Prompt、解析和动作校验
 
 **需要新增**：`app/agent/prompts/plan_next_action.prompt`。Prompt 只描述高层动作选择和结构化输出约束：工具只能从 `tool_specs` 选择；参数必须符合 `input_schema`；证据不足时使用 `ask_user`；证据充分时才使用 `final_answer`；不得输出 SQL、Python 或隐藏思考。
 
@@ -1539,7 +1565,7 @@ class ActionValidator(Protocol):
 
 资格失败返回 `RunError(category=ErrorCategory.PLANNER, code="insufficient_evidence", retryable=True, ...)`；若缺口需要用户输入，应由 Planner 选择 `ask_user`，而不是把不合格文本升级为最终答案。
 
-#### 3.6 核心伪代码
+### 3.6 核心伪代码
 
 伪代码只描述 Planner 自身的输入、Prompt、解析和动作校验，不执行工具、不更新状态、不控制循环：
 
@@ -1566,7 +1592,7 @@ async plan(input: PlannerInput, issuance: ActionIssuanceContext) -> NextAction:
 
 错误路径：解析失败、LLM 超时或运输失败统一转为 `RunError(category=ErrorCategory.PLANNER, code="invalid_output" 或 "planner_unavailable", ...)`，由 `PlannerFailure` 包装后交回 Loop Controller。`PlannerRetryPolicy.max_retries=2` 表示初始调用之外最多重试 2 次；`planner_retry_count` 由 M1/Loop Controller 维护，Planner 不自行递增。`invalid_output`、`invalid_action`、`unknown_tool`、`invalid_tool_arguments`、`planner_unavailable` 和 `insufficient_evidence` 默认可有限重试；能力未启用和不可恢复错误默认不可重试。重试反馈只包含截断后的结构/字段错误，不包含隐藏思考、完整 raw output、Prompt 或未纳入当前执行链路的授权上下文。成功后清零当前 Planner 重试计数，但不回退 `action_seq`；校验失败不调用 `ActionNormalizer`，因此不分配序号。重试耗尽后交由 Loop Controller 进入受控 `failed` 或安全降级/请求澄清，不伪造工具结果、证据或最终答案。Planner 不保存完整 raw output，长期状态只记录错误码、短消息、重试次数和必要哈希。
 
-#### 3.7 字段级数据流
+### 3.7 字段级数据流
 
 | 上游模块 | 上游字段 | 当前模块如何消费 | 当前模块输出字段 | 下游模块 | 下游用途 |
 | --- | --- | --- | --- | --- | --- |
@@ -1589,7 +1615,7 @@ ToolResult -> RunObservation -> RuntimeContext -> CompiledContext
     -> PlannerInput -> NextAction -> Loop Controller
 ```
 
-#### 3.8 与现有代码的衔接点
+### 3.8 与现有代码的衔接点
 
 | 代码位置 | 当前状态 | M3 处理 |
 | --- | --- | --- |
@@ -1605,7 +1631,7 @@ ToolResult -> RunObservation -> RuntimeContext -> CompiledContext
 
 不创建 `PlanningAgentAdapter`、`RoutePlannerAdapter` 或 `AnalysisPlannerAdapter`。旧节点与统一 Planner 的输出目标不同，强行复用会制造虚假的 Harness 动作。
 
-#### 3.9 文件级任务与测试验收
+### 3.9 文件级任务与测试验收
 
 **需要新增**：`app/agent/harness/planning.py`、`app/agent/harness/action_validator.py`、`app/agent/prompts/plan_next_action.prompt` 和 `tests/test_harness_planning.py`。测试只使用假的 LLM 和 ToolSpec，不连接真实数据库或外部服务。
 
@@ -1631,11 +1657,13 @@ ToolResult -> RunObservation -> RuntimeContext -> CompiledContext
 
 M3 通过 DTO、Protocol、错误和单元测试后，才进入 M4 Tool Runtime；真实循环、动作重试、暂停恢复和最终收尾仍未完成。
 
-### 模块 4：Tool Runtime
+## 10. Tool Runtime
+
+> 架构模块 4；本章小节沿用模块内编号，研发阶段编号见第 21 节。
 
 > 本节是 M4 的文档设计基线。M4 只定义高层工具的注册、执行、结果归一化和幂等边界；不负责任务规划、循环调度、暂停恢复或最终会话收尾。
 
-#### 4.1 模块职责
+### 4.1 模块职责
 
 **一句话职责**：接收 M5 已提交且尚未执行的 `ToolCall`，在运行状态、运行身份、参数和超时均通过校验后，调用现有业务能力或新增共享 Service，并返回统一 `ToolResult`。当前阶段不执行用户级权限校验。
 
@@ -1649,7 +1677,7 @@ M3 通过 DTO、Protocol、错误和单元测试后，才进入 M4 Tool Runtime�
 **需要重构**：
 
 - 把旧节点中的可复用业务逻辑提取为 `DataCatalogService`、`QueryService`、`AnalysisService`、`ReportService`；旧固定图继续调用这些 Service，Harness 工具也调用同一 Service。
-- 统一 `ToolSpec`、`ToolCall`、`ToolResult` 的字段来源。M4 不创建第二套同名 DTO；第 5.3 节是唯一核心定义。
+- 统一 `ToolSpec`、`ToolCall`、`ToolResult` 的字段来源。M4 不创建第二套同名 DTO；第 6.3 节是唯一核心定义。
 - 对当前直接返回完整 `sql_result`、分析 `rows` 和 `python_code` 的旧状态路径增加 Harness 结果外置边界。Harness 只把摘要和引用写入运行状态。
 - 为 `DwRepository.execute_query()` 增加只读 SQL、语句超时、结果上限和取消语义；当前代码尚未提供这些保护。
 
@@ -1663,7 +1691,7 @@ M3 通过 DTO、Protocol、错误和单元测试后，才进入 M4 Tool Runtime�
 
 **不负责**：决定调用哪个工具；生成 SQL 或 Python 计划；修改完整 Harness 状态；递增 Planner 或 Loop 重试次数；创建确认 ID；直接写长期 Memory；直接写会话最终答案；把原始执行事件转成 SSE；绕过 M5 的动作提交边界。
 
-#### 4.2 输入 DTO 与执行前校验
+### 4.2 输入 DTO 与执行前校验
 
 M4 的正式输入来自 M5 的动作提交结果。Planner 生成的 `NextAction` 只有在 M5 `ActionCommitter` 成功后，才允许转换为 `ToolExecutionRequest`；M4 不接受未提交动作，也不从模型输出中自行创建 `action_id`。
 
@@ -1760,7 +1788,7 @@ class RuntimePolicy(ContractModel):
 
 `knowledge_base` 的输入 DTO 可以先用于 schema 版本兼容测试，但 `ToolSpec.enabled` 必须为 `False`，Registry 不得将其返回给 Planner，也不得接受其执行请求。
 
-#### 4.3 ToolSpec、Registry 与能力边界
+### 4.3 ToolSpec、Registry 与能力边界
 
 `ToolSpec` 是给 Planning Agent 的能力描述，不是当前授权结果。当前阶段不校验用户级 RBAC/ACL，Registry 和 Runtime 不接入用户工具授权服务。Registry 只返回已注册且 `enabled=True` 的工具；M4 当前执行前只校验工具名称、参数、运行状态、阶段、运行身份一致性、超时和幂等边界。`ToolSpec.permission` 保留为未来接入认证授权方案时的描述字段，不能用它、`user_id` 或历史缓存推断当前用户已授权。
 
@@ -1776,7 +1804,7 @@ Registry 的职责是维护名称唯一、版本明确、启用状态可控的�
 
 `permission` 只描述未来可能需要的授权，不参与当前执行决策，也不应放进 Prompt 让模型自行判断。Planner 看到的是 Registry 的已注册启用工具快照；用户身份字段只用于运行归属和结果隔离，不进入 `PlannerInput`、`CompiledContext`、Checkpoint、SSE 或结果摘要。未来接入认证授权时，必须先扩展独立的授权契约和审计方案，不能把本字段直接升级成运行时权限判断。
 
-#### 4.4 Tool Protocol 与执行上下文
+### 4.4 Tool Protocol 与执行上下文
 
 Tool Protocol 只表达高层工具的执行边界，不实现业务逻辑。工具 handler 接收已经通过 Registry、Schema、状态、阶段和运行身份校验的请求，返回仅在 M4 内部使用的 ToolHandlerResult；只有 ResultNormalizer 产生的 ToolResult 才能交给 M5。
 
@@ -1883,9 +1911,9 @@ class ResultNormalizer(Protocol):
 
 `execution_fence` 由 M5 当前租约产生，不来自 Planner、客户端或工具参数。M4 在 `save_started`、外部调用前、Artifact/结果提交前分别确认 `owner_id/fencing_token` 仍是 `harness_runs` 的当前持有者；租约失效或出现更大 token 时返回 `ErrorCategory.CONFLICT`，旧 Worker 不得开始新的副作用或写完成结果。已经发往不可取消外部系统的调用仍按 indeterminate 处理，不能依靠 fence 宣称副作用已停止。
 
-#### 4.5 五类工具与现有代码衔接点
+### 4.5 五类工具与现有代码衔接点
 
-##### 4.5.1 data_catalog
+#### 4.5.1 data_catalog
 
 **现有能力**：
 
@@ -1899,7 +1927,7 @@ class ResultNormalizer(Protocol):
 
 **输出边界**：目录命中摘要进入 ToolResult.summary，可作为后续 SQL 依据的目录证据进入 evidence_refs；超过大小预算的完整候选列表进入 result_ref。目录结果不是企业知识库事实，也不自动写入长期 Memory。
 
-##### 4.5.2 query_data
+#### 4.5.2 query_data
 
 **目标工具名，不是现有函数**：当前仓库不存在独立 query_data()。真实可复用入口是 app/agent/query_graph.py::query_graph。
 
@@ -1925,7 +1953,7 @@ execute_sql 当前从 state.sql 读取 SQL，并通过 AgentContext.dw_repositor
 
 **输出边界**：完整原始 rows、展示副本、result_columns、维度映射和 SQL 审计信息进入 ResultArtifactStore；ToolResult 只返回有界 summary、result_ref、必要 evidence_refs 和 limitations。原始值与展示名称的双轨规则沿用 enrich_query_result，不能用展示名称覆盖原始值。
 
-##### 4.5.3 analyze_data
+#### 4.5.3 analyze_data
 
 **目标工具名，不是现有函数**：当前仓库不存在独立 analyze_data()。当前能力分散在 plan_analysis、execute_analysis、query_graph 和 python_sandbox。
 
@@ -1937,7 +1965,7 @@ execute_sql 当前从 state.sql 读取 SQL，并通过 AgentContext.dw_repositor
 
 **输出边界**：完整任务 rows、画像、计算结果和代码引用进入 result_ref；可用于结论的成功任务、字段语义和证据链进入 evidence_refs；失败任务、映射缺失和部分任务完成情况进入 limitations。AnalysisEvidence 中的 calculation_result 必须来自实际 Sandbox 返回值，不能由 LLM 填充。
 
-##### 4.5.4 build_report
+#### 4.5.4 build_report
 
 **目标工具名，不是现有函数**：当前仓库不存在独立 build_report()。现有能力由 generate_report_plan 和 render_report 两个节点组成。
 
@@ -1947,13 +1975,13 @@ execute_sql 当前从 state.sql 读取 SQL，并通过 AgentContext.dw_repositor
 
 **输出边界**：ReportPlan 和真实绑定后的 RenderedReport 保存到 result_ref；摘要只说明报告状态、绑定组件数量和关键限制。报告工具不能伪造指标、数值、任务 ID 或不存在的字段。渲染失败的组件必须保留 binding_status=failed 和 binding_error，并将整体结果归一化为 partial 或 unrecoverable_error。
 
-##### 4.5.5 knowledge_base
+#### 4.5.5 knowledge_base
 
 **暂不启用**：当前没有独立企业知识库的仓储、索引、文档权限和更新治理。
 
 MetaCatalogRepository、Qdrant Meta RAG 和 ES 维度值检索仍属于 Data Catalog / Meta RAG，只能解释指标、表、字段、维度和维度值；企业知识库应覆盖企业制度、业务规则、口径文档和分析规范，不能用目录检索冒充。
 
-#### 4.6 Tool Runtime 执行阶段
+### 4.6 Tool Runtime 执行阶段
 
 Runtime 的单次执行顺序固定为：
 
@@ -1981,9 +2009,9 @@ M5 已提交 ToolCall
 6. ToolRuntime 不负责循环重试。它只返回 `retryable` 和执行结果；M5 根据错误分类、action 幂等记录和运行预算决定是否重试。
 7. handler 返回后必须先完成结果归一化和引用持久化，再向下游返回 `success` 或 `partial`；不能先发成功事件再异步保存结果。
 
-#### 4.7 ToolResult、错误分类和重试边界
+### 4.7 ToolResult、错误分类和重试边界
 
-M4 唯一对外结果是第 5.3 节定义的 ToolResult。字段语义如下：
+M4 唯一对外结果是第 6.3 节定义的 ToolResult。字段语义如下：
 
 | 字段 | 语义 | 进入哪里 | 约束 |
 | --- | --- | --- | --- |
@@ -2018,7 +2046,7 @@ M4 唯一对外结果是第 5.3 节定义的 ToolResult。字段语义如下：
 - 超时后不能默认认为 handler 没有副作用。对 Query 和 Catalog，使用调用 ID 查询执行记录；无法确认结果是否提交时，返回冲突或人工确认，不盲目重放。
 - M4 不递增 planner_retry_count、context_retry_count 或 tool_retry_counts；只返回 retryable 和执行记录，计数和预算归 M5。
 
-#### 4.8 ResultNormalizer 与结果持久化边界
+### 4.8 ResultNormalizer 与结果持久化边界
 
 ResultNormalizer 是 M4 的唯一结果出口。handler 返回的临时对象不能直接写入 Harness 状态、Checkpoint、SSE 或 API；必须先完成结构检查、脱敏、结果外置和证据引用生成。
 
@@ -2046,7 +2074,7 @@ ResultNormalizer 是 M4 的唯一结果出口。handler 返回的临时对象不
 
 当前仓库没有独立 ResultArtifactStore，也没有 ToolExecutionStore 或工具执行审计表。这些都是**需要新增**。在实现前必须确定存储介质、保留期、加密、访问控制、删除策略、结果版本和故障恢复策略。`result_ref` 不能实现成进程内字典键，也不能因为暂时没有 ArtifactStore 就把完整 rows 塞进 HarnessControlState。`harness_result_artifacts` 至少保存 `attempt`、`artifact_key`、`content_type`、`schema_version`、`status`、`orphaned_at`、`fencing_token`、`created_at`、`committed_at` 和受控审计字段；`harness_tool_executions` 至少保存 `fencing_token`、`input_digest`、`result_digest`、`prepared_artifact_keys`、`record_status`、`finished_at`、`indeterminate_at`、`error_code` 和 `updated_at`。
 
-#### 4.9 Tool Runtime Protocol 与装配边界
+### 4.9 Tool Runtime Protocol 与装配边界
 
 以下 Protocol 是目标接口，只描述边界，不实现外部调用：
 
@@ -2231,7 +2259,7 @@ class ToolRuntime(Protocol):
 
 M4 不创建新的 AgentContext。现有 app/agent/context.py::AgentContext 继续作为 LangGraph Runtime 的外部依赖容器；新增 Service 需要的依赖必须通过明确的装配参数提供，不能写入 AgentState，也不能在每次工具调用中创建新的客户端。
 
-#### 4.10 核心伪代码
+### 4.10 核心伪代码
 
 ~~~text
 async execute(request):
@@ -2337,7 +2365,7 @@ Artifact 的崩溃恢复和清理规则固定如下：
 5. 后台维护任务只清理超过保留宽限期、没有匹配 `finished` 执行记录且执行 lease 已过期的 `prepared` Artifact。它先以 hash 和状态条件标记 `orphaned`，经过审计保留期后再标记 `deleted` 并删除正文；不能物理删除 `committed` Artifact。
 6. `ResultArtifactStore.get()` 只返回 `status=committed` 且同时匹配 `ref + run_id + user_id` 的记录；`prepared`、`orphaned`、`deleted` 均按不可见处理。当前不校验用户权限，`user_id` 只用于运行归属和结果隔离。
 
-#### 4.11 字段级数据流
+### 4.11 字段级数据流
 
 | 上游模块 | 上游字段 | 当前模块如何消费 | 当前模块输出字段 | 下游模块 | 下游用途 |
 | --- | --- | --- | --- | --- | --- |
@@ -2378,11 +2406,11 @@ NextAction.tool_call
 
 ToolResult 到 RunObservation 的映射由 M5 负责写入状态：tool_call_id 映射为 action_id，tool_name/status/summary/result_ref/evidence_refs/limitations 原样受控复制，错误三元组映射为统一 RunError。M4 不直接修改 HarnessControlState。
 
-#### 4.12 与现有代码的衔接和文件级任务
+### 4.12 与现有代码的衔接和文件级任务
 
 | 任务 | 类型 | 文件 | 产出 | 前置 |
 | --- | --- | --- | --- | --- |
-| M4.1 | 需要重构 | app/agent/harness/contracts.py | 补齐第 5.3 节唯一 ToolSpec、ToolCall、ToolResult、RunObservation 和 ActionType 契约 | M1/M3 |
+| M4.1 | 需要重构 | app/agent/harness/contracts.py | 补齐第 6.3 节唯一 ToolSpec、ToolCall、ToolResult、RunObservation 和 ActionType 契约 | M1/M3 |
 | M4.2 | 需要新增 | app/agent/harness/tools/contracts.py | 工具输入 DTO、ToolExecutionRequest、ToolHandlerResult、RuntimePolicy | M4.1 |
 | M4.3 | 需要新增 | app/agent/harness/tools/registry.py | 名称唯一、版本、启用状态和 list_specs | M4.2 |
 | M4.4 | 需要新增 | app/agent/harness/tools/runtime.py | 门禁、超时、幂等查询、Dispatcher 和结果保存编排 | M4.2/M4.3 |
@@ -2401,7 +2429,7 @@ ToolResult 到 RunObservation 的映射由 M5 负责写入状态：tool_call_id 
 
 M4 不创建 DataCatalogAdapter、QueryAdapter、AnalysisAdapter 或 ReportAdapter。只有存在稳定的协议转换时才建立明确端口；如果只是把字典复制到另一个字典，应直接提取共享 Service 或删除转换层。
 
-#### 4.13 测试与验收标准
+### 4.13 测试与验收标准
 
 **DTO 与 Registry 单元测试**：
 
@@ -2446,11 +2474,13 @@ M4 不创建 DataCatalogAdapter、QueryAdapter、AnalysisAdapter 或 ReportAdapt
 
 **完善判定**：M4 的职责、输入/输出 DTO、Registry、Tool Protocol、五类工具衔接、执行门禁、错误与重试、结果外置、幂等、字段流、文件任务和测试均已覆盖，文档层面判定为完善。代码层面仍属于需要新增/重构，必须完成 M4.1～M4.14 并通过测试后才视为实现完成。
 
-### 模块 5：Loop Controller
+## 11. Loop Controller
+
+> 架构模块 5；本章小节沿用模块内编号，研发阶段编号见第 21 节。
 
 > 本节是 M5 的文档设计基线。M5 是 Harness 的唯一调度中心，只编排 M1～M4 和 M6 的正式接口，不接管 ContextEngine、Planning Agent、工具 handler 或 Memory Formation 的内部逻辑。
 
-#### 5.1 模块职责
+### 6.1 模块职责
 
 **一句话职责**：创建或恢复同一个 Harness Run，按状态机驱动 BuildContext、Plan、动作提交、工具执行、观察记录、暂停恢复和 Finalization，直到返回暂停结果或终态结果。
 
@@ -2475,7 +2505,7 @@ M4 不创建 DataCatalogAdapter、QueryAdapter、AnalysisAdapter 或 ReportAdapt
 
 **不负责**：生成上下文内容、决定下一步动作、执行业务工具、保存完整工具结果、构造最终会话输出、提取长期记忆、直接调用 `MemoryManager.add()`、实现用户级工具权限或保存完整 Prompt/reasoning。
 
-#### 5.2 运行状态与控制步骤
+### 6.2 运行状态与控制步骤
 
 规则要求的控制步骤映射到现有统一枚举如下：
 
@@ -2496,7 +2526,7 @@ M4 不创建 DataCatalogAdapter、QueryAdapter、AnalysisAdapter 或 ReportAdapt
 
 `CheckContinuation`、`PauseRun` 和 `ResumeRun` 是控制步骤，不另造 `LoopPhase` 同义值。M1 已冻结的 `record_observation`、`wait_confirmation` 和 `restore_run` 分别承载这三个步骤。`RestoreRun` 与 `ResumeRun` 共享 `restore_run` 阶段但不是同一命令：前者由进程/任务恢复器调用，只恢复未完成的运行现场；后者由用户确认接口调用，必须携带并消费 `ConfirmationReply`。二者都不得创建新 `run_id`、`turn_id` 或 `thread_id`。
 
-#### 5.3 输入 DTO 与校验
+### 6.3 输入 DTO 与校验
 
 API 不直接向 Loop Controller 传裸字典。新运行先由 `AgentService._new_identity()` 生成可信身份；当前代码固定 `thread_id == conversation_id`。恢复和取消使用 M1 唯一的 `HarnessRunRef`，其中 `user_id` 来自服务端当前身份；当前项目尚无真实登录体系，默认用户只用于运行归属校验，不等于用户工具授权。
 
@@ -2652,7 +2682,7 @@ class LoopRunResult(ContractModel):
 5. `resolved_conditions` 只接受 `ConfirmationRequest.required_fields` 允许的键，并经对应业务类型校验；不能把客户端任意字典直接合并进 Planner 上下文。
 6. 终态 run 不可 restore/resume；`RestoreRunCommand` 只接受 `running` 或 `running/finalization`，不要求 `ConfirmationReply`；`ResumeRunCommand` 只接受 `waiting_confirmation`，且必须消费当前 published、未过期的确认。
 
-#### 5.4 输出、事件与持久化边界
+### 6.4 输出、事件与持久化边界
 
 `LoopRunResult` 只表示“暂停”或“终态”，不会把中间 `running` 状态作为同步调用完成结果。`RunningRunSnapshot` 只用于状态查询或执行权已被其他 Worker 持有时的只读响应；`CancelAccepted` 只表示取消标记已持久化，不表示运行已经进入 `cancelled`。同步 API 等待暂停或终态；SSE 使用同一控制流实时发送事件，最后仍以相同 `LoopRunResult` 收口。
 
@@ -2668,7 +2698,7 @@ class LoopRunResult(ContractModel):
 
 统一事件最少包括 `run.started`、`context.built`、`planner.completed`、`tool.started`、`tool.completed`、`run.paused`、`run.resumed`、`run.completed` 和 `run.failed`；取消和超时分别使用 `run.cancelled`、`run.timeout`。事件由 M5 的 EventSink 产生一次，SSE 只是订阅者，不能再次写会话历史。
 
-#### 5.5 主循环与三类动作分派
+### 6.5 主循环与三类动作分派
 
 每次成功调用 Planning Agent 计为一次 iteration；Planner 自身结构化输出重试不增加 iteration。成功或部分成功工具结果必须先写入观察，再重新 BuildContext，因为工具结果是下一次规划的新证据。
 
@@ -2700,7 +2730,7 @@ StartRun / RestoreRun
 4. 进程在第 1～3 步间中断时，恢复流程比较业务记录和 checkpoint：无 checkpoint 的 prepared 记录不可见并可回滚；checkpoint 已包含同一 digest 时补记 committed；任何 digest 不一致都进入 conflict，不自动执行。
 5. 工具动作进入 M4 前再次查询 `ToolExecutionStore`；已有成功结果直接返回并转为观察，不能重放 handler。
 
-#### 5.6 重试、重新规划和续行策略
+### 6.6 重试、重新规划和续行策略
 
 同一动作重试与重新规划是两条不同路径：重试保持同一个 `action_id` 和参数 digest；重新规划重新 BuildContext 并生成新的 `action_seq/action_id`。不能通过“重新规划同样参数”绕开重试上限。
 
@@ -2718,7 +2748,7 @@ StartRun / RestoreRun
 
 达到 `max_iterations` 时写 `RunError(code="max_iterations_exceeded")` 并进入 `failed` intent；达到 `deadline_at` 时发出取消信号并进入 `timeout` intent。每个外部调用前后都检查取消与 deadline，运行超时不能只依赖单个工具超时。
 
-#### 5.7 暂停、确认与恢复
+### 6.7 暂停、确认与恢复
 
 暂停来源只有已提交的 `ask_user` 或 M4 `ToolResult(status=needs_user)`。后者的 `AskUserRequest` 先转换为正式 `ConfirmationRequest`；`confirmation_id` 由服务端生成，不接受 Planner 或工具提供。
 
@@ -2756,7 +2786,7 @@ ConfirmationReply
 
 口径冲突、时间范围缺失、历史结果或附件引用不唯一、工具需要业务确认均使用同一流程。用户确认的条件只进入当前 run 的 `resolved_conditions`，不能未经 Memory Governance 修改全局指标定义或长期记忆。
 
-#### 5.8 取消、超时和崩溃恢复
+### 6.8 取消、超时和崩溃恢复
 
 - 取消请求以 `cancel_request_id + run_id` 为幂等键，对 `harness_runs` 条件设置 `cancel_requested=True`，不新增额外控制状态。运行仍为 `running` 时立即返回 `CancelAccepted`；当前 owner 在下一个安全点停止 Planner/工具，并以 `terminal_intent=cancelled` 进入 M6，完成后状态查询返回终态 `LoopRunResult`。
 - 对 `waiting_confirmation` 取消时，取消请求先以同一事务把 pending confirmation 标记为 rejected/cancelled，再由取得执行租约的恢复 Worker 转为 `running/finalization + terminal_intent=cancelled`。如果可以在同一请求内完成 M6，则直接返回终态 `LoopRunResult`；否则返回 `CancelAccepted`，不得把 waiting 状态直接改成终态。
@@ -2767,7 +2797,7 @@ ConfirmationReply
 - 终态 checkpoint 已写入且 ledger 处于 `history_saved`、`checkpoint_saved` 或 `run_released` 时，恢复只能做 M6 对账；不得把该运行重新标记为 `running`。
 - SSE 客户端断开不等于用户取消。服务端运行是否继续由部署策略控制；若请求级任务会随连接取消，必须先落 checkpoint，再由状态查询或 resume 接管。
 
-#### 5.9 Protocol 与装配边界
+### 6.9 Protocol 与装配边界
 
 ~~~python
 from collections.abc import AsyncIterator
@@ -2855,7 +2885,15 @@ class LoopController(Protocol):
 
 单元测试使用内存 fake 实现 `HarnessRunStore`、`ConfirmationStore`、M2 Context builder、M3 Planner、M4 ToolRuntime、M6 FinalizationService 和 EventSink；不能在 Loop Controller 测试中连接真实 LLM、DW、Qdrant 或 Neo4j。
 
-#### 5.9.1 Run Lease 与 Fencing 规则
+### 5.9.1 Run Lease 与 Fencing 规则
+
+**需要新增：版本与 Checkpoint 写入协调。** `state_version` 是控制状态 CAS，`FinalizationLedgerState.version` 是独立账本 CAS，`fencing_token` 是 Worker 租约 epoch；`checkpoint_version` 是 Harness 业务协调层分配的单调修订号，并非 Saver 原生整数 CAS。`harness_runs` 增加 `checkpoint_revision/checkpoint_id/checkpoint_digest`，动作记录保留 `base_checkpoint_revision/candidate_checkpoint_id/payload_digest`。`read_checkpoint_revision(run_ref)` 从这一业务映射读取。所有版本独立递增，不用租约 token 替代数据版本。
+
+Checkpoint 写入必须经同一个 M5 写入协调入口：在 run 级数据库锁内复核 lease、fence 和预期修订，向 Saver 写入带候选 digest 的 checkpoint，再发布业务修订映射；取得/接管租约也使用该锁。Saver 写入与业务提交不是同一事务，写入响应未知时禁止盲目重写，必须按候选标识读取对账。恢复和 Working Memory 只读取已发布映射指向的 checkpoint，不以 Saver 的无条件 latest 作为业务事实。锁丢失或 fence 过期立即停止写入；旧请求即使最终落入 Saver，也不能发布映射、覆盖新 owner 的有效状态或授权执行。此入口需用实际 Saver API 做 M1/M6 阶段集成测试，不假设官方提供 fenced CAS。
+
+prepared 动作必须保留可重建的受控 payload 和 digest，不能只保存不可逆摘要。恢复先读正式动作记录：committed 则重建同一动作；prepared 且候选 checkpoint 匹配则在新 fence 下补 committed；无候选证明则沿用同一动作补 checkpoint，不重新规划；内容冲突进入受控失败。旧 fence 仅作为历史证明，新 owner 不能继续使用它写入。动作提交完成后重新加载状态，再按已提交 payload 分派。
+
+终态 checkpoint 与账本完成不是同一时刻。账本未 completed 时，M5 允许取得同一 run 的收尾专用租约，调用 M6 reconcile，禁止运行 Planner/Tool；账本完成后释放。真正终态指 checkpoint 与主账本均完成。Formation 后台任务使用独立 claim lease，不延长 Harness 执行租约。
 
 `active_run_id` 只表达会话当前业务运行，不授予某个进程执行权。M5 另外在 `harness_runs` 保存 `lease_owner_id/lease_expires_at/fencing_token/heartbeat_at`；`fencing_token` 每次首次取得或过期后接管租约时单调加一，同一 owner 的正常续租不增加 token。租约使用数据库 UTC 时间判断，不能依赖 Worker 本地时钟。
 
@@ -2871,7 +2909,7 @@ class LoopController(Protocol):
 
 `build_harness_graph()` 和旧 `build_agent_graph()` 共用应用启动时已 setup 的同一个 `AsyncPostgresSaver`，但同一 `thread_id` 同一时刻只能有一个写入图。迁移期间由配置选择入口：未启用 Harness 的请求继续走旧图；启用后该会话的所有新 run 固定走 Harness，不能在暂停期间切回旧图。`MemoryClientManager` 的 Working Memory loader 在 Harness 成为默认入口时切换到 `checkpointed_harness_graph`，避免从旧图读取另一份状态。
 
-#### 5.10 核心伪代码
+### 6.10 核心伪代码
 
 ~~~text
 async start(command: StartRunCommand) -> LoopRunResult:
@@ -2955,10 +2993,13 @@ async continue_running(state):
                 action=next_action,
                 expected_action_seq=next_action.action_seq,
                 expected_state_version=state.harness.state_version,
+                expected_checkpoint_version=await read_checkpoint_revision(run_ref(state)),
                 execution_fence=fence,
             )
         )
         assert commit_result.action_seq == next_action.action_seq
+        state = await run_store.load_state(run_ref(state))
+        assert state.harness.action_seq == commit_result.action_seq
 
         if next_action.action_type == ask_user:
             return await pause(state, next_action.ask_user)
@@ -2999,7 +3040,7 @@ async continue_running(state):
 
 伪代码中的 `initialize_new_run`、`load_checkpoint_for_route`、`is_terminal`、`verify_restore_identity`、`restore_process`、`load_and_validate_waiting_state`、`finalization_checkpoint_exists`、`build_finalization_input_from_checkpoint`、`continue_running`、`merge_whitelisted_conditions`、`load_current_result_or_conflict`、`convert_to_confirmation`、`retry_context_build`、`execute_or_reuse_tool`、`pause`、`planner_can_compensate` 和 `persist_checkpoint` 是 M5/M6 边界上的内部职责描述，不是当前已有函数。`start` 只创建新 run；`restore` 先只读判断是否存在终态 checkpoint：缺少 ledger 时直接报收尾错误，存在 ledger 时无论是否已完成都只调用 M6 `reconcile()`，绝不把终态当作普通恢复；其余情况才处理进程中断或服务重启，且禁止从 `waiting_confirmation` 进入普通循环；`resume` 只处理已发布确认，禁止把普通 `running` 当作用户确认恢复。没有最终 checkpoint 时，`restore` 从原 `running/finalization` checkpoint 调用现有 `build_turn_output()`，重建确定性的受控 `FinalizationInput` 并调用 M6 `finalize()`；两条路径都不得回到 ContextEngine、Planner 或 Tool Runtime。`ActionCommitRequest` 沿用 M3 契约；`ActionCommitResult` 只证明提交状态，分派时继续使用同一个已校验 `next_action`，不得假设提交结果携带不存在的 `action` 字段。同动作工具重试停留在内层循环，保持 `action_id`、参数摘要、iteration 和 action_seq 不变；退出内层循环后才记录一次最终观察并决定重规划或失败。调用 M6 前先写 `running/finalization + terminal_intent`；M6 返回成功后才写终态。
 
-#### 5.11 字段级数据流
+### 6.11 字段级数据流
 
 | 上游模块 | 上游字段 | 当前模块如何消费 | 当前模块输出字段 | 下游模块 | 下游用途 |
 | --- | --- | --- | --- | --- | --- |
@@ -3017,7 +3058,7 @@ async continue_running(state):
 | M3 | `NextAction.final_answer` | 与 run 身份、观察、限制和终态意图组装 | `FinalizationInput` | M6 | 统一收尾 |
 | M6 | `FinalizationResult` | 封装为 LoopRunResult 并发终态事件 | API/SSE Response | 客户端 | 唯一最终结果 |
 
-#### 5.12 与现有代码的衔接和文件级任务
+### 6.12 与现有代码的衔接和文件级任务
 
 | 任务 | 类型 | 文件/函数 | 产出 | 前置 |
 | --- | --- | --- | --- | --- |
@@ -3036,7 +3077,7 @@ async continue_running(state):
 
 **过渡期保留**：`app/agent/graph.py::build_agent_graph()`、`app/agent/nodes/finalize_turn.py` 和旧 `AgentService` 结果结构继续服务未切换会话，但不再新增 Harness 行为。Harness 端到端验收和 Working Memory 状态源切换完成后，再删除旧图重复调度与旧的服务层收尾分支；M5 不提前删除旧节点。
 
-#### 5.13 测试、验收与完善判定
+### 6.13 测试、验收与完善判定
 
 **单元测试**：覆盖三类动作分派、iteration、三类重试计数、最大迭代、deadline、取消、状态非法、单活冲突、prepared 动作五个崩溃点、确认字段白名单、确认过期与重复回复。
 
@@ -3055,9 +3096,11 @@ async continue_running(state):
 
 **完善判定**：上述职责、输入/输出、状态映射、主循环、重试、暂停恢复、崩溃对账、接口、字段流、文件任务和测试均已覆盖，M5 在文档层面判定为完善。代码层面仍属于需要新增/重构，必须依次完成 M5.1～M5.12 后才算实现完成。
 
-### 模块 6：Finalization + Memory Formation
+## 12. Finalization + Memory Formation
 
-#### 6.1 模块职责
+> 架构模块 6；本章小节沿用模块内编号，研发阶段编号见第 21 节。
+
+### 6.1 模块职责
 
 **一句话职责**：把 M5 已确定的终态意图转换为一次可重试、可对账、可追溯的会话收尾，并在会话结果稳定落库后提交长期记忆形成。
 
@@ -3084,7 +3127,7 @@ async continue_running(state):
 
 **不负责**：继续规划、执行工具、重建上下文、决定是否询问用户、直接调用 `MemoryManager.add()` 或重新实现 Eligibility、Extractor、Governance、MemoryWriter。`waiting_confirmation` 不进入 M6；M5 必须先保存暂停现场并返回。
 
-#### 6.2 输入 DTO 与状态资格
+### 6.2 输入 DTO 与状态资格
 
 M6 只接受 M5 已写入 `running/finalization` 的终态意图。它不接受 `waiting_confirmation`，也不接受从业务阶段直接传来的终态。
 
@@ -3560,7 +3603,7 @@ class FinalCheckpointRecord(ContractModel):
     terminal_status: HarnessStatus
     control_state: HarnessControlState
     checkpoint_id: str = Field(min_length=1)
-    # Saver 的 checkpoint 修订号，不是 Harness 状态版本或账本 CAS 版本。
+    # Harness 协调修订号，映射 Saver checkpoint_id，不是 Saver 原生 CAS。
     checkpoint_version: int = Field(ge=0)
     # HarnessControlState 的逻辑版本；FinalizationLedgerState.version 另行计数。
     state_version: int = Field(ge=0)
@@ -3634,7 +3677,7 @@ class FinalizationService(Protocol):
 
 `FinalizationInput` 的 `output_type`、`output_payload` 和 `assistant_content` 必须来自 M5 调用现有 `build_turn_output(final_state)` 的结果；`project_id` 和 `asset_ids` 来自经过 M1/M2 身份与附件访问边界校验的最终状态，不允许客户端在收尾阶段改写。`output_quality` 由已持久化的工具/报告状态确定，不能由 Planner 自行声称。M6 不复制现有问数、报告或聊天分支。完整 `AgentState`、Prompt、SQL、Python 源码、完整 rows 和原始事件不进入该 DTO。`FinalizationHistoryWriter` 是重构后的 `ConversationRepository.finish_turn()` 目标契约；当前实现缺少 `thread_id`、`run_id` 和 `finalization_digest`，属于需要重构。
 
-#### 6.3 输出状态映射与持久化位置
+### 6.3 输出状态映射与持久化位置
 
 | M5 终态意图 | M6 Harness status | 会话 status | output_status | completed_at | active_run_id | Memory Formation |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -3647,7 +3690,7 @@ class FinalizationService(Protocol):
 
 `partial` 是会话输出质量和数据库轮次状态，不新增 `HarnessStatus.PARTIAL`。`FinalizationResult.status` 只使用 M1 已冻结的 HarnessStatus；`ConversationRepository.finish_turn()` 的会话 `status` 才可以使用 `partial`。
 
-#### 6.4 与现有结果整理和会话仓储的衔接
+### 6.4 与现有结果整理和会话仓储的衔接
 
 1. M5 进入 `running/finalization` 后调用 `app/agent/turn_output.py::build_turn_output(final_state)`，得到唯一的 `output_type`、`output_payload` 和 `assistant_content`。
 2. `app/services/agent_service.py::_history_output()` 继续复用该函数；`_save_turn_finish()` 和 `_submit_memory_formation()` 改为委托 M6，不能被同步和 SSE 各调用一次。
@@ -3657,7 +3700,7 @@ class FinalizationService(Protocol):
 
 当前 `finish_turn()` 的真实行为是查询 turn/conversation，写 assistant message、业务 `turn_outputs` 和 `execution_trace`，然后设置 `completed_at`、清空 `active_run_id` 并提交。它没有 finalization 幂等键；恢复重试会重新生成 message/output UUID，不能直接满足幂等。因此该函数属于需要重构，而不是现有幂等能力。Harness 目标实现把“保存轮次结果”和“释放会话 active run”拆成两个可对账步骤：先幂等保存历史，再保存最终 checkpoint，最后通过 `WHERE active_run_id = :run_id` 的条件更新释放 run。
 
-#### 6.5 Working Memory、最终 Checkpoint 与持久化顺序
+### 6.5 Working Memory、最终 Checkpoint 与持久化顺序
 
 Working Memory 有两个落点：会话历史表保存用户可见事实，Checkpointer 的 `AgentState.messages` 保存下一次上下文读取所需的消息状态。M6 是 Harness 路径的唯一收尾写入者。
 
@@ -3689,7 +3732,7 @@ Working Memory 消息规则：
 - 会话历史表是用户可见历史事实，Checkpointer 是 Working Memory 状态源。二者必须以 `turn_id/run_id/finalization_digest` 对账；任何一方都不能通过读取另一方并重新生成随机消息 ID 来“修复”冲突。
 - 现有 `finalize_turn()` 按 `len(messages)` 计算序号，无法独自保证恢复幂等；Harness 路径必须改为上述确定性 turn 级消息键。旧图在迁移期保持原行为，但不得与 Harness 同时写同一个 turn。
 
-#### 6.6 Finalization 幂等和崩溃对账
+### 6.6 Finalization 幂等和崩溃对账
 
 `finalization_digest` 使用规范化后的 `terminal_intent`、`run_ref`、输出类型、受控 output payload、助手文本、结果引用、证据引用、限制和错误摘要计算 SHA-256。不得把随机 UUID、对象地址或未脱敏的完整异常文本纳入摘要。
 
@@ -3699,7 +3742,7 @@ Working Memory 消息规则：
 | --- | --- | --- |
 | `finalization_digest` | `VARCHAR(64)` | 同一收尾输入的幂等身份 |
 | `finalization_status` | `pending/history_saved/checkpoint_saved/run_released/completed` | 主收尾进度；不被记忆增强失败覆盖 |
-| `memory_submission_status` | `not_attempted/accepted/failed/not_configured` | Formation 提交边界，与主收尾状态分离 |
+| `memory_submission_status` | `not_attempted/accepted/failed/unknown/not_configured` | Formation 提交边界，与任务处理状态和主收尾状态分离 |
 | `history_saved_at` | UTC timestamp | 会话事务已提交 |
 | `checkpoint_saved_at` | UTC timestamp | 最终 checkpoint 已提交 |
 | `active_run_released_at` | UTC timestamp | 已按当前 run 条件清理会话 active run |
@@ -3809,7 +3852,7 @@ async reconcile(run_ref: HarnessRunRef) -> FinalizationResult:
 
 上面 `verify_same_identity_and_digest`、`load_or_submit_formation` 和 `rebuild_finalization_result` 都是 M6 待实现的内部函数。`read_final_checkpoint()` 返回已存在的终态 checkpoint；对账不应重复保存同一 checkpoint。若实现发现 checkpoint 记录存在但账本仍为 `history_saved`，只做账本状态推进；如果最终 checkpoint 缺失，对账必须失败并等待 M6 `finalize()` 从原始收尾输入补写，不能由 `reconcile()` 猜测或重新生成输入。每个 `mark_*` 成功后必须重新读取 ledger，使用递增后的 `version` 进行下一步更新。
 
-#### 6.7 Memory Formation 接入和幂等
+### 6.7 Memory Formation 接入和幂等
 
 M6 的长期记忆调用链固定为：
 
@@ -3839,7 +3882,7 @@ class TurnMemoryInput(BaseModel):
 
 `MemoryFormationRunModel` 的目标迁移是增加非空 `formation_key`、唯一约束和按 key 查询索引，保留 `formation_run_id` 作为任务 ID。`MemoryFormationResult` 继续复用 `app/agent/memory/contracts.py` 的现有模型，不在 M6 复制候选决定字段。
 
-#### 6.8 失败、部分结果和取消语义
+### 6.8 失败、部分结果和取消语义
 
 - 完整结果：`output_status="completed"`，助手消息和结构化输出可见，结果引用和证据引用可追溯。
 - 部分结果：`output_status="partial"`，仍可保存和返回；`limitations` 必须说明失败任务、截断、缺失映射或失败组件。不能新增 `HarnessStatus.PARTIAL`。
@@ -3848,7 +3891,7 @@ class TurnMemoryInput(BaseModel):
 - 超时：`output_status="timeout"`，明确运行超时；不把已超时的工具结果伪装成完整结论。
 - `waiting_confirmation`：只由 M5 返回 `ConfirmationRequest`，不调用 `finish_turn()`、不写 `completed_at`、不清 `active_run_id`、不写最终 assistant message、不提交 Formation。
 
-#### 6.9 与 AgentService、旧图和 API/SSE 的衔接
+### 6.9 与 AgentService、旧图和 API/SSE 的衔接
 
 | 代码位置 | 当前状态 | M6 处理 |
 | --- | --- | --- |
@@ -3864,7 +3907,7 @@ class TurnMemoryInput(BaseModel):
 
 旧 `build_agent_graph()` 和旧 AgentService 路径在迁移期继续工作，但一个 `thread_id` 只能选择一个收尾所有者。Harness 开启后，旧 `finalize_turn` 节点不再挂在该会话图上；SSE 只订阅 M5 EventSink，不能自行调用历史保存或 Formation。
 
-#### 6.10 核心伪代码
+### 6.10 核心伪代码
 
 ~~~text
 async finalize(value: FinalizationInput) -> FinalizationResult:
@@ -3947,7 +3990,7 @@ async finalize(value: FinalizationInput) -> FinalizationResult:
                 message_id=f"turn:{value.run_ref.turn_id}:assistant",
                 role="assistant",
                 content=value.assistant_content,
-                content_digest=sha256(value.assistant_content.encode("utf-8")),
+                content_digest=sha256(value.assistant_content.encode("utf-8")).hexdigest(),
                 turn_id=value.run_ref.turn_id,
                 run_id=value.run_ref.run_id,
                 output_type=value.output_type,
@@ -4046,13 +4089,24 @@ async finalize(value: FinalizationInput) -> FinalizationResult:
                     expected_version=ledger.version,
                 )
         except Exception as exc:
-            memory_submission_status = "failed"
-            await finalization_ledger.mark_memory_failed(
+        except FormationSubmissionUnknown as exc:
+            memory_submission_status = "unknown"
+            await finalization_ledger.mark_memory_unknown(
                 run_ref=value.run_ref,
                 digest=digest,
+                formation_key=formation_key,
                 error=redact(exc),
                 expected_status="run_released",
                 expected_version=ledger.version,
+                execution_fence=value.execution_fence,
+            )
+        except FormationBusinessFailure as exc:
+        # LedgerConflict 和账本写入异常必须向上抛出，由 M6 对账处理，不得归入 Formation 失败。
+            memory_submission_status = "failed"
+            await finalization_ledger.mark_memory_failed(
+                run_ref=value.run_ref, digest=digest, error=redact(exc),
+                expected_status="run_released", expected_version=ledger.version,
+                execution_fence=value.execution_fence,
             )
 
     ledger = await finalization_ledger.load(run_ref=value.run_ref)
@@ -4087,7 +4141,7 @@ async finalize(value: FinalizationInput) -> FinalizationResult:
 
 `map_history_status`、`map_output_status`、`map_harness_status`、`embed_finalization_metadata`、`canonical_controlled_payload`、`transition_finalization_to_terminal`、`derive_formation_key` 和 `redact` 是 M6 内部待实现函数，不是当前代码中已存在的接口。`finalization_result_reader` 通过 `FinalizationResultReader` 从已保存的受控输出、ledger 和 Formation 审计状态重建原结果；不能依赖进程内缓存。伪代码只负责收尾编排；Eligibility、Extractor、Governance、MemoryWriter 的内部逻辑仍由现有 Memory Formation 服务负责。正常 API 重放不会在 `memory_submission_status=failed` 时反复提交 Formation；维护性补偿任务可使用同一个 `formation_key` 重试，但不能改写主运行结果。
 
-#### 6.11 字段级数据流
+### 6.11 字段级数据流
 
 | 上游模块 | 上游字段 | 当前模块如何消费 | 当前模块输出字段 | 下游模块 | 下游用途 |
 | --- | --- | --- | --- | --- | --- |
@@ -4123,7 +4177,7 @@ M3 final_answer
     -> API/SSE
 ~~~
 
-#### 6.12 文件级任务、测试、验收与完善判定
+### 6.12 文件级任务、测试、验收与完善判定
 
 | 任务 | 类型 | 文件/函数 | 产出 | 前置 |
 | --- | --- | --- | --- | --- |
@@ -4159,27 +4213,8 @@ M3 final_answer
 
 **完善判定**：模块 6的职责、输入/输出 DTO、状态映射、`build_turn_output()` 和会话仓储衔接、Working Memory、Checkpoint 顺序、崩溃对账、Finalization/Formation 幂等、Protocol、伪代码、字段流、文件任务、测试和验收均已覆盖。M6 在文档层面判定为完善；代码层面仍是需要新增/重构，未因文档完成而宣称已经实现。
 
-## 7. 跨模块接口、存储、API 与可观测性
-
-### 7.1 正式接口汇总
-
-以下接口以各模块中的完整定义为准，本表用于检查跨模块调用方向，不另建同名 DTO 或薄 Adapter。
-
-| 接口 | 正式签名 | 调用者 | 实现者 | 失败边界与 Mock 方式 |
-| --- | --- | --- | --- | --- |
-| ContextEngine | `build(ContextRequest) -> CompiledContext` | M5 | 现有 `ContextEngine`，M2 扩展请求 | 原异常映射为 `RunError(CONTEXT)`；单测注入 Fake builder |
-| PlanningAgent | `plan(PlannerInput, issuance=ActionIssuanceContext) -> NextAction` | M5 | M3 | 失败抛 `PlannerFailure(RunError)`；Fake 返回三类动作 |
-| ActionCommitter | `commit(ActionCommitRequest) -> ActionCommitResult` | M5 | M3/M5 协调层 | 并发或摘要冲突抛 `ActionCommitFailure(CONFLICT)`；Fake 模拟崩溃点 |
-| ToolRegistry | `get(name) -> Tool`、`list_specs() -> tuple[ToolSpec, ...]` | M3/M4/M5 | M4 | 未注册或禁用工具返回稳定校验错误；单测使用本地 Registry |
-| Tool | `execute(ToolCall, request=ToolExecutionRequest, dependencies=AgentContext) -> ToolHandlerResult` | M4 Dispatcher | M4 各高层工具 | handler 只抛可归一化异常；Fake 不连接外部依赖 |
-| ToolRuntime | `execute(ToolExecutionRequest) -> ToolResult` | M5 | M4 | 所有错误归一化为 `ToolResult` 或运行冲突；Fake 按 attempt 返回结果 |
-| LoopController | `start/restore/resume/cancel(...) -> LoopRunResult` | HarnessRunner | M5 | `restore` 只处理进程恢复，`resume` 只处理确认恢复；只返回暂停或终态 |
-| FinalizationService | `finalize(FinalizationInput) -> FinalizationResult`、`reconcile(HarnessRunRef) -> FinalizationResult` | M5 | M6 | 主收尾失败抛受控 Finalization 错误；终态 checkpoint 对账不回到 M5；Formation 失败写独立状态 |
-| MemoryFormationService | `submit(TurnMemoryInput) -> MemoryFormationResult` | M6 | 现有服务，M6 增加幂等 | Fake 返回 pending/skipped/failed；不得绕过 Governance |
-
-`ActionCommitResult` 只证明动作已经提交，不携带完整 `NextAction`；M5 使用同一个已校验 `next_action` 做后续分派。`ToolHandlerResult` 只在 M4 内部存在；跨模块只传 `ToolResult`。`CompiledContext` 仍是现有 ContextEngine 的唯一输出。
-
-### 7.2 存储事实边界
+## 13. 存储与 Checkpointer 设计
+### 存储事实边界
 
 | 数据 | LangGraph Checkpointer | PostgreSQL 业务表 | Qdrant | Neo4j | ResultArtifactStore |
 | --- | --- | --- | --- | --- | --- |
@@ -4196,7 +4231,7 @@ M3 final_answer
 
 PostgreSQL 是业务事实和审计来源；Qdrant 不是事实库，只保存可重建的向量投影；Neo4j 只保存 Semantic Memory 的实体关系投影；Checkpointer 只负责可恢复图状态。M4 首期 `ResultArtifactStore` 使用 PostgreSQL JSONB 作为明确实现边界，避免引入当前仓库没有的对象存储依赖；单对象受 `RuntimePolicy.max_result_bytes` 限制。以后迁移到对象存储时保持 `ref` 协议不变，但必须先实现双读、校验和删除策略。
 
-### 7.3 新增和重构的 PostgreSQL 结构
+### 新增和重构的 PostgreSQL 结构
 
 当前项目只使用 `Base.metadata.create_all()`，没有业务迁移工具。新增表可以由它在空库创建，但它不会为已有表增加列、约束或索引。因此进入 M5/M6 集成前必须引入可回滚的版本化迁移；不能依赖 `create_all()` 完成线上升级。
 
@@ -4213,7 +4248,7 @@ PostgreSQL 是业务事实和审计来源；Qdrant 不是事实库，只保存�
 
 `harness_runs` 与 Checkpointer 保存不同事实：前者用于单活、协调、查询和取消，后者保存完整可恢复状态。两者不做跨 Saver 单事务；所有跨资源步骤使用 prepared/checkpoint/committed 或 ledger 状态对账。`harness_result_artifacts` 读取必须同时校验 `ref + run_id + user_id`，删除后不得通过历史引用恢复正文。
 
-### 7.4 Checkpointer 与旧图迁移
+### Checkpointer 与旧图迁移
 
 `app/clients/postgres_client.py` 继续只创建一个 `AsyncPostgresSaver` 并只调用一次 `setup()`；Harness 不创建官方表。`build_agent_graph()` 和 `build_harness_graph()` 可以共用同一 Saver，但必须为各自配置固定的 checkpoint namespace。当前固定依赖版本是 LangGraph `1.1.6` 和 `langgraph-checkpoint-postgres` `3.1.2`；M1 实现前必须用集成测试验证 namespace 配置键和 `aget_state()` 读取方式，不能仅根据约定推断。
 
@@ -4225,46 +4260,15 @@ PostgreSQL 是业务事实和审计来源；Qdrant 不是事实库，只保存�
 4. `MemoryClientManager` 不能继续固定绑定旧图；Working loader 必须按会话 `agent_engine` 选择对应图和 namespace。Harness 成为默认入口前，这个切换必须有测试。
 5. Harness 端到端、恢复和历史兼容通过后，才批量把新会话默认值切为 harness；旧图先保留，不在本轮设计中直接删除。
 
-### 7.5 暂停、API 与 SSE
-
-**现有能力**：`POST /api/agent/run` 和 `POST /api/agent/run/stream` 只支持新运行，响应是现有 `AgentRunResponse`，没有状态、确认或取消接口；`user_id` 来自 `settings.app.default_user_id`。
-
-**需要重构/新增**：保留两个旧入口和旧响应，按 `agent_engine` 路由。Harness 路径增加：
-
-| 接口 | 请求 | 响应 | 语义 |
-| --- | --- | --- | --- |
-| `POST /api/agent/run` | 扩展现有请求，可选 `project_id` | 旧会话返回 `AgentRunResponse`；Harness 会话返回版本化 Harness 响应 | 创建新 run；不得隐式恢复 |
-| `POST /api/agent/run/stream` | 与同步入口相同 | SSE | 与同步入口共享同一 HarnessRunner |
-| `GET /api/agent/runs/{run_id}` | path run_id，服务端当前用户 | `RunningRunSnapshot | LoopRunResult` | running 时返回只读快照；暂停或终态返回 LoopRunResult；不触发执行 |
-| `POST /api/agent/runs/{run_id}/confirm` | `ResumeRunCommand`（服务端补入可信 `run_ref`） | `LoopRunResult` | 只接受 waiting_confirmation，校验运行身份和确认凭证后恢复同一 run |
-| `POST /api/agent/runs/{run_id}/confirm/stream` | `ResumeRunCommand`（服务端补入可信 `run_ref`） | SSE | 与同步确认恢复共用 controller；不调用 `restore` |
-| `POST /api/agent/runs/{run_id}/cancel` | `CancelRunCommand.reason`，服务端生成 `cancel_request_id` | `CancelAccepted | LoopRunResult` | 运行中先持久化取消标记并返回 accepted；已经终态返回原结果；不得等待时直接跳过 M6 写终态 |
-
-Harness 响应必须含 `run_ref/status/phase/iteration`；运行中查询只返回 `RunningRunSnapshot`，取消受理只返回 `CancelAccepted`，暂停和终态使用 `LoopRunResult`。暂停只携带 `pending_confirmation`；终态只携带 `finalization_result`。进程或服务重启恢复使用内部 `RestoreRunCommand`，不是用户确认 API；终态 checkpoint 对账由 M6 `reconcile()` 完成。当前未启用真实登录和用户权限校验，不能声称这些接口已完成认证授权；服务端当前用户仅用于运行归属、恢复凭证校验和结果隔离。
-
-暂停提交顺序固定为 `ConfirmationStore.prepare -> waiting checkpoint -> ConfirmationStore.publish -> run.paused`。只有 published 请求对 API 可见；prepared 记录在恢复时与 checkpoint 对账。确认回复校验五个身份字段、`active_run_id`、`confirmation_id`、状态、摘要和过期时间；确认后只合并白名单条件，拒绝后进入 cancelled Finalization。重复同 payload 幂等，不同 payload 冲突。
-
-SSE 使用 `HarnessEvent` 的 `event_id/event_type/run_ref/phase/status/iteration/action_id/payload/emitted_at`，事件至少覆盖 `run.started`、`context.built`、`planner.completed`、`tool.started`、`tool.completed`、`run.paused`、`run.resumed`、`run.completed`、`run.failed`、`run.cancelled` 和 `run.timeout`。流末尾发送与同步接口完全相同的 `LoopRunResult`；SSE 层不保存历史、不提交 Formation、不重复推进状态。客户端断开不等于取消，重连先查运行状态；如果需要事件补发，后续新增 Outbox，不把当前内存 EventSink 误写成持久事件总线。
-
-### 7.6 Traces、Metrics 与 Logs
-
-| 类型 | 必须覆盖 | 约束 |
-| --- | --- | --- |
-| Traces | `harness.run`、`context.build`、`planner.plan`、`action.validate`、`action.commit`、`tool.execute`、`observation.record`、`run.pause`、`run.resume`、`finalization`、`memory.formation.submit` | span 属性使用 ID、状态、阶段、工具名、耗时和受控错误；不写 Prompt、rows、附件正文或 reasoning |
-| Metrics | `harness.run.duration`、`harness.iteration.count`、`harness.run.status`、`context.build.duration`、`context.token_count`、`context.selected_count`、`planner.duration`、`planner.token_usage`、`planner.retry_count`、`tool.call.count`、`tool.call.duration`、`tool.call.status`、`tool.retry_count`、`confirmation.request.count`、`confirmation.wait.duration`、`memory.formation.status` | 标签只用低基数 `status/phase/tool_name/error_category/agent_engine`；禁止 user/run/turn/conversation/action ID 和原文 |
-| Logs | `run_id/turn_id/thread_id/conversation_id/node/phase/iteration/action_id/tool_call_id/tool_name/status/duration_ms/error_category/error_code/retry_count/context_build_id` | ID 可用于排障但不作为 metrics 标签；文本先脱敏并截断，SQL、rows、记忆正文、附件、凭证和完整异常不落日志 |
-
-工具结果、用户问题和附件文本只允许在明确采样策略下记录哈希、长度、引用或短摘要。未知异常保存稳定错误码和服务端 trace ID；API/SSE 不返回完整 traceback、连接串或内部 Prompt。
-
-## 8. Meta RAG、暂停、异常与幂等统一规则
-
-### 8.1 Meta RAG 与企业知识库
+## 14. 指标 Meta RAG 与企业知识库边界
+### Meta RAG 与企业知识库
 
 Data Catalog / Meta RAG 只覆盖指标定义、表、字段、维度、维度值及数据结构关系；企业知识库覆盖制度、业务规则、指标口径文档、分析规范和企业文档。当前仓库只有前者，`knowledge_base` 保持禁用，不能用 Qdrant Meta collection 或 ES 维度值检索冒充企业知识库。
 
 未来企业知识库启用后，两类来源必须在 ContextEngine 中保留独立 `source_kind/source_ref`。同一概念出现冲突时不能静默择一：Planner 生成 `ask_user`，M5 保存确认并暂停，用户选择只写入当前 run 的 `resolved_conditions`，恢复后重新 build；未经 Governance 不修改全局指标定义或长期记忆。
 
-### 8.2 暂停与恢复统一链路
+## 15. 暂停与恢复
+### 暂停与恢复统一链路
 
 ```text
 NextAction.ask_user / ToolResult.needs_user
@@ -4295,7 +4299,30 @@ RestoreRunCommand
 
 该链路覆盖多口径、时间范围缺失、历史结果或附件引用不唯一、Meta 与未来知识库冲突、工具 needs_user、确认拒绝、确认过期和重复回复。`waiting_confirmation` 不进入 M6；确认拒绝映射为 cancelled intent；取消请求不新增 `cancelling` 状态。进程 restore 不消费 `ConfirmationReply`，用户 confirmation resume 不恢复普通 `running`；两者都保留原 `run_id/turn_id/thread_id`。
 
-### 8.3 错误、重试与终止矩阵
+## 16. API 与 SSE
+### 暂停、API 与 SSE
+
+**现有能力**：`POST /api/agent/run` 和 `POST /api/agent/run/stream` 只支持新运行，响应是现有 `AgentRunResponse`，没有状态、确认或取消接口；`user_id` 来自 `settings.app.default_user_id`。
+
+**需要重构/新增**：保留两个旧入口和旧响应，按 `agent_engine` 路由。Harness 路径增加：
+
+| 接口 | 请求 | 响应 | 语义 |
+| --- | --- | --- | --- |
+| `POST /api/agent/run` | 扩展现有请求，可选 `project_id` | 旧会话返回 `AgentRunResponse`；Harness 会话返回版本化 Harness 响应 | 创建新 run；不得隐式恢复 |
+| `POST /api/agent/run/stream` | 与同步入口相同 | SSE | 与同步入口共享同一 HarnessRunner |
+| `GET /api/agent/runs/{run_id}` | path run_id，服务端当前用户 | `RunningRunSnapshot | LoopRunResult` | running 时返回只读快照；暂停或终态返回 LoopRunResult；不触发执行 |
+| `POST /api/agent/runs/{run_id}/confirm` | `ResumeRunCommand`（服务端补入可信 `run_ref`） | `LoopRunResult` | 只接受 waiting_confirmation，校验运行身份和确认凭证后恢复同一 run |
+| `POST /api/agent/runs/{run_id}/confirm/stream` | `ResumeRunCommand`（服务端补入可信 `run_ref`） | SSE | 与同步确认恢复共用 controller；不调用 `restore` |
+| `POST /api/agent/runs/{run_id}/cancel` | `CancelRunCommand.reason`；必填 Idempotency-Key 映射 cancel_request_id | `CancelAccepted | LoopRunResult` | running/waiting 先持久化取消标记；已经终态返回原结果；不得跳过 M6 写终态 |
+
+Harness 响应必须含 `run_ref/status/phase/iteration`；运行中查询只返回 `RunningRunSnapshot`，取消受理只返回 `CancelAccepted`，暂停和终态使用 `LoopRunResult`。暂停只携带 `pending_confirmation`；终态只携带 `finalization_result`。进程或服务重启恢复使用内部 `RestoreRunCommand`，不是用户确认 API；终态 checkpoint 对账由 M6 `reconcile()` 完成。当前未启用真实登录和用户权限校验，不能声称这些接口已完成认证授权；服务端当前用户仅用于运行归属、恢复凭证校验和结果隔离。
+
+暂停提交顺序固定为 `ConfirmationStore.prepare -> waiting checkpoint -> ConfirmationStore.publish -> run.paused`。只有 published 请求对 API 可见；prepared 记录在恢复时与 checkpoint 对账。确认回复校验五个身份字段、`active_run_id`、`confirmation_id`、状态、摘要和过期时间；确认后只合并白名单条件，拒绝后进入 cancelled Finalization。重复同 payload 幂等，不同 payload 冲突。
+
+SSE 使用 `HarnessEvent` 的 `event_id/event_type/run_ref/phase/status/iteration/action_id/payload/emitted_at`，事件至少覆盖 `run.started`、`context.built`、`planner.completed`、`tool.started`、`tool.completed`、`run.paused`、`run.resumed`、`run.completed`、`run.failed`、`run.cancelled` 和 `run.timeout`。流末尾发送与同步接口完全相同的 `LoopRunResult`；SSE 层不保存历史、不提交 Formation、不重复推进状态。客户端断开不等于取消，重连先查运行状态；如果需要事件补发，后续新增 Outbox，不把当前内存 EventSink 误写成持久事件总线。
+
+## 17. 异常、重试和幂等性
+### 错误、重试与终止矩阵
 
 | 场景 | 分类 | 是否重试 | 身份/计数 | 最终处理 |
 | --- | --- | --- | --- | --- |
@@ -4313,7 +4340,7 @@ RestoreRunCommand
 
 建议默认值是 `planner/context/tool` 各最多重试 2 次、最多 8 次 iteration、运行 5 分钟；实现时进入 `app/core/config.py`，不是当前已验证配置。重试计数写入 Checkpointer，并在 `harness_runs` 保存查询所需摘要。新的工具动作使用新 `action_id`，其 attempt 从 0 开始；重新规划不能规避同一动作的重试上限。
 
-### 8.4 幂等键与可见性
+### 幂等键与可见性
 
 | 副作用 | 幂等键 | 只有何时对下游可见 | 冲突处理 |
 | --- | --- | --- | --- |
@@ -4324,9 +4351,35 @@ RestoreRunCommand
 | 最终输出 | `run_id + finalization_digest`；`turn_outputs` 继续受 `(turn_id, output_type)` 唯一约束 | 历史、最终 checkpoint、active run 释放均完成 | 同 run 不同 digest 拒绝 |
 | Memory Formation | `formation_key` | 唯一 Formation 审计行创建或命中 | 并发冲突重新读取原任务 |
 
-## 9. 依赖装配、增量开发顺序与测试
+## 18. 可观测性
+### Traces、Metrics 与 Logs
 
-### 9.1 依赖装配
+| 类型 | 必须覆盖 | 约束 |
+| --- | --- | --- |
+| Traces | `harness.run`、`context.build`、`planner.plan`、`action.validate`、`action.commit`、`tool.execute`、`observation.record`、`run.pause`、`run.resume`、`finalization`、`memory.formation.submit` | span 属性使用 ID、状态、阶段、工具名、耗时和受控错误；不写 Prompt、rows、附件正文或 reasoning |
+| Metrics | `harness.run.duration`、`harness.iteration.count`、`harness.run.status`、`context.build.duration`、`context.token_count`、`context.selected_count`、`planner.duration`、`planner.token_usage`、`planner.retry_count`、`tool.call.count`、`tool.call.duration`、`tool.call.status`、`tool.retry_count`、`confirmation.request.count`、`confirmation.wait.duration`、`memory.formation.status` | 标签只用低基数 `status/phase/tool_name/error_category/agent_engine`；禁止 user/run/turn/conversation/action ID 和原文 |
+| Logs | `run_id/turn_id/thread_id/conversation_id/node/phase/iteration/action_id/tool_call_id/tool_name/status/duration_ms/error_category/error_code/retry_count/context_build_id` | ID 可用于排障但不作为 metrics 标签；文本先脱敏并截断，SQL、rows、记忆正文、附件、凭证和完整异常不落日志 |
+
+工具结果、用户问题和附件文本只允许在明确采样策略下记录哈希、长度、引用或短摘要。未知异常保存稳定错误码和服务端 trace ID；API/SSE 不返回完整 traceback、连接串或内部 Prompt。
+
+## 19. 建议代码目录
+
+以下是目标文件，不代表已实现。模块内文件级任务表是详细拆分依据；不创建仅改名转发的 Adapter。
+
+| 路径 | 状态、职责与依赖 | 调用方与范围 |
+| --- | --- | --- |
+| `app/agent/harness/contracts.py`、`state.py` | 需要重构；纯 DTO、状态机和 codec，保留现有 AgentState | 六模块；M1 必须，长期保留 |
+| `app/agent/context_engine/contracts.py`、`engine.py` | 需要重构；RuntimeContext 与编译，依赖现有 MemoryContextReader | M5；M2 必须，不另建 Engine |
+| `app/agent/services/query_service.py`、`analysis_service.py`、`report_service.py` | 需要新增；提取现有节点业务逻辑，注入 DW/Meta/Sandbox | 旧节点和 M4；研发 M3 必须，按真实复用合并 |
+| `app/agent/harness/tools/contracts.py`、`registry.py`、`runtime.py` | 需要新增；工具注册、调度和归一化，依赖共享 Service 和 Store | M5；研发 M4 必须，长期保留 |
+| `app/agent/harness/tools/data_catalog.py`、`query_data.py`、`analyze_data.py`、`build_report.py` | 需要新增；高层工具契约，不复制业务实现 | Registry；首批启用，knowledge_base 暂不创建 |
+| `app/agent/harness/planning.py`、`action_validator.py` | 需要新增；结构化规划与校验，依赖注入 LLM 和 ToolSpec | M5；研发 M5 必须 |
+| `app/agent/harness/loop_controller.py`、`finalization.py` | 需要新增；唯一调度中心与幂等收尾，依赖正式 Protocol | Harness 图与 AgentService；研发 M6/M9 必须 |
+| `app/agent/memory/formation_service.py`、`app/models/memory.py`、`app/repositories/memory/` | 需要重构；持久形成任务、claim 和恢复，保留 Governance/Writer | M6 与后台 worker；研发 M9 必须 |
+| `app/services/agent_service.py`、`app/api/dependencies.py`、`app/api/routers/agent.py`、`app/clients/postgres_client.py`、`app/clients/memory_client.py` | 需要重构；注入、接口和旧图迁移，不搬入业务规划 | 应用入口；研发 M10 必须，旧兼容入口通过回归后再清理 |
+
+## 20. 依赖装配
+### 依赖装配
 
 目标启动顺序：
 
@@ -4350,9 +4403,11 @@ LLM / Embedding / Qdrant / Neo4j / Elasticsearch / MySQL clients
 
 LLM、Embedding、Qdrant、Neo4j、ES、连接池、Saver、已编译图、MemoryRuntime、ContextEngine、Registry 和无请求状态的 Planner/Runtime 编排器为应用级对象。SQLAlchemy Session、Meta/DW repository、运行身份、取消信号和本次 AgentContext 为请求或工具 attempt 级对象。当前 `get_agent_service()` 注入了请求级 DW/Meta 对象，Harness 实现时要避免把这些对象捕获进应用级 Tool handler；handler 从明确的请求级依赖容器取用。任何模块都不能自行新建外部客户端。
 
-### 9.2 M1～M6 依赖和准入
+## 21. 增量开发顺序
+### M1～M11 依赖和准入
 
-设计顺序保持用户要求的六模块，不把跨模块修正误写成额外模块。M3 的 `ToolSpec` 使用 M4 目标契约，但 M3 单测可先用 Fake specs；生产启用仍必须等待 M4 完成。
+研发阶段严格按规则文档执行 M1～M11；六个模块是职责边界，不替代研发阶段编号。M7～M11 分别完成结果驱动上下文重建、暂停恢复、Finalization 接入、API/SSE 迁移，以及全链路测试与生产准入。
+
 
 | 阶段 | 实现目标 | 必须复用/修改 | 明确不做 | 进入下一阶段条件 |
 | --- | --- | --- | --- | --- |
@@ -4362,10 +4417,16 @@ LLM、Embedding、Qdrant、Neo4j、ES、连接池、Saver、已编译图、Memor
 | M4 Tool Runtime | Registry、五类工具、共享 Service、外置结果、attempt 幂等 | Query 图、Analysis、Report、DW/Meta 能力 | 不规划、不循环；knowledge_base 禁用 | M4.1～M4.14、SQL 安全、Artifact 和真实能力集成通过 |
 | M5 Loop Controller | 动作提交、循环、重试、暂停恢复、取消、超时、SSE Runner | M1～M4、同一 Saver、Conversation start | 不实现工具业务或 Formation 内部逻辑 | 崩溃恢复、成功工具不重放、同步/SSE 等价通过 |
 | M6 Finalization | 幂等历史、最终 checkpoint、active run 释放、Formation 提交 | `build_turn_output()`、ConversationRepository、MemoryFormationService | 不绕过 Governance，不处理 waiting | ledger 崩溃点、formation_key、端到端和旧图迁移通过 |
+| M7 工具结果驱动上下文重建 | 固化 `ToolResult -> RunObservation -> RuntimeContext -> CompiledContext` 闭环 | M2/M4/M5 | 不创建第二套 ContextEngine | 多轮证据和有界状态通过 |
+| M8 暂停、确认和恢复 | 完成等待态、确认态、拒绝和取消语义 | M1/M5 | 不把 waiting_confirmation 当 completed | 重复回复、过期和重启恢复通过 |
+| M9 Finalization 与 Memory Formation | 完成历史、终态 checkpoint、账本和 formation_key 对账 | M5/M6 | 不绕过 Governance | 崩溃点、未知提交和幂等恢复通过 |
+| M10 API、SSE、依赖装配和旧图迁移 | 统一同步/SSE 入口并完成配置迁移 | M5/M6/AgentService | 不让 SSE 重复推进状态 | 接口、事件和旧图回归通过 |
+| M11 测试、可观测性和旧代码清理 | 完成全链路准入和兼容代码收敛 | M1-M10 | 不在证据不足时设 Harness 为默认 | 全部测试和生产检查通过 |
 
 不允许跳过模块准入：M4 完成前不能把 M5 指向真实工具；M5 完成前不能启用 M6 生产收尾；M6 完成前不能把 Harness 设为默认入口。文档设计可以协同修正前序模块，但实现提交必须保持职责边界和测试门槛。
 
-### 9.3 测试与验收矩阵
+## 22. 测试与验收标准
+### 测试与验收矩阵
 
 **单元测试**：DTO/枚举、默认容器隔离、状态转换、RuntimeContext、CompiledContext 编译、Planner 合法/非法输出、ToolSpec/参数/运行身份、ToolResult 归一化、attempt、错误分类、重试计数、幂等摘要和 Finalization 状态映射。
 
@@ -4375,9 +4436,7 @@ LLM、Embedding、Qdrant、Neo4j、ES、连接池、Saver、已编译图、Memor
 
 每个阶段必须同时运行新增测试和受影响的旧图回归。生产入口切换前还要验证数据库迁移升级/回滚、Artifact 保留和删除、低基数指标、日志脱敏以及两个图不写同一 `thread_id`。
 
-## 10. 整体串联审查、开发准入与范围
-
-### 10.1 跨模块串联结论
+### 跨模块串联结论
 
 完整闭环已经按唯一所有者串联：
 
@@ -4410,15 +4469,16 @@ RestoreRunCommand
 
 职责检查结果：M2 不选择工具；M3 不执行动作；M4 不规划或循环；M5 是唯一调度者；M6 不重新实现 Memory Governance；旧图和 Harness 图不能写同一 `thread_id`。六个模块的职责、输入输出、Protocol、伪代码、字段流、文件任务和测试均已有文档层面完善判定。
 
-### 10.2 是否可以进入代码开发
+### 是否可以进入代码开发
 
 **结论：可以进入分阶段代码开发，从 M1 开始；不可以一次性启用完整 Harness。**
 
-当前 `app/agent/harness/contracts.py` 和 `state.py` 只是早期最小实现，与本文目标 DTO 仍不一致；M2～M6 多数类型、Store、Service、数据库结构和 API 尚未实现。每个模块必须按 9.2 的准入条件单独实现、测试和评审，不能因为文档已完善而声称功能完成。
+当前 `app/agent/harness/contracts.py` 和 `state.py` 只是早期最小实现，与本文目标 DTO 仍不一致；M2～M6 多数类型、Store、Service、数据库结构和 API 尚未实现。每个模块必须按第 21 节的准入条件单独实现、测试和评审，不能因为文档已完善而声称功能完成。
 
 进入 M1 时优先验证：嵌套 Pydantic/TypedDict 在 LangGraph `1.1.6` Checkpointer 中的 JSON 往返；同一 Saver 的图 namespace；五个身份字段恢复；`thread_id == conversation_id`；`project_id=None` 兼容；旧图 reducer 和节点回归。验证失败时只回到对应契约修正，不跨过 M1 直接开发 Loop Controller。
 
-### 10.3 待验证事项
+## 23. 待验证事项与明确不在本次范围内的内容
+### 待验证事项
 
 - LangGraph `1.1.6` 与 Saver `3.1.2` 的 namespace 配置、嵌套状态序列化和 `aget_state()` 行为。
 - 分析同层并行时请求级 SQLAlchemy Session 是否可并发使用；必要时让 Service 为并行任务创建独立 Session。
@@ -4427,6 +4487,6 @@ RestoreRunCommand
 - `create_all()` 到版本化迁移的落地工具和部署流程；在迁移方案通过前不能启用 M5/M6 新表。
 - 当前默认用户模式下的运行归属边界；未来真实认证接入后另行设计工具授权，不复用 `ToolSpec.permission` 直接放行。
 
-### 10.4 本期明确不做
+### 本期明确不做
 
 本期不实现微信登录/手机号授权、支付/退款/提现、用户级工具 RBAC/ACL、企业知识库、通用 Python 执行器和持久事件 Outbox；不删除旧固定图；不把 `query_data()`、`analyze_data()`、`build_report()` 写成当前已有函数；不创建第二套 `CompiledContext`；不创建只复制字段的 Adapter；不重新创建 LangGraph 官方 Checkpointer 表；不把建议默认值写成现有配置或把设计状态写成已完成能力。
