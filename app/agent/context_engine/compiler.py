@@ -10,7 +10,7 @@ from app.agent.context_engine.contracts import (
     ReferenceResolution,
 )
 from app.agent.context_engine.interfaces import TokenCounter
-from app.agent.harness.context_contracts import RuntimeContext
+from app.agent.context_engine.harness_context_contracts import RuntimeContext
 
 
 class ContextCompiler:

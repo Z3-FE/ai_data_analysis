@@ -10,12 +10,12 @@ from app.agent.context_engine.contracts import (
     ContextSourceKind,
     ReferenceResolution,
 )
-from app.agent.harness.context_contracts import RuntimeContext
-from app.agent.harness.context_service import (
+from app.agent.context_engine.harness_context_contracts import RuntimeContext
+from app.agent.context_engine.harness_context import (
     HarnessContextRequestFactory,
     HarnessRuntimeContextProjector,
 )
-from app.agent.harness.state import new_harness_control_state
+from app.agent.state_result_store.state import new_harness_control_state
 
 
 class Counter:

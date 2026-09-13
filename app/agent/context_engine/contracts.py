@@ -10,7 +10,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from app.agent.harness.context_contracts import RuntimeContext
+    from app.agent.context_engine.harness_context_contracts import RuntimeContext
 
 from app.agent.memory.enums import MemoryType
 

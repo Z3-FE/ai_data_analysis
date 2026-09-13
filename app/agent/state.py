@@ -5,7 +5,7 @@ from typing import Annotated, TypedDict
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 
-from app.agent.harness.state import HarnessControlState
+from app.agent.state_result_store.state import HarnessControlState
 
 
 class AgentState(TypedDict, total=False):

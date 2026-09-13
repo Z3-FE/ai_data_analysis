@@ -1,14 +1,14 @@
 """切片 A 的进程内运行状态替身。
 
 该替身只服务切片 A，在切片 D/E 的持久化恢复实现完成后被替换为
-``app/agent/harness/run_store.py::PostgresHarnessRunStore``；替换点是
+``app.agent.state_result_store.run_store.py::PostgresHarnessRunStore``；替换点是
 ``LoopController(run_store=...)`` 的依赖注入参数。它只保存测试进程内的
 HarnessGraphState，不代表生产 Checkpointer 或数据库事务。
 """
 
 from copy import deepcopy
 
-from app.agent.harness.contracts import HarnessRunRef
+from app.agent.state_result_store.contracts import HarnessRunRef
 from app.agent.state import HarnessGraphState
 
 

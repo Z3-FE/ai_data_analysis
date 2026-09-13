@@ -2,12 +2,12 @@
 
 import unittest
 
-from app.agent.harness.contracts import HarnessRunRef, HarnessStatus, LoopPhase
-from app.agent.harness.loop_contracts import StartRunCommand
-from app.agent.harness.loop_controller import LoopController
-from tests.fakes.harness.fake_finalization import FakeFinalizationService
-from tests.fakes.harness.fake_planning_agent import FakePlanningAgent
-from tests.fakes.harness.fake_run_store import FakeRunStore
+from app.agent.state_result_store.contracts import HarnessRunRef, HarnessStatus, LoopPhase
+from app.agent.loop_controller.contracts import StartRunCommand
+from app.agent.loop_controller.controller import LoopController
+from tests.fakes.slice_a.fake_finalization import FakeFinalizationService
+from tests.fakes.slice_a.fake_planning_agent import FakePlanningAgent
+from tests.fakes.slice_a.fake_run_store import FakeRunStore
 from tests.test_context_engine import FakeMemoryReader, _engine
 
 

@@ -9,14 +9,14 @@ if TYPE_CHECKING:
     from app.agent.state import HarnessGraphState
 
 from app.agent.context_engine.contracts import CompiledContext, ContextRequest
-from app.agent.harness.context_contracts import (
+from app.agent.context_engine.harness_context_contracts import (
     RuntimeCondition,
     RuntimeContext,
     RuntimeErrorSummary,
     RuntimeObservation,
     RuntimePlanProgress,
 )
-from app.agent.harness.contracts import HarnessStateSnapshot
+from app.agent.state_result_store.contracts import HarnessStateSnapshot
 from app.agent.memory.enums import MemoryType
 
 

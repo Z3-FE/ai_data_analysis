@@ -2,7 +2,7 @@
 
 from typing import Any, TypedDict
 
-from app.agent.harness.contracts import (
+from app.agent.state_result_store.contracts import (
     HarnessRunRef,
     HarnessStateSnapshot,
     HarnessStatus,

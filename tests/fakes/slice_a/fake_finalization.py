@@ -1,13 +1,13 @@
 """切片 A 的最小收口替身。
 
 该替身服务切片 A 至 D，在切片 E 被替换为
-``app.agent.harness.finalization.py::FinalizationService``；替换点是
+``app.agent.finalization.service.py::FinalizationService``；替换点是
 ``LoopController(finalization_service=...)`` 的依赖注入参数。它不写历史、
 不保存终态 Checkpoint、不释放 active_run，也不调用 Memory Formation。
 """
 
-from app.agent.harness.contracts import HarnessStatus
-from app.agent.harness.loop_contracts import FinalizationInput, FinalizationResult
+from app.agent.state_result_store.contracts import HarnessStatus
+from app.agent.loop_controller.contracts import FinalizationInput, FinalizationResult
 
 
 class FakeFinalizationService:

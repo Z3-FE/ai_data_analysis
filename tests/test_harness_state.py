@@ -6,7 +6,7 @@ import pytest
 from langgraph.graph.message import add_messages
 from pydantic import ValidationError
 
-from app.agent.harness.contracts import (
+from app.agent.state_result_store.contracts import (
     ActionType,
     AskUserRequest,
     ConfirmationReply,
@@ -22,7 +22,7 @@ from app.agent.harness.contracts import (
     ToolCall,
     ToolResult,
 )
-from app.agent.harness.state import (
+from app.agent.state_result_store.state import (
     decode_harness_state,
     encode_harness_state,
     new_harness_control_state,

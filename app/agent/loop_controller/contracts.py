@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Protocol
 from pydantic import Field, model_validator
 
 from app.agent.context_engine.contracts import CompiledContext, ContextRequest
-from app.agent.harness.contracts import (
+from app.agent.state_result_store.contracts import (
     ContractModel,
     HarnessRunRef,
     HarnessStatus,
@@ -21,6 +21,8 @@ from app.agent.harness.contracts import (
     PlannerInput,
     RunError,
 )
+from app.agent.planning_agent.contracts import ActionIssuanceContext
+from app.agent.tool_runtime.contracts import ToolExecutionRequest, ToolRuntime
 
 if TYPE_CHECKING:
     from app.agent.state import HarnessGraphState
@@ -95,6 +97,26 @@ class PlanningPort(Protocol):
 
     async def plan(self, value: PlannerInput) -> NextAction: ...
 
+class SliceBPlanningPort(Protocol):
+    """切片 B Planner：输出经过 Pydantic 校验的正式候选动作。"""
+
+    async def plan(
+        self,
+        value: PlannerInput,
+        *, 
+        issuance: ActionIssuanceContext,
+    ) -> NextAction: ...
+
+class ConfirmationDispatcher(Protocol):
+    """切片 B 的即时确认边界；切片 D 替换为暂停恢复实现。"""
+
+    async def dispatch(self, value: NextAction) -> str: ...
+
+class ToolRuntimePort(ToolRuntime, Protocol):
+    """只接收已提交动作的工具执行边界。"""
+
+    async def execute(self, request: ToolExecutionRequest): ...
+
 
 class FinalizationPort(Protocol):
     """最终收口的调用边界；A 使用 Fake，E 替换为 M6。"""
@@ -120,5 +142,8 @@ __all__ = [
     "HarnessRunStore",
     "LoopRunResult",
     "PlanningPort",
+    "SliceBPlanningPort",
+    "ConfirmationDispatcher",
+    "ToolRuntimePort",
     "StartRunCommand",
 ]

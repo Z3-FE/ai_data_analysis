@@ -1,12 +1,12 @@
 """切片 A 专用 Planner 替身。
 
 该替身只服务切片 A，在切片 B 被替换为
-``app.agent.harness.planning.py::PlanningAgent``；替换点是
+``app.agent.planning_agent.planning_agent.py::PlanningAgent``；替换点是
 ``LoopController(planning_agent=...)`` 的依赖注入参数。它不执行工具，
 也不模拟正式动作提交。
 """
 
-from app.agent.harness.contracts import ActionType, NextAction, PlannerInput
+from app.agent.state_result_store.contracts import ActionType, NextAction, PlannerInput
 
 
 class FakePlanningAgent:
