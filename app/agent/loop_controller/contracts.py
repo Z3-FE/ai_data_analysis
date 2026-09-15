@@ -42,7 +42,11 @@ class StartRunCommand(ContractModel):
 
 
 class FinalizationInput(ContractModel):
-    """交给最终收口的受控输入。"""
+    """交给最终收口的受控输入。
+
+    运行现场不由调用方搬运；收口服务通过 run_store 读取
+    running/finalization 现场并推进到终态。
+    """
 
     run_ref: HarnessRunRef
     user_query: str = Field(min_length=1, max_length=20_000)
@@ -51,14 +55,22 @@ class FinalizationInput(ContractModel):
     final_answer: str = Field(min_length=1, max_length=20_000)
     terminal_status: HarnessStatus = HarnessStatus.COMPLETED
     error_message: str = Field(default="", max_length=2_000)
+    # 本轮关联附件；记忆形成需要它识别感知记忆候选。
+    asset_ids: tuple[str, ...] = Field(default=(), max_length=32)
+    # 本轮结构化输出类型；默认只保存文字结果。
+    final_output_type: str = Field(default="text", min_length=1, max_length=64)
+    # 结构化输出的完整内容引用；大对象不进入收口账本和运行现场。
+    final_output_ref: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class FinalizationResult(ContractModel):
-    """A 阶段收口结果；正式 M6 将扩展其持久化和审计字段。"""
+    """收口结果；携带 controller 发布终态事件所需的运行现场摘要。"""
 
     run_ref: HarnessRunRef
     status: HarnessStatus
     final_answer: str = Field(min_length=1, max_length=20_000)
+    iteration: int = Field(default=0, ge=0)
+    last_error: RunError | None = None
 
     @model_validator(mode="after")
     def validate_terminal_result(self) -> "FinalizationResult":

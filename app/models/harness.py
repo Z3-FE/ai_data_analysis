@@ -224,9 +224,63 @@ class HarnessArtifactModel(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
+class HarnessFinalizationModel(Base):
+    """Finalization Ledger：收口进度的唯一事实来源。
+
+    每一步收口操作本身幂等，Ledger 只记录进行到哪一步并锁定收口内容；
+    崩溃后 reconcile 从最后成功步骤重放，不需要回到任何上游组件。
+    """
+
+    __tablename__ = "harness_finalizations"
+    __table_args__ = (
+        Index("idx_harness_finalizations_user_stage", "user_id", "stage"),
+        {"comment": "Data Agent Harness 收口账本"},
+    )
+
+    # 收口所属的 Harness 运行；一次运行最多一条收口记录。
+    run_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("harness_runs.run_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    # 用户隔离字段。
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    # 业务会话隔离字段。
+    conversation_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    # 当前轮次隔离字段。
+    turn_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    # 收口内容摘要；同一 run 的重复收口必须命中同一 digest。
+    finalization_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 目标终态：completed、failed、cancelled 或 timeout。
+    terminal_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    # prepared、history_saved、checkpoint_saved、released、formation_submitted 或 completed。
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    # 收口答案；Ledger 保存它使 reconcile 不依赖任何上游内存现场。
+    final_answer: Mapped[str] = mapped_column(Text, nullable=False)
+    # 触发收口的错误消息；正常完成时为空。
+    error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # FinalizationInput 的完整 JSON；reconcile 用它重建受控输入。
+    input_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # 记忆形成审计 ID；未提交形成时为空。
+    formation_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # reconcile 重放次数。
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # 最近一次收口失败原因。
+    last_error: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # 创建时间。
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow
+    )
+    # 最近一次阶段更新时间。
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
 __all__ = [
     "HarnessArtifactModel",
     "HarnessActionModel",
     "HarnessConfirmationModel",
+    "HarnessFinalizationModel",
     "HarnessRunModel",
 ]

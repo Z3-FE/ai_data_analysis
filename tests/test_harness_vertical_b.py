@@ -38,8 +38,8 @@ class SliceBVerticalTest(unittest.IsolatedAsyncioTestCase):
         action_committer = FakeActionCommitter()
         tool_runtime = FakeToolRuntime()
         confirmation_dispatcher = FakeConfirmationDispatcher()
-        finalization_service = FakeFinalizationService()
         run_store = FakeRunStore()
+        finalization_service = FakeFinalizationService(run_store)
         planning_agent = PlanningAgent(
             llm_client=ScriptedPlannerClient(action_json, *follow_up_responses),
             capabilities=PlannerCapabilities(allow_ask_user=True),

@@ -174,7 +174,7 @@ class HarnessD6AnalyzeTest(unittest.IsolatedAsyncioTestCase):
         controller = LoopController(
             context_builder=context_engine,
             planning_agent=planner,
-            finalization_service=FakeFinalizationService(),
+            finalization_service=FakeFinalizationService(store),
             run_store=store,
             action_committer=FakeActionCommitter(),
             tool_runtime=runtime,

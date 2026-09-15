@@ -1,5 +1,6 @@
 """结果、轨迹与长期记忆收口。"""
 
+from app.agent.finalization.errors import FinalizationFailure
 from app.agent.finalization.service import PostgresFinalizationService
 
-__all__ = ["PostgresFinalizationService"]
+__all__ = ["FinalizationFailure", "PostgresFinalizationService"]

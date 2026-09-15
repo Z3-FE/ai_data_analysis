@@ -289,8 +289,6 @@ class ConversationRepository:
             turn.status = status
             turn.error_message = error_message or None
             turn.completed_at = now
-            conversation.status = status
-            conversation.active_run_id = None
             conversation.updated_at = now
 
             if assistant_content:
@@ -326,6 +324,39 @@ class ConversationRepository:
                     payload=_json_safe(execution_trace),
                 )
                 session.add(trace_output)
+            await session.commit()
+            return True
+
+    async def release_active_run(
+        self,
+        *,
+        conversation_id: str,
+        user_id: str,
+        run_id: str,
+        status: str,
+    ) -> bool:
+        """按当前 run 条件释放会话占用；重复释放直接幂等返回。
+
+        只有 active_run_id 与当前 run 一致时才允许释放，防止收口
+        误清其他运行的责任字段。
+        """
+        now = datetime.utcnow()
+        async with self.session_factory() as session:
+            conversation = await session.scalar(
+                select(ConversationModel)
+                .where(
+                    ConversationModel.conversation_id == conversation_id,
+                    ConversationModel.user_id == user_id,
+                )
+                .with_for_update()
+            )
+            if conversation is None:
+                return False
+            if conversation.active_run_id not in (None, run_id):
+                raise ValueError("当前会话由其他运行占用，不能释放 active_run")
+            conversation.active_run_id = None
+            conversation.status = status
+            conversation.updated_at = now
             await session.commit()
             return True
 

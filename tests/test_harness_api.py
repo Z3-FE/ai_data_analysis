@@ -17,6 +17,7 @@ from app.agent.loop_controller.contracts import (
 from app.agent.state_result_store.contracts import (
     ConfirmationStatus,
     HarnessRunRef,
+    HarnessStateSnapshot,
     HarnessStatus,
     LoopPhase,
 )
@@ -79,8 +80,9 @@ class FakeConversationRepository:
 class FakeFinalizationService:
     """记录收口调用并返回正式 FinalizationResult。"""
 
-    def __init__(self, conversation_repository) -> None:
+    def __init__(self, conversation_repository, run_store) -> None:
         self.conversation_repository = conversation_repository
+        self.run_store = run_store
         self.calls: list = []
 
     async def finalize(self, value) -> FinalizationResult:
@@ -95,10 +97,21 @@ class FakeFinalizationService:
             output_type="text",
             output_payload={"message": value.final_answer},
         )
+        state = await self.run_store.load(value.run_ref)
+        state["harness"] = transition_harness_state(
+            state["harness"],
+            status=value.terminal_status,
+            phase=LoopPhase.FINALIZATION,
+            terminal_intent=value.terminal_status.value,
+        )
+        await self.run_store.save(value.run_ref, state)
+        snapshot = HarnessStateSnapshot.model_validate(state["harness"])
         return FinalizationResult(
             run_ref=value.run_ref,
             status=value.terminal_status,
             final_answer=value.final_answer,
+            iteration=snapshot.iteration,
+            last_error=snapshot.last_error,
         )
 
 
@@ -261,7 +274,7 @@ class HarnessApiTest(unittest.TestCase):
         self.run_store = FakePersistentRunStore(object())
         self.action_committer = FakeActionCommitter(object())
         self.conversation = FakeConversationRepository(object())
-        self.finalization = FakeFinalizationService(self.conversation)
+        self.finalization = FakeFinalizationService(self.conversation, self.run_store)
         self.artifacts = FakeArtifactStore(object())
         self.query = AsyncMock(side_effect=self._query)
         self.graph_error: Exception | None = None
@@ -333,8 +346,10 @@ class HarnessApiTest(unittest.TestCase):
 
     def post_resume(self, run_id: str, confirmation_id: str, *, answer="2026 年", decision="confirm", resolved_conditions=None, user_id="user-1"):
         return self.client.post(
-            f"/api/harness/{run_id}/resume?user_id={user_id}",
+            "/api/harness/run/resume",
             json={
+                "run_id": run_id,
+                "user_id": user_id,
                 "confirmation_id": confirmation_id,
                 "answer": answer,
                 "decision": decision,
@@ -353,8 +368,10 @@ class HarnessApiTest(unittest.TestCase):
         user_id="user-1",
     ):
         return self.client.post(
-            f"/api/harness/{run_id}/resume/stream?user_id={user_id}",
+            "/api/harness/run/resume/stream",
             json={
+                "run_id": run_id,
+                "user_id": user_id,
                 "confirmation_id": confirmation_id,
                 "answer": answer,
                 "decision": decision,
@@ -596,7 +613,7 @@ class HarnessApiTest(unittest.TestCase):
         self.assertEqual(self.run_store.confirmations[confirmation_id]["status"], "pending")
         self.assertFalse(self.conversation.finished)
 
-        status = self.client.get(f"/api/harness/{run_id}?user_id=user-1")
+        status = self.client.get(f"/api/harness/run/status?run_id={run_id}&user_id=user-1")
         self.assertEqual(status.status_code, 200, status.text)
         self.assertEqual(status.json()["pending_confirmation"]["confirmation_id"], confirmation_id)
         self.assertEqual(status.json()["turn_id"] if "turn_id" in status.json() else status.json()["run_ref"]["turn_id"], body["run_ref"]["turn_id"])

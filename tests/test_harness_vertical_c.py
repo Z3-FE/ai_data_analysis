@@ -81,7 +81,7 @@ class SliceCVerticalTest(unittest.IsolatedAsyncioTestCase):
         )
         runtime = ToolRuntime(ToolRegistry({"query_data": (spec, tool)}))
         store = FakeRunStore()
-        finalization = FakeFinalizationService()
+        finalization = FakeFinalizationService(store)
         committer = FakeActionCommitter()
         controller = LoopController(
             context_builder=context_engine,

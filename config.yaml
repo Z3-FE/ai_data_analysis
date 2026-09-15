@@ -20,6 +20,8 @@ harness:
   query_timeout_seconds: 300
   # analyze_data 单次调用的最大时长，单位为秒。
   analyze_timeout_seconds: 900
+  # build_report 单次调用的最大时长，单位为秒。
+  report_timeout_seconds: 600
   # SSE 在没有业务事件时发送注释心跳的间隔，单位为秒。
   sse_heartbeat_seconds: 15
 

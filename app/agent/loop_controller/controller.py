@@ -9,12 +9,14 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from app.agent.context_engine.harness_context import HarnessContextRequestFactory
+from app.agent.finalization.errors import FinalizationFailure
 from app.agent.loop_controller.action_commit import ActionCommitRequest, ActionCommitter
 from app.agent.loop_controller.contracts import (
     ConfirmationDispatcher,
     ContextBuilder,
     FinalizationInput,
     FinalizationPort,
+    FinalizationResult,
     HarnessRunStore,
     LoopPausedResult,
     LoopResult,
@@ -222,6 +224,10 @@ class LoopController:
                 # 当前请求已无法返回结果，让收口任务继续完成并消费异常。
                 finalization_task.add_done_callback(self._consume_task_result)
                 raise
+        except FinalizationFailure:
+            # 收口中断必须保持 running/finalization 现场，交给 reconcile 恢复；
+            # 在这里降级成 FAILED 会伪造一个用户从未见过的终态。
+            raise
         except Exception as exc:
             # 未预期异常也必须释放 active_run，不能让 PostgreSQL 永久停留在 running。
             state = await self._prepare_interruption_state(
@@ -902,93 +908,38 @@ class LoopController:
             terminal_intent=terminal_status.value,
         )
         await self.run_store.save(command.run_ref, state)
-        try:
-            finalization = await self.finalization_service.finalize(
-                FinalizationInput(
-                    run_ref=command.run_ref,
-                    user_query=command.input_text,
-                    compiled_context=compiled_context,
-                    final_answer=final_answer,
-                    terminal_status=terminal_status,
-                    error_message=(
-                        str((state["harness"].get("last_error") or {}).get("message", ""))
-                        if terminal_status is not HarnessStatus.COMPLETED
-                        else ""
-                    ),
-                )
-            )
-            if finalization.status is not terminal_status:
-                raise ValueError("Finalization 返回状态与请求终态不一致")
-            if finalization.run_ref != command.run_ref:
-                raise ValueError("Finalization 返回的 run_ref 与当前运行不一致")
-        except Exception as exc:
-            # Finalization 失败不能留下 running/finalization；重新提交失败终态，
-            # 事件也只能在这次终态保存成功后发布。
-            logger.exception(
-                "Harness finalization failed: run_id=%s",
-                command.run_ref.run_id,
-            )
-            state["harness"]["last_error"] = RunError(
-                category=ErrorCategory.DATABASE,
-                code="finalization_failed",
-                message=str(exc)[:2_000] or "Finalization 失败。",
-                retryable=False,
-            ).model_dump(mode="json")
-            state["harness"]["final_answer"] = "任务收口失败，运行已标记为失败。"
-            try:
-                # 首次 finish_turn 可能在释放 active_run 前失败；再次以 failed 状态收口。
-                await self.finalization_service.finalize(
-                    FinalizationInput(
-                        run_ref=command.run_ref,
-                        user_query=command.input_text,
-                        compiled_context=None,
-                        final_answer=state["harness"]["final_answer"],
-                        terminal_status=HarnessStatus.FAILED,
-                        error_message=str(exc)[:2_000] or "Finalization 失败。",
-                    )
-                )
-            except Exception:
-                logger.exception(
-                    "Harness failure finalization also failed: run_id=%s",
-                    command.run_ref.run_id,
-                )
-            state = self._transition(
-                state,
-                status=HarnessStatus.FAILED,
-                phase=LoopPhase.FINALIZATION,
-                terminal_intent=HarnessStatus.FAILED.value,
-            )
-            await self.run_store.save(command.run_ref, state)
-            finalization = FinalizationResult(
-                run_ref=command.run_ref,
-                status=HarnessStatus.FAILED,
-                final_answer=state["harness"]["final_answer"],
-            )
-            self._emit_terminal(command.run_ref, state, finalization)
-            return LoopRunResult(
-                run_ref=command.run_ref,
-                status=HarnessStatus.FAILED,
-                phase=LoopPhase.FINALIZATION,
-                iteration=int(state["harness"]["iteration"]),
-                finalization_result=finalization,
-                last_error=RunError.model_validate(state["harness"]["last_error"]),
-            )
-        state = self._transition(
-            state, status=terminal_status, phase=LoopPhase.FINALIZATION
+        final_output_type, final_output_ref = (
+            self._final_output(state)
+            if terminal_status is HarnessStatus.COMPLETED
+            else ("text", None)
         )
-        await self.run_store.save(command.run_ref, state)
-        self._emit_terminal(command.run_ref, state, finalization)
+        # 收口失败抛出 FinalizationFailure：运行现场保持 running/finalization，
+        # 由 reconcile 恢复；这里不做任何降级或二次终态提交。
+        finalization = await self.finalization_service.finalize(
+            FinalizationInput(
+                run_ref=command.run_ref,
+                user_query=command.input_text,
+                compiled_context=compiled_context,
+                final_answer=final_answer,
+                terminal_status=terminal_status,
+                error_message=(
+                    str((state["harness"].get("last_error") or {}).get("message", ""))
+                    if terminal_status is not HarnessStatus.COMPLETED
+                    else ""
+                ),
+                asset_ids=list(command.asset_ids),
+                final_output_type=final_output_type,
+                final_output_ref=final_output_ref,
+            )
+        )
+        self._emit_terminal(command.run_ref, finalization)
         return LoopRunResult(
             run_ref=command.run_ref,
             status=finalization.status,
             phase=LoopPhase.FINALIZATION,
-            iteration=state["harness"]["iteration"],
+            iteration=finalization.iteration,
             finalization_result=finalization,
-            last_error=(
-                None
-                if state["harness"].get("last_error") is None
-                else RunError.model_validate(state["harness"]["last_error"])
-            ),
+            last_error=finalization.last_error,
         )
 
     async def _save_running_state(
@@ -999,6 +950,25 @@ class LoopController:
             self.run_store.save(command.run_ref, state),
             state,
         )
+
+    def _final_output(self, state: HarnessGraphState) -> tuple[str, str | None]:
+        """按 ToolSpec.result_kind 回溯本轮结构化输出，不按工具名判断。"""
+        report_specs = {
+            spec.name: spec
+            for spec in self.tool_specs
+            if spec.result_kind == "report"
+        }
+        for value in reversed(state["harness"]["observations"]):
+            observation = RunObservation.model_validate(value)
+            spec = report_specs.get(observation.tool_name)
+            if (
+                spec is not None
+                and observation.result_ref
+                and observation.status
+                in {ResultStatus.SUCCESS, ResultStatus.PARTIAL}
+            ):
+                return spec.artifact_kind or spec.name, observation.result_ref
+        return "text", None
 
     def _new_state(self, command: StartRunCommand) -> HarnessGraphState:
         now = datetime.now(UTC)
@@ -1024,8 +994,7 @@ class LoopController:
     def _emit_terminal(
         self,
         run_ref,
-        state: HarnessGraphState,
-        finalization,
+        finalization: FinalizationResult,
     ) -> None:
         """只在终态已成功持久化后发布一次本次控制器实例的终态事件。"""
         event_type = {
@@ -1038,13 +1007,15 @@ class LoopController:
             run_ref,
             event_type,
             phase=LoopPhase.FINALIZATION,
-            iteration=int(state["harness"]["iteration"]),
+            iteration=finalization.iteration,
             payload={
                 "status": finalization.status.value,
                 "final_answer": finalization.final_answer,
                 "error_code": (
-                    state["harness"].get("last_error") or {}
-                ).get("code"),
+                    None
+                    if finalization.last_error is None
+                    else finalization.last_error.code
+                ),
             },
         )
 

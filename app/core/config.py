@@ -41,6 +41,8 @@ class HarnessConfig:
     query_timeout_seconds: int
     # analyze_data 单次工具调用的超时时间，单位为秒。
     analyze_timeout_seconds: int
+    # build_report 单次工具调用的超时时间，单位为秒。
+    report_timeout_seconds: int
     # SSE 在没有业务事件时发送注释心跳的间隔，单位为秒。
     sse_heartbeat_seconds: int
 

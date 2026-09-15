@@ -72,7 +72,7 @@ class PlannerRetryTest(unittest.IsolatedAsyncioTestCase):
         controller = LoopController(
             context_builder=context_engine,
             planning_agent=planner,
-            finalization_service=FakeFinalizationService(),
+            finalization_service=FakeFinalizationService(store),
             run_store=store,
             max_planner_retries=2,
         )

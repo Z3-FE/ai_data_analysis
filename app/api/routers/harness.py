@@ -13,10 +13,12 @@ from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
 from app.agent.business_tools.analyze_data import AnalyzeDataTool
+from app.agent.business_tools.build_report import BuildReportTool
 from app.agent.business_tools.query_data import QueryDataTool
 from app.agent.context import AgentContext
 from app.agent.context_engine.factory import build_context_engine
 from app.agent.context_engine.harness_context import HarnessContextRequestFactory
+from app.agent.finalization.errors import FinalizationFailure
 from app.agent.finalization.service import PostgresFinalizationService
 from app.agent.loop_controller.action_commit import (
     ActionCommitter,
@@ -60,6 +62,7 @@ from app.core.config import settings
 from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.dw_repository import DwRepository
 from app.repositories.es.es_dimension_value_repository import DimensionValueSearch
+from app.repositories.finalization_repository import PostgresFinalizationLedger
 from app.repositories.harness_action_repository import PostgresActionCommitter
 from app.repositories.harness_artifact_repository import PostgresResultArtifactStore
 from app.repositories.harness_run_repository import (
@@ -109,6 +112,13 @@ class HarnessResumeRequest(BaseModel):
     answer: str = Field(min_length=1, max_length=4_000)
     decision: Literal["confirm", "reject"] = "confirm"
     resolved_conditions: dict[str, Any] = Field(default_factory=dict)
+
+
+class HarnessReconcileRequest(BaseModel):
+    """触发一次收口对账；收口内容和运行现场全部来自服务端账本。"""
+
+    run_id: str = Field(min_length=1, max_length=128)
+    user_id: str = Field(default=settings.app.default_user_id, min_length=1, max_length=128)
 
 
 def _require_runtime() -> tuple[Any, Any, Any]:
@@ -201,6 +211,37 @@ def _analyze_tool_spec() -> ToolSpec:
     )
 
 
+def _report_tool_spec() -> ToolSpec:
+    """声明 Harness 当前可用的报告工具及其报告 Artifact 策略。"""
+    return ToolSpec(
+        name="build_report",
+        description=(
+            "把已完成的 query_data 或 analyze_data 结果渲染为最终可视化报告。"
+            "必须先执行数据工具，再把它们的 result_ref 传入 result_refs。"
+        ),
+        permission="data.report.write",
+        result_kind="report",
+        artifact_kind="rendered_report",
+        idempotency="conditionally_idempotent",
+        retry_on_timeout=False,
+        input_schema={
+            "type": "object",
+            "required": ["goal", "result_refs"],
+            "properties": {
+                "goal": {"type": "string", "minLength": 1},
+                "result_refs": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "minItems": 1,
+                    "maxItems": 8,
+                },
+            },
+            "additionalProperties": False,
+        },
+        timeout_seconds=settings.harness.report_timeout_seconds,
+    )
+
+
 def _build_controller(
     *,
     run_ref: HarnessRunRef,
@@ -215,6 +256,8 @@ def _build_controller(
     """在请求作用域内组装完整 Harness；所有持久化实现均由此注入。"""
     query_spec = _query_tool_spec()
     analyze_spec = _analyze_tool_spec()
+    report_spec = _report_tool_spec()
+    artifact_store = PostgresResultArtifactStore(session_factory)
     agent_context = _agent_context(
         meta_session=meta_session,
         dw_session=dw_session,
@@ -232,14 +275,21 @@ def _build_controller(
         asset_ids=asset_ids,
         event_writer=event_writer,
     )
+    report_tool = BuildReportTool(
+        context=agent_context,
+        run_ref=run_ref,
+        artifact_store=artifact_store,
+        event_writer=event_writer,
+    )
     tool_runtime = ToolRuntime(
         ToolRegistry(
             {
                 "query_data": (query_spec, query_tool),
                 "analyze_data": (analyze_spec, analyze_tool),
+                "build_report": (report_spec, report_tool),
             }
         ),
-        artifact_store=PostgresResultArtifactStore(session_factory),
+        artifact_store=artifact_store,
         event_writer=event_writer,
     )
     context_engine = build_context_engine(
@@ -248,9 +298,13 @@ def _build_controller(
         llm_client=llm_client,
         model_name=settings.llm.model_name,
     )
+    run_store = PostgresHarnessRunStore(session_factory)
     finalization = PostgresFinalizationService(
         conversation_repository=ConversationRepository(session_factory),
+        ledger=PostgresFinalizationLedger(session_factory),
+        run_store=run_store,
         memory_formation_service=runtime.formation_service,
+        artifact_store=artifact_store,
     )
     return LoopController(
         context_builder=context_engine,
@@ -259,13 +313,13 @@ def _build_controller(
             capabilities=PlannerCapabilities(allow_ask_user=True),
         ),
         finalization_service=finalization,
-        run_store=PostgresHarnessRunStore(session_factory),
+        run_store=run_store,
         context_request_factory=HarnessContextRequestFactory(),
         action_committer=PostgresActionCommitter(session_factory),
         tool_runtime=tool_runtime,
         # 没有即时确认分派器；ASK_USER 必须持久化为 waiting_confirmation。
         confirmation_dispatcher=None,
-        tool_specs=(query_spec, analyze_spec),
+        tool_specs=(query_spec, analyze_spec, report_spec),
         max_planner_retries=settings.harness.max_planner_retries,
         max_tool_retries=settings.harness.max_tool_retries,
         max_iterations=settings.harness.max_iterations,
@@ -324,6 +378,9 @@ def _status_payload(state: dict[str, Any]) -> dict[str, Any]:
 
 def _http_error(exc: Exception) -> HTTPException:
     """把持久化身份、并发和状态冲突转换为明确的 HTTP 响应。"""
+    if isinstance(exc, FinalizationFailure):
+        # 收口中断不是终态失败；运行保持 running/finalization，由 reconcile 恢复。
+        return HTTPException(status_code=503, detail=str(exc))
     if isinstance(exc, PermissionError):
         return HTTPException(status_code=403, detail=str(exc))
     if isinstance(exc, HarnessPersistenceError):
@@ -357,6 +414,15 @@ async def _finish_unhandled_start_failure(
             # 此时必须保留 waiting 状态，允许用户重新提交正确回复。
             should_finish_turn = False
         elif current_status in terminal_statuses:
+            should_finish_turn = False
+        elif (
+            await PostgresFinalizationLedger(session_factory).get(
+                run_id=run_ref.run_id, user_id=run_ref.user_id
+            )
+            is not None
+        ):
+            # 收口账本已锁定结果归属；运行现场保持 running/finalization，
+            # 由 reconcile 恢复，这里伪造失败终态会覆盖锁定的收口内容。
             should_finish_turn = False
         else:
             state["harness"]["last_error"] = RunError(
@@ -750,6 +816,28 @@ async def resume_harness_stream(
         raise _http_error(exc) from exc
 
 
+@router.post("/run/reconcile")
+async def reconcile_harness(payload: HarnessReconcileRequest) -> dict[str, Any]:
+    """从收口账本当前阶段恢复未完成的收口；只重放收口，不回到执行链路。"""
+    try:
+        runtime, session_factory, _ = _require_runtime()
+        finalization = PostgresFinalizationService(
+            conversation_repository=ConversationRepository(session_factory),
+            ledger=PostgresFinalizationLedger(session_factory),
+            run_store=PostgresHarnessRunStore(session_factory),
+            memory_formation_service=runtime.formation_service,
+            artifact_store=PostgresResultArtifactStore(session_factory),
+        )
+        result = await finalization.reconcile(
+            run_id=payload.run_id, user_id=payload.user_id
+        )
+        return result.model_dump(mode="json")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
 @router.get("/run/status")
 async def get_harness_status(
     run_id: str = Query(..., min_length=1, max_length=128),
@@ -770,6 +858,7 @@ async def get_harness_status(
 
 
 __all__ = [
+    "HarnessReconcileRequest",
     "HarnessResumeRequest",
     "HarnessRunRequest",
     "router",

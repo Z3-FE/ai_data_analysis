@@ -164,7 +164,7 @@ class HarnessDeadlineTest(unittest.IsolatedAsyncioTestCase):
         return LoopController(
             context_builder=context_builder or context_engine,
             planning_agent=planner,
-            finalization_service=FakeFinalizationService(),
+            finalization_service=FakeFinalizationService(run_store=store),
             run_store=store,
             run_timeout_seconds=1,
             **kwargs,

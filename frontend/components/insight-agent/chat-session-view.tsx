@@ -898,7 +898,11 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
         )) {
           const runEvent = toHarnessStreamEvent(event);
           setDebugEvents((current) => appendExecutionEvent(current, runEvent));
-          setExecutionPanelOpen(true);
+          // 事件始终记录到调试缓冲，供用户手动打开查看；
+          // 但只有真实工具执行时才自动展开执行过程，纯聊天（直接 final_answer）不弹面板。
+          if (runEvent.type === "action.committed" || runEvent.type.startsWith("tool.")) {
+            setExecutionPanelOpen(true);
+          }
           if (runEvent.run_ref?.turn_id) {
             currentTurnId = runEvent.run_ref.turn_id;
             setActiveRunTurnId(currentTurnId);

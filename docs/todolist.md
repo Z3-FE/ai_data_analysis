@@ -2,24 +2,48 @@
 
 增量技术文档：docs/data_agent_harness_incremental_sdd.md
 
-## 当前真实进度（2026-09-14）
+## 当前真实进度（2026-09-15）
 
 - [x] A：最小 Harness 闭环已完成并通过聚焦测试。
 - [x] B：真实 Planning Agent、动作提交和状态持久化已完成并通过聚焦测试。
 - [x] C：真实 `query_data` Tool Runtime 循环、结果引用和上下文重建已完成并通过聚焦测试。
 - [x] D：PostgreSQL 运行状态持久化、`ask_user` 暂停、确认消费、同一 `run_id` 恢复和重复确认保护已完成。
 - [x] D：运行级 deadline 和取消收口已有确定性测试；客户端断流已用真实 HTTP 验证为 `cancelled/finalization`，并释放 `active_run_id`。
-- [ ] D：真实 PostgreSQL 的运行级 deadline 验收待完成。
-- [ ] D：Finalization 失败对账和跨基础设施一致性验收待完成。
-- [x] E：Finalization 与 Memory Formation 已接入代码主链；跨基础设施统一验收仍待完成。
+- [x] D：真实 PostgreSQL 的运行级 deadline 验收已完成（真实 HTTP 前端验收）。
+- [x] D：Finalization Ledger（`harness_finalizations`）+ 固定顺序收口 + `reconcile()` 已完成；真实 PostgreSQL 崩溃矩阵验收通过。
+- [x] E：真实 `PostgresFinalizationService`（历史 → 终态 checkpoint → 释放 active_run → Memory Formation → 账本完成）已接入主链；`tests/test_harness_vertical_e.py` 用真实 PostgreSQL 通过；全量 HTTP 跨基础设施统一验收仍待完成。
 - [x] D6：接入 `analyze_data` 高层工具，已通过 Harness 聚焦测试。
 - [x] D7：真实 HTTP 验证 `query_data` + `analyze_data` 循环；两条链路均完成 Planner、工具执行、Artifact、Observation、上下文重建和最终收口。
-- [ ] D8：在问数和分析循环稳定后接入 `build_report`。
+- [x] D8：接入 `build_report` 高层工具，并把 `RenderedReport` 按引用收口为 `output_type="rendered_report"`；`tests/test_harness_d8_report.py` 通过。
+
+D8 实现说明：
+
+- `BuildReportTool` 只读上游 Artifact（`query_result` / `analysis_result`），不重新查数也不自己写 Artifact；报告本体的持久化由 `ToolRuntime` 按 `ToolSpec.result_kind="report"` 完成。
+- 入参只有 `goal` / `result_refs` / `title_hint`；报告结构由 `generate_report_plan` 从真实证据推导，不让 Planner 补指标名。
+- 上游结果统一归一化成 `execution_mode="analysis"` 形态后直接复用 `generate_report_plan` + `render_report`，两个节点一行未改；只输出 `RenderedReport`，不做 markdown/csv 多格式。
+- `FinalizationInput` 新增 `final_output_type` / `final_output_ref` 两个小字段；报告本体不进账本 `input_payload`，由 `_save_history()` 按引用取回写入 `turn_outputs`，reconcile 走同一路径。
+- `LoopController._final_output()` 按 `ToolSpec.result_kind == "report"` 回溯 `observations`，不按工具名判断；以后新增报告类工具不需要改控制器。
+- Memory Formation 只透传 `output_type`，`output_payload` 仍只放 `{"message": final_answer}`；完整报告进记忆提取只会稀释信号。
+- 待做：`build_report` 的真实 HTTP 验收（`query_data` → `build_report` 与 `analyze_data` → `build_report` 两条链路），以及前端 `rendered_report` 渲染确认。
+
+Finalization 对账设计要点（已实现）：
+
+- `PostgresFinalizationService.finalize()` 按固定顺序推进账本：`prepared → history_saved → checkpoint_saved → released → formation_submitted → completed`；每一步操作本身幂等，账本锁定 `finalization_digest` 与 `input_payload`。
+- 收口失败抛出 `FinalizationFailure`（运行保持 `running/finalization`，HTTP 503），控制器与 API 都不做 FAILED 降级；`POST /api/harness/run/reconcile`（body：`run_id` + `user_id`）从账本当前阶段重放，结构上不可能回到 Planner、Tool Runtime 或 ContextEngine。
+- Formation 提交失败会阻塞终态（账本停在 `released`），reconcile 依赖 `formation_key` 幂等重试；后台形成任务保持 PENDING 语义。
+
+暂停/恢复重执行语义（2026-09-15 前端验收发现）：
+
+- `ask_user` 暂停后，只有 Harness 状态（run snapshot、confirmation、checkpoint）跨暂停存活；工具内部部分进度不进 checkpoint，确认后 `resume()` 在同一 `run_id` 上重新 BuildContext、重新规划并重跑工具（`action_seq` 递增），第一次的工具执行结果被丢弃。
+- 待优化（工具侧）：`analyze_data` 等重工具在真正开跑前先做参数歧义校验（如时间范围不明确直接返回 partial + 澄清请求），避免执行 2 分钟以上才发现需要 ask_user。
+- 待优化（Planner 侧）：对“近N个月”这类相对时间，Planner 应优先基于上一轮时间范围主动澄清，而不是等工具跑完返回 partial 后再 ask_user。
 
 最近一次真实 HTTP 验收记录：
 
 - `query_data`：运行 `18c257ad-7da9-4f1f-901f-148f5ab46ef1`，最终为 `completed/finalization`，包含 1 个成功 Artifact 和 1 个成功 Observation。
 - `analyze_data`：运行 `d0fd9c75-88e0-4fdf-9905-fc12e0802207`，最终为 `completed/finalization`，包含 1 个成功分析 Artifact 和 1 个成功 Observation。
+- 断流：运行 `5373dddb-8a93-4b5d-af6c-d65624b42263`，流式进行中关闭页面后落为 `cancelled/finalization`；账本 `completed`、无 formation 提交，`active_run_id` 已释放。
+- deadline：`run_timeout_seconds: 20` 下运行 `4aef9378-8c67-4e4a-b9d7-60f22496d9d6` 落为 `timeout/finalization`；账本 `completed`、无 formation 提交，`active_run_id` 已释放；真实 PostgreSQL 未复现 aware/naive 时区问题。
 - Harness 聚焦回归：33 passed，1 个现有 Starlette/httpx 弃用警告；新增 Harness SSE 空闲心跳验收。
 
 当前边界：`/api/harness/run` 是正式入口，Harness 是唯一主线；不兼容旧 Graph Agent，不恢复 `WorkingStateLoader`、`create_working_state_loader` 或旧图相关测试。

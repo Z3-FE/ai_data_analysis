@@ -15,8 +15,8 @@ class SliceAVerticalTest(unittest.IsolatedAsyncioTestCase):
     async def test_slice_a_start_to_result(self) -> None:
         context_engine, _, _ = _engine(FakeMemoryReader())
         planning_agent = FakePlanningAgent(final_answer="销售数据分析已完成。")
-        finalization_service = FakeFinalizationService()
         run_store = FakeRunStore()
+        finalization_service = FakeFinalizationService(run_store)
         run_ref = HarnessRunRef(
             user_id="user-1",
             conversation_id="conversation-1",

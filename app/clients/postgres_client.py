@@ -23,6 +23,7 @@ from app.models.harness import (
     HarnessArtifactModel,
     HarnessActionModel,
     HarnessConfirmationModel,
+    HarnessFinalizationModel,
     HarnessRunModel,
 )
 from app.models.memory import (
@@ -52,6 +53,7 @@ _AGENT_APP_MODELS = (
     HarnessActionModel,
     HarnessConfirmationModel,
     HarnessArtifactModel,
+    HarnessFinalizationModel,
 )
 
 
