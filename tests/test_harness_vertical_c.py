@@ -91,11 +91,16 @@ class SliceCVerticalTest(unittest.IsolatedAsyncioTestCase):
             action_committer=committer,
             tool_runtime=runtime,
             tool_specs=(spec,),
-            continue_after_tool=True,
         )
 
+        async def query_graph_stream(state, *, context, stream_mode):
+            self.assertEqual(stream_mode, ["custom", "values"])
+            result = await query_graph_call(state, context=context)
+            yield ("custom", {"type": "progress", "node": "execute_sql", "status": "success"})
+            yield ("values", result)
+
         with patch("app.agent.business_tools.query_data.tool.query_graph") as graph:
-            graph.ainvoke = AsyncMock(side_effect=query_graph_call)
+            graph.astream = query_graph_stream
             result = await controller.start(
                 StartRunCommand(
                     run_ref=run_ref,
@@ -118,7 +123,7 @@ class SliceCVerticalTest(unittest.IsolatedAsyncioTestCase):
             planner.calls[1].state_view.observations[0].status.value,
             "success",
         )
-        self.assertNotIn("120", planner.calls[1].state_view.observations[0].summary)
+        self.assertIn("120", planner.calls[1].state_view.observations[0].summary)
         relevant_phases = [
             snapshot["harness"]["phase"]
             for snapshot in store.snapshots
@@ -137,7 +142,9 @@ class SliceCVerticalTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(final_state["action_seq"], 2)
         self.assertEqual(final_state["iteration"], 1)
         self.assertEqual(len(final_state["observations"]), 1)
-        self.assertNotIn("amount", str(final_state["observations"]))
+        self.assertIn("amount", str(final_state["observations"]))
+        self.assertNotIn("sql_result", str(final_state["observations"]))
+        self.assertNotIn("'rows'", str(final_state["observations"]))
 
 
 if __name__ == "__main__":

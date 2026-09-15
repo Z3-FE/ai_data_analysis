@@ -182,6 +182,7 @@ COMMENT ON COLUMN memory_index_jobs.updated_at IS '失败记录最近更新时�
 -- 这张表只审计 M3 形成流程，不保存隐藏思考、完整 AgentState 或完整事件流。
 CREATE TABLE IF NOT EXISTS memory_formation_runs (
   formation_run_id VARCHAR(128) PRIMARY KEY,
+  formation_key VARCHAR(64) NOT NULL,
   user_id VARCHAR(128) NOT NULL,
   conversation_id VARCHAR(128) NOT NULL,
   turn_id VARCHAR(128) NOT NULL,
@@ -202,8 +203,35 @@ CREATE TABLE IF NOT EXISTS memory_formation_runs (
   started_at TIMESTAMP,
   completed_at TIMESTAMP,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uk_memory_formation_run_key UNIQUE (formation_key)
 );
+
+-- 旧版本可能已经创建了审计表但没有幂等键；先为旧记录生成唯一迁移值。
+ALTER TABLE memory_formation_runs
+  ADD COLUMN IF NOT EXISTS formation_key VARCHAR(64);
+
+UPDATE memory_formation_runs
+SET formation_key = md5(
+  concat_ws('|', user_id, conversation_id, turn_id, run_id, trigger, extractor_version, formation_run_id)
+)
+WHERE formation_key IS NULL;
+
+ALTER TABLE memory_formation_runs
+  ALTER COLUMN formation_key SET NOT NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'uk_memory_formation_run_key'
+      AND conrelid = 'memory_formation_runs'::regclass
+  ) THEN
+    ALTER TABLE memory_formation_runs
+      ADD CONSTRAINT uk_memory_formation_run_key UNIQUE (formation_key);
+  END IF;
+END $$;
 
 ALTER TABLE memory_formation_runs
   ADD COLUMN IF NOT EXISTS failed_count INTEGER NOT NULL DEFAULT 0;
@@ -217,6 +245,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_formation_runs_turn
 
 COMMENT ON TABLE memory_formation_runs IS '长期记忆形成审计';
 COMMENT ON COLUMN memory_formation_runs.formation_run_id IS '一次记忆形成任务 ID';
+COMMENT ON COLUMN memory_formation_runs.formation_key IS '同一轮、触发方式和提取器版本的幂等身份';
 COMMENT ON COLUMN memory_formation_runs.user_id IS '形成任务所属用户 ID';
 COMMENT ON COLUMN memory_formation_runs.conversation_id IS '产生候选的会话 ID';
 COMMENT ON COLUMN memory_formation_runs.turn_id IS '产生候选的会话轮次 ID';

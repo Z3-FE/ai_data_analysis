@@ -55,6 +55,7 @@ def test_runtime_context_rejects_unknown_fields_and_has_isolated_defaults():
     second = RuntimeContext(original_goal="goal")
     assert first.observations == second.observations == ()
     assert first.resolved_conditions == second.resolved_conditions == ()
+    assert first.last_confirmation_answer is None
 
 
 def test_projector_keeps_only_confirmed_scalar_conditions_and_bounded_observations():
@@ -153,3 +154,20 @@ def test_compiler_places_runtime_before_evidence_and_counts_it_in_base():
         (messages[0], messages[1], messages[-1])
     )
     assert tokens == counter.count_messages(messages)
+
+
+def test_projector_and_compiler_keep_free_text_confirmation_answer():
+    state = state_with_harness(
+        last_confirmation_answer="使用财务销售额，不包含运费，并考虑退款"
+    )
+    runtime = HarnessRuntimeContextProjector().project(state)
+    assert runtime.last_confirmation_answer == "使用财务销售额，不包含运费，并考虑退款"
+
+    request = HarnessContextRequestFactory().create(
+        state, system_instructions="系统规则"
+    )
+    messages, _, _ = ContextCompiler(Counter()).compile(
+        request=request, selected=(), resolution=ReferenceResolution()
+    )
+    assert "Last User Confirmation" in messages[1]["content"]
+    assert "不包含运费" in messages[1]["content"]

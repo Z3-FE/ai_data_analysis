@@ -19,6 +19,12 @@ from app.models.context_engine import (
     ContextBuildRunModel,
     ContextConversationSummaryModel,
 )
+from app.models.harness import (
+    HarnessArtifactModel,
+    HarnessActionModel,
+    HarnessConfirmationModel,
+    HarnessRunModel,
+)
 from app.models.memory import (
     AgentMemoryModel,
     MemoryAssetModel,
@@ -42,6 +48,10 @@ _AGENT_APP_MODELS = (
     MemoryFormationRunModel,
     ContextConversationSummaryModel,
     ContextBuildRunModel,
+    HarnessRunModel,
+    HarnessActionModel,
+    HarnessConfirmationModel,
+    HarnessArtifactModel,
 )
 
 

@@ -133,6 +133,8 @@ class RunObservation(ContractModel):
     evidence_refs: list[str] = Field(default_factory=list, max_length=32)
     limitations: list[str] = Field(default_factory=list, max_length=32)
     output_hash: str | None = Field(default=None, min_length=1)
+    # 工具名和规范化参数的 SHA-256；用于阻止同一运行重复执行已失败请求。
+    request_hash: str | None = Field(default=None, min_length=64, max_length=64)
 
 
 class AskUserRequest(ContractModel):
@@ -197,18 +199,38 @@ class ConfirmationRecord(ContractModel):
     resolved_at: datetime | None = None
 
 
+class ConfirmationResolution(ContractModel):
+    """确认消费结果；idempotent 表示同一回复已经成功处理。"""
+
+    status: Literal["confirmed", "rejected", "idempotent"]
+    state: dict[str, Any]
+
+
 class ToolSpec(ContractModel):
+    # 工具对外暴露的稳定名称。
     name: str = Field(min_length=1)
+    # Planner 用来判断工具适用场景的描述。
     description: str = Field(min_length=1)
+    # Planner 生成 tool_call.arguments 时使用的 JSON Schema。
     input_schema: dict[str, Any] = Field(default_factory=dict)
+    # 执行该工具所需的权限标识。
     permission: str = Field(min_length=1)
+    # 工具契约版本；动作记录和结果审计需要保留它。
     version: str = Field(default="v1", min_length=1)
+    # 是否允许当前 Harness 暴露并执行该工具。
     enabled: bool = True
+    # 单次工具调用的最大执行时间。
     timeout_seconds: int = Field(default=60, gt=0)
+    # 工具执行结果是否可以安全重试。
     idempotency: Literal[
         "idempotent", "conditionally_idempotent", "non_idempotent"
     ] = "idempotent"
-    result_kind: Literal["inline_summary", "artifact", "report"] = "artifact"
+    # 工具超时后是否允许自动重放；昂贵链路通常应关闭，避免重复执行。
+    retry_on_timeout: bool = True
+    # 结果向 Planner 暴露的方式；只有 artifact/report 才要求持久化完整结果。
+    result_kind: Literal["inline_summary", "artifact", "report"] = "inline_summary"
+    # Artifact 在 PostgreSQL 中的业务类型；为空时由运行时使用稳定默认值。
+    artifact_kind: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class ToolCall(ContractModel):
@@ -248,7 +270,16 @@ class HarnessStateSnapshot(ContractModel):
     plan_progress: PlanProgress = Field(default_factory=PlanProgress)
     observations: list[RunObservation] = Field(default_factory=list)
     resolved_conditions: dict[str, Any] = Field(default_factory=dict)
+    # 最近一次确认的自然语言回复；只作为当前 run 的运行态，不修改全局记忆或身份。
+    last_confirmation_answer: str | None = Field(default=None, max_length=4_000)
+    # 当前运行已经消费过的用户确认次数，用于限制重复澄清。
+    confirmation_attempt_count: int = Field(default=0, ge=0)
+    # 最近一次已消费确认的原因，用于识别相同确认请求循环。
+    last_confirmation_reason_code: str | None = Field(default=None, max_length=64)
+    # 最近一次已消费确认的问题，用于识别相同确认请求循环。
+    last_confirmation_question: str | None = Field(default=None, max_length=2_000)
     pending_confirmation: ConfirmationRequest | None = None
+    final_answer: str | None = Field(default=None, max_length=20_000)
     last_error: RunError | None = None
 
     @model_validator(mode="after")
@@ -346,6 +377,8 @@ class ToolResult(ContractModel):
     result_ref: str | None = Field(default=None, min_length=1)
     evidence_refs: list[str] = Field(default_factory=list, max_length=32)
     limitations: list[str] = Field(default_factory=list, max_length=32)
+    # 完整结果 Artifact 的内容哈希；没有 Artifact 时为空。
+    output_hash: str | None = Field(default=None, min_length=64, max_length=64)
     error_category: ErrorCategory | None = None
     error_code: str | None = Field(default=None, min_length=1)
     error_message: str | None = Field(default=None, min_length=1)
@@ -385,6 +418,7 @@ __all__ = [
     "AskUserRequest",
     "CheckpointCodec",
     "ConfirmationRecord",
+    "ConfirmationResolution",
     "ConfirmationReply",
     "ConfirmationRequest",
     "ConfirmationStatus",

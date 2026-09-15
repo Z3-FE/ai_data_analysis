@@ -4,9 +4,9 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-
 RuntimeKey = Annotated[str, Field(min_length=1, max_length=128)]
 RuntimeValue = Annotated[str, Field(min_length=1, max_length=1_000)]
+ConfirmationAnswer = Annotated[str, Field(min_length=1, max_length=4_000)]
 PlanStep = Annotated[str, Field(min_length=1, max_length=256)]
 ArtifactRef = Annotated[str, Field(min_length=1, max_length=256)]
 Digest = Annotated[str, Field(min_length=1, max_length=128)]
@@ -72,6 +72,8 @@ class RuntimeContext(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     original_goal: str = Field(min_length=1, max_length=8_000)
+    # 最近一次用户确认的自然语言答案；只对当前 Harness run 生效。
+    last_confirmation_answer: ConfirmationAnswer | None = None
     resolved_conditions: tuple[RuntimeCondition, ...] = Field(
         default_factory=tuple, max_length=16
     )
@@ -86,6 +88,7 @@ class RuntimeContext(BaseModel):
 
 __all__ = [
     "ArtifactRef",
+    "ConfirmationAnswer",
     "Digest",
     "PlanStep",
     "RuntimeCondition",

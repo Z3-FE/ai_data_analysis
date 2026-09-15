@@ -10,6 +10,8 @@ from typing import Any, Protocol
 
 from app.agent.memory.enums import (
     MemoryDecisionAction,
+    MemoryFormationStatus,
+    MemoryFormationTrigger,
     MemoryScope,
     MemoryStatus,
     MemoryType,
@@ -164,6 +166,36 @@ class MemoryWriteResult:
     replaced_record: MemoryRecord | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class MemoryFormationRecord:
+    """PostgreSQL 中已存在的记忆形成审计快照。"""
+
+    # 形成任务 ID；同一个 formation_key 始终复用这个 ID。
+    formation_run_id: str
+    # 由 run_id、turn_id、trigger 和 extractor_version 计算的幂等身份。
+    formation_key: str
+    # 形成任务当前状态。
+    status: MemoryFormationStatus
+    # 形成任务的触发方式。
+    trigger: MemoryFormationTrigger
+    # 已提取的候选数量。
+    candidate_count: int = 0
+    # 已接受并写入或替换的数量。
+    accepted_count: int = 0
+    # 被治理拒绝的数量。
+    rejected_count: int = 0
+    # 与现有记忆重复的数量。
+    duplicate_count: int = 0
+    # 替换旧版本的数量。
+    replaced_count: int = 0
+    # 处理失败的数量。
+    failed_count: int = 0
+    # 已保存的紧凑候选决定。
+    decisions: list[dict[str, Any]] = field(default_factory=list)
+    # 任务级错误信息。
+    error_message: str = ""
+
+
 class MemoryRepository(Protocol):
     """长期记忆事实仓储端口。"""
 
@@ -221,7 +253,11 @@ class MemoryRepository(Protocol):
         self, memory_id: str, target: str, error: str = ""
     ) -> None: ...
 
-    async def create_formation_run(self, payload: dict[str, Any]) -> None: ...
+    async def get_formation_run(
+        self, *, formation_key: str, user_id: str
+    ) -> MemoryFormationRecord | None: ...
+
+    async def create_formation_run(self, payload: dict[str, Any]) -> bool: ...
 
     async def update_formation_run(
         self, formation_run_id: str, **changes: Any

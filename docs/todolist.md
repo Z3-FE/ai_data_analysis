@@ -2,6 +2,28 @@
 
 增量技术文档：docs/data_agent_harness_incremental_sdd.md
 
+## 当前真实进度（2026-09-14）
+
+- [x] A：最小 Harness 闭环已完成并通过聚焦测试。
+- [x] B：真实 Planning Agent、动作提交和状态持久化已完成并通过聚焦测试。
+- [x] C：真实 `query_data` Tool Runtime 循环、结果引用和上下文重建已完成并通过聚焦测试。
+- [x] D：PostgreSQL 运行状态持久化、`ask_user` 暂停、确认消费、同一 `run_id` 恢复和重复确认保护已完成。
+- [x] D：运行级 deadline 和取消收口已有确定性测试；客户端断流已用真实 HTTP 验证为 `cancelled/finalization`，并释放 `active_run_id`。
+- [ ] D：真实 PostgreSQL 的运行级 deadline 验收待完成。
+- [ ] D：Finalization 失败对账和跨基础设施一致性验收待完成。
+- [x] E：Finalization 与 Memory Formation 已接入代码主链；跨基础设施统一验收仍待完成。
+- [x] D6：接入 `analyze_data` 高层工具，已通过 Harness 聚焦测试。
+- [x] D7：真实 HTTP 验证 `query_data` + `analyze_data` 循环；两条链路均完成 Planner、工具执行、Artifact、Observation、上下文重建和最终收口。
+- [ ] D8：在问数和分析循环稳定后接入 `build_report`。
+
+最近一次真实 HTTP 验收记录：
+
+- `query_data`：运行 `18c257ad-7da9-4f1f-901f-148f5ab46ef1`，最终为 `completed/finalization`，包含 1 个成功 Artifact 和 1 个成功 Observation。
+- `analyze_data`：运行 `d0fd9c75-88e0-4fdf-9905-fc12e0802207`，最终为 `completed/finalization`，包含 1 个成功分析 Artifact 和 1 个成功 Observation。
+- Harness 聚焦回归：33 passed，1 个现有 Starlette/httpx 弃用警告；新增 Harness SSE 空闲心跳验收。
+
+当前边界：`/api/harness/run` 是正式入口，Harness 是唯一主线；不兼容旧 Graph Agent，不恢复 `WorkingStateLoader`、`create_working_state_loader` 或旧图相关测试。
+
 ## 0. 当前基线与冲突记录
 
 ### 已读取的现有代码

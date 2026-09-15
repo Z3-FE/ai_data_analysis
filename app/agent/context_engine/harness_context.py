@@ -16,8 +16,8 @@ from app.agent.context_engine.harness_context_contracts import (
     RuntimeObservation,
     RuntimePlanProgress,
 )
-from app.agent.state_result_store.contracts import HarnessStateSnapshot
 from app.agent.memory.enums import MemoryType
+from app.agent.state_result_store.contracts import HarnessStateSnapshot
 
 
 class RuntimeContextProjector(Protocol):
@@ -125,6 +125,7 @@ class HarnessRuntimeContextProjector:
         progress = snapshot.plan_progress
         return RuntimeContext(
             original_goal=snapshot.original_goal,
+            last_confirmation_answer=snapshot.last_confirmation_answer,
             resolved_conditions=_project_conditions(snapshot.resolved_conditions),
             plan_progress=RuntimePlanProgress(
                 goal_summary=progress.goal_summary,

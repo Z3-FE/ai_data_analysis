@@ -18,7 +18,7 @@ import {
   Trash2,
   User,
 } from "lucide-react";
-import { apiDelete, apiGet, invalidateApiCache } from "../../lib/api";
+import { conversationService } from "../../services/conversations";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
@@ -86,7 +86,7 @@ export default function Sidebar() {
 
     try {
       setIsLoadingConversations(true);
-      const data = await apiGet("/api/conversations");
+      const data = await conversationService.list();
       setConversations(data.conversations ?? []);
       setConversationError("");
     } catch (error) {
@@ -102,7 +102,6 @@ export default function Sidebar() {
 
   useEffect(() => {
     const handleConversationChanged = () => {
-      invalidateApiCache("/api/conversations");
       void loadConversations();
     };
 
@@ -128,9 +127,7 @@ export default function Sidebar() {
 
     try {
       setDeletingConversationId(conversation.conversation_id);
-      await apiDelete("/api/conversations", {
-        conversation_id: conversation.conversation_id,
-      });
+      await conversationService.delete(conversation.conversation_id);
       setConversations((current) =>
         current.filter((item) => item.conversation_id !== conversation.conversation_id),
       );

@@ -6,6 +6,7 @@
 也不模拟正式动作提交。
 """
 
+from app.agent.planning_agent.contracts import ActionIssuanceContext
 from app.agent.state_result_store.contracts import ActionType, NextAction, PlannerInput
 
 
@@ -16,10 +17,15 @@ class FakePlanningAgent:
         self.final_answer = final_answer
         self.calls: list[PlannerInput] = []
 
-    async def plan(self, value: PlannerInput) -> NextAction:
+    async def plan(
+        self,
+        value: PlannerInput,
+        *,
+        issuance: ActionIssuanceContext,
+    ) -> NextAction:
         self.calls.append(value)
         return NextAction(
-            action_seq=1,
+            action_seq=issuance.action_seq,
             action_type=ActionType.FINAL_ANSWER,
             final_answer=self.final_answer,
             rationale_summary="切片 A 固定收口",

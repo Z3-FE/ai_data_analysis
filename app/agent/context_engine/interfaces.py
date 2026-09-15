@@ -6,8 +6,8 @@ from typing import Protocol
 from app.agent.context_engine.contracts import (
     ContextBuildTrace,
     ContextConversationSummary,
-    ContextKnowledgeItem,
     ContextItem,
+    ContextKnowledgeItem,
     ContextRequest,
     ContextRetrievalPlan,
     ReferenceResolution,

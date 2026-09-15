@@ -54,7 +54,10 @@ class AgentState(TypedDict, total=False):
     extra_context: dict
     sql: str
     sql_reasoning: str
+    # Harness 查询工具传给 Query Agent 的最大结果行数。
+    query_max_rows: int
     sql_result: list[dict]
+    query_limitations: list[str]
     result_columns: list[dict]
     dimension_value_mappings: list[dict]
     display_sql_result: list[dict]

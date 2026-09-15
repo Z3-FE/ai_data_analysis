@@ -7,6 +7,22 @@ app:
   # 当前尚未接入登录系统，服务端使用这个开发用户标识；正式认证接入后替换来源。
   default_user_id: dev-user
 
+harness:
+  # Planner 在同一上下文上遇到可重试失败时允许的重试次数。
+  max_planner_retries: 2
+  # 仅对幂等工具的临时失败进行自动重试。
+  max_tool_retries: 2
+  # 单次运行最多执行的工具迭代次数，防止循环无界增长。
+  max_iterations: 8
+  # 单次运行从开始到终态或暂停的最大时长，单位为秒。
+  run_timeout_seconds: 1800
+  # query_data 单次调用的最大时长，单位为秒。
+  query_timeout_seconds: 300
+  # analyze_data 单次调用的最大时长，单位为秒。
+  analyze_timeout_seconds: 900
+  # SSE 在没有业务事件时发送注释心跳的间隔，单位为秒。
+  sse_heartbeat_seconds: 15
+
 mysql:
   host: 127.0.0.1
   port: 3309
@@ -81,6 +97,12 @@ dimension_value_search:
   vector_score_threshold: 0.55
   # RRF 排名平滑参数，用排名融合 ES 与 Qdrant 两套不可直接比较的分数。
   rrf_k: 60
+
+metadata_recall:
+  # 每类元数据最多使用的召回词数量，避免一次问题产生过多外部请求。
+  max_recall_terms: 8
+  # 同一类元数据允许并发的召回词数量；过大可能压垮 Embedding/检索服务。
+  max_concurrent_terms: 4
 
 embedding:
   host: 127.0.0.1

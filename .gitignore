@@ -11,7 +11,6 @@ docker/
 ./hello-agent-project
 # Virtual environments
 .venv
-
 # Local environment variables
 .env
 # 外部参考项目，不入库

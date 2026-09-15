@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { 
   Search, 
   CheckSquare, 
@@ -15,7 +15,6 @@ import {
   X,
   Info 
 } from 'lucide-react';
-import { apiGet } from '../../lib/api';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -39,44 +38,15 @@ import {
 } from '@/components/ui/table';
 
 export default function DimensionView() {
-  /** 维度管理页面：加载维度资产，支持搜索/类型过滤，并展示右侧维度详情。 */
+  /** 维度管理页面：展示维度资产，支持搜索/类型过滤。 */
 
   const [dimensions, setDimensions] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
   const [selectedDimension, setSelectedDimension] = useState<any | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(true);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-
-  useEffect(() => {
-    let ignore = false;
-
-    async function loadDimensions() {
-      /** 从后端读取维度语义资产，并默认选中一条作为详情。 */
-
-      try {
-        setLoading(true);
-        const data: any = await apiGet('/api/semantic', { asset_type: 'dimensions' });
-        if (ignore) return;
-        const nextDimensions = data.dimensions ?? [];
-        setDimensions(nextDimensions);
-        setSelectedDimension(nextDimensions[1] ?? nextDimensions[0] ?? null);
-        setError('');
-      } catch (err) {
-        if (ignore) return;
-        setError(err instanceof Error ? err.message : '维度接口请求失败');
-      } finally {
-        if (!ignore) setLoading(false);
-      }
-    }
-
-    loadDimensions();
-
-    return () => {
-      ignore = true;
-    };
-  }, []);
 
   const filteredDimensions = dimensions.filter(d => {
     const matchesSearch = d.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
@@ -214,12 +184,12 @@ export default function DimensionView() {
         {/* Dimension table layout */}
         {error && (
           <Alert className="mb-4 border-rose-100 bg-rose-50 text-rose-600">
-            <AlertDescription className="text-xs font-bold">维度接口加载失败：{error}</AlertDescription>
+            <AlertDescription className="text-xs font-bold">维度加载失败：{error}</AlertDescription>
           </Alert>
         )}
-        {loading && (
+        {!loading && dimensions.length === 0 && (
           <Alert className="mb-4 border-blue-100 bg-blue-50 text-blue-600">
-            <AlertDescription className="text-xs font-bold">正在从 FastAPI 加载维度资产...</AlertDescription>
+            <AlertDescription className="text-xs font-bold">暂无维度，请先创建维度定义</AlertDescription>
           </Alert>
         )}
         <Card className="overflow-hidden border-slate-200/80 bg-white p-0 shadow-xs">

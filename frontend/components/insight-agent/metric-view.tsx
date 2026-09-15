@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { 
   Database, 
   Search, 
@@ -19,7 +19,6 @@ import {
   AlertCircle,
   Info
 } from 'lucide-react';
-import { apiGet } from '../../lib/api';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -43,44 +42,15 @@ import {
 } from '@/components/ui/table';
 
 export default function MetricView() {
-  /** 指标管理页面：加载指标资产，支持搜索/状态过滤，并展示右侧指标详情。 */
+  /** 指标管理页面：展示指标资产，支持搜索/状态过滤。 */
 
   const [metrics, setMetrics] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [selectedMetric, setSelectedMetric] = useState<any | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(true);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-
-  useEffect(() => {
-    let ignore = false;
-
-    async function loadMetrics() {
-      /** 从后端读取指标语义资产，并默认选中第一条作为详情。 */
-
-      try {
-        setLoading(true);
-        const data: any = await apiGet('/api/semantic', { asset_type: 'metrics' });
-        if (ignore) return;
-        const nextMetrics = data.metrics ?? [];
-        setMetrics(nextMetrics);
-        setSelectedMetric(nextMetrics[0] ?? null);
-        setError('');
-      } catch (err) {
-        if (ignore) return;
-        setError(err instanceof Error ? err.message : '指标接口请求失败');
-      } finally {
-        if (!ignore) setLoading(false);
-      }
-    }
-
-    loadMetrics();
-
-    return () => {
-      ignore = true;
-    };
-  }, []);
 
   const filteredMetrics = metrics.filter(m => {
     const matchesSearch = m.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
@@ -217,13 +187,13 @@ export default function MetricView() {
         {error && (
           <Alert className="mb-4 rounded-xl border-rose-100 bg-rose-50 text-xs font-bold text-rose-600">
             <AlertCircle className="size-4" />
-            <AlertDescription>指标接口加载失败：{error}</AlertDescription>
+            <AlertDescription>指标加载失败：{error}</AlertDescription>
           </Alert>
         )}
-        {loading && (
+        {!loading && metrics.length === 0 && (
           <Alert className="mb-4 rounded-xl border-blue-100 bg-blue-50 text-xs font-bold text-blue-600">
             <Info className="size-4" />
-            <AlertDescription>正在从 FastAPI 加载指标资产...</AlertDescription>
+            <AlertDescription>暂无指标，请先创建指标定义</AlertDescription>
           </Alert>
         )}
         <Card className="overflow-hidden rounded-xl border-slate-200/80 bg-white p-0 shadow-xs">

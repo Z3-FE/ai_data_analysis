@@ -47,7 +47,10 @@ class SliceAVerticalTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             [snapshot["harness"]["phase"] for snapshot in run_store.snapshots],
-            ["start_run", "build_context", "plan", "finalization", "finalization"],
+            [
+                "start_run", "build_context", "plan",
+                "validate_action", "finalization", "finalization",
+            ],
         )
         final_state = run_store.states[run_ref.run_id]["harness"]
         self.assertEqual(final_state["status"], "completed")

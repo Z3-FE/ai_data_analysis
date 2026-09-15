@@ -23,7 +23,8 @@ import {
   Send,
   User,
 } from "lucide-react";
-import { apiGet } from "../../lib/api";
+import { conversationService } from "../../services/conversations";
+import { harnessService, type HarnessEvent } from "../../services/harness";
 import { parseBackendDate } from "../../lib/date";
 import { ReportView, type RenderedReport } from "./analysis-workspace";
 import {
@@ -49,6 +50,7 @@ type ExecutionMode = "daily_chat" | "single_query" | "analysis" | "clarification
 
 interface BackendTurn {
   turn_id: string;
+  run_id?: string;
   execution_mode?: ExecutionMode;
   status?: string;
   started_at?: string;
@@ -73,6 +75,16 @@ interface ConversationHistoryData {
   messages?: BackendMessage[];
   turns?: BackendTurn[];
   outputs?: BackendOutput[];
+}
+
+interface PendingHarnessConfirmation {
+  run_id: string;
+  confirmation_id: string;
+  question: string;
+  reason_code?: string;
+  required_fields?: string[];
+  expires_at?: string;
+  assistant_message_id: string;
 }
 
 interface ConversationTurnMeta {
@@ -341,98 +353,210 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
-async function responseErrorMessage(response: Response) {
-  /** 把非 JSON 的代理错误正文转换成可读的 SSE 错误。 */
-  const body = await response.text();
-  if (body.trim()) {
-    try {
-      const data = JSON.parse(body) as { detail?: unknown; message?: unknown };
-      if (typeof data.detail === "string") return data.detail;
-      if (typeof data.message === "string") return data.message;
-    } catch {
-      return body.trim();
-    }
-  }
-  return "SSE 连接失败（HTTP " + response.status + "）";
+
+interface HarnessRunRefPayload {
+  user_id?: string;
+  conversation_id?: string;
+  thread_id?: string;
+  turn_id?: string;
+  run_id?: string;
 }
 
-function parseStreamEvent(data: string): Record<string, any> {
-  /** 解析 SSE JSON，并把纯文本网关错误转换成明确提示。 */
-  try {
-    const parsed = JSON.parse(data);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error("SSE 事件不是 JSON 对象。");
-    }
-    return parsed as Record<string, any>;
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      throw new Error("后端返回了无效的 SSE 数据：" + data.trim().slice(0, 180));
-    }
-    throw error;
-  }
+interface HarnessStreamEvent extends StreamEvent {
+  type: string;
+  event_type: string;
+  payload: Record<string, unknown>;
+  run_ref?: HarnessRunRefPayload;
+  phase?: string;
+  iteration?: number;
+  action_id?: string;
+  timestamp?: string;
+  [key: string]: unknown;
 }
 
-async function* streamAgentEvents(
-  conversationId: string,
-  question: string,
-  abortSignal?: AbortSignal,
+function harnessStep(eventType: string, source: string, payload: Record<string, unknown>) {
+  if (typeof payload.step === "string" && payload.step.trim()) return payload.step;
+  if (eventType.startsWith("context.")) return "构建上下文";
+  if (eventType.startsWith("planner.")) return "规划下一步动作";
+  if (eventType.startsWith("tool.")) return source ? `执行工具：${source}` : "执行工具";
+  if (eventType.startsWith("confirmation.")) return "等待用户确认";
+  if (eventType === "action.committed") return "提交动作";
+  if (eventType === "run.result") return "处理运行结果";
+  return "Harness 运行";
+}
+
+function toHarnessStreamEvent(event: HarnessEvent): HarnessStreamEvent {
+  const payload = event.payload;
+  return {
+    ...payload,
+    ...event,
+    step: harnessStep(event.event_type, event.source, payload),
+    node: typeof payload.node === "string" ? payload.node : event.source,
+    type: event.event_type,
+  };
+}
+
+function finalAnswerForHarnessEvent(event: HarnessStreamEvent) {
+  const value = event.final_answer;
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function confirmationFromHarnessEvent(
+  event: HarnessStreamEvent,
+  assistantMessageId: string,
+): PendingHarnessConfirmation | undefined {
+  const source = event.type === "run.result"
+    ? asRecord(event.loop_result)
+    : event;
+  const confirmation = asRecord(source.confirmation);
+  const confirmationId = typeof confirmation.confirmation_id === "string"
+    ? confirmation.confirmation_id
+    : typeof event.confirmation_id === "string"
+      ? event.confirmation_id
+      : undefined;
+  const question = typeof confirmation.question === "string"
+    ? confirmation.question
+    : typeof event.question === "string"
+      ? event.question
+      : undefined;
+  const runId = event.run_ref?.run_id;
+  if (!confirmationId || !question || !runId) return undefined;
+  return {
+    run_id: runId,
+    confirmation_id: confirmationId,
+    question,
+    reason_code: typeof confirmation.reason_code === "string"
+      ? confirmation.reason_code
+      : typeof event.reason_code === "string"
+        ? event.reason_code
+        : undefined,
+    required_fields: Array.isArray(confirmation.required_fields)
+      ? confirmation.required_fields.filter((value): value is string => typeof value === "string")
+      : Array.isArray(event.required_fields)
+        ? event.required_fields.filter((value): value is string => typeof value === "string")
+        : undefined,
+    expires_at: typeof confirmation.expires_at === "string"
+      ? confirmation.expires_at
+      : typeof event.expires_at === "string"
+        ? event.expires_at
+        : undefined,
+    assistant_message_id: assistantMessageId,
+  };
+}
+
+function confirmationFromHarnessStatus(
+  status: Record<string, unknown>,
+  runId: string,
+  assistantMessageId: string,
+): PendingHarnessConfirmation | undefined {
+  const pending = asRecord(status.pending_confirmation);
+  if (typeof pending.confirmation_id !== "string" || typeof pending.question !== "string") {
+    return undefined;
+  }
+  return {
+    run_id: runId,
+    confirmation_id: pending.confirmation_id,
+    question: pending.question,
+    reason_code: typeof pending.reason_code === "string" ? pending.reason_code : undefined,
+    required_fields: Array.isArray(pending.required_fields)
+      ? pending.required_fields.filter((value): value is string => typeof value === "string")
+      : undefined,
+    expires_at: typeof pending.expires_at === "string" ? pending.expires_at : undefined,
+    assistant_message_id: assistantMessageId,
+  };
+}
+
+function harnessStatusErrorMessage(status: Record<string, unknown>, fallback: string) {
+  const lastError = asRecord(status.last_error);
+  return typeof lastError.message === "string" && lastError.message.trim()
+    ? lastError.message
+    : fallback;
+}
+
+async function reconcileHarnessStreamFailure(
+  runId: string | undefined,
+  assistantMessageId: string,
+  fallbackMessage: string,
 ) {
-  /** 通过 Agent 流式入口提交问题，并按事件块逐条读取 SSE 响应。 */
-
-  const response = await fetch("/api/agent/run/stream", {
-    method: "POST",
-    cache: "no-store",
-    headers: {
-      Accept: "text/event-stream",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      conversation_id: conversationId,
-      input_text: question,
-    }),
-    signal: abortSignal,
-  });
-
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response));
-  }
-  if (!response.body) {
-    throw new Error("SSE 响应没有可读取的数据流。");
+  if (!runId) {
+    return {
+      status: undefined,
+      pendingConfirmation: undefined,
+      errorMessage: fallbackMessage,
+    };
   }
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const chunks = buffer.split("\n\n");
-    buffer = chunks.pop() ?? "";
-
-    for (const chunk of chunks) {
-      const dataLines = chunk
-        .split("\n")
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice("data:".length).trimStart());
-
-      if (dataLines.length === 0) continue;
-      yield parseStreamEvent(dataLines.join("\n"));
-    }
+  try {
+    const status = await harnessService.status(runId, "dev-user");
+    const statusValue = typeof status.status === "string" ? status.status : undefined;
+    return {
+      status: statusValue,
+      pendingConfirmation: statusValue === "waiting_confirmation"
+        ? confirmationFromHarnessStatus(status, runId, assistantMessageId)
+        : undefined,
+      errorMessage: harnessStatusErrorMessage(status, fallbackMessage),
+    };
+  } catch (error) {
+    return {
+      status: undefined,
+      pendingConfirmation: undefined,
+      errorMessage: error instanceof Error
+        ? `流式连接失败，且无法查询 Harness 状态：${error.message}`
+        : "流式连接失败，且无法查询 Harness 状态。",
+    };
   }
+}
 
-  if (buffer.trim()) {
-    const dataLines = buffer
-      .split("\n")
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice("data:".length).trimStart());
+function HarnessConfirmationPanel({
+  confirmation,
+  isRunning,
+  onSubmit,
+}: {
+  confirmation: PendingHarnessConfirmation;
+  isRunning: boolean;
+  onSubmit: (answer: string, decision: "confirm" | "reject") => Promise<void>;
+}) {
+  const [answer, setAnswer] = useState("");
 
-    if (dataLines.length > 0) {
-      yield parseStreamEvent(dataLines.join("\n"));
-    }
-  }
+  useEffect(() => {
+    setAnswer("");
+  }, [confirmation.confirmation_id]);
+
+  return (
+    <div className="shrink-0 border-t border-amber-200 bg-amber-50 px-6 py-4">
+      <div className="text-xs font-bold text-amber-900">需要确认后继续</div>
+      <div className="mt-1 text-sm leading-6 text-amber-950">{confirmation.question}</div>
+      {confirmation.required_fields?.length ? (
+        <div className="mt-2 text-[11px] text-amber-800">需要补充：{confirmation.required_fields.join("、")}</div>
+      ) : null}
+      <textarea
+        value={answer}
+        onChange={(event) => setAnswer(event.target.value)}
+        disabled={isRunning}
+        rows={2}
+        placeholder="输入确认内容，或说明不继续"
+        className="mt-3 min-h-[64px] w-full resize-y rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-amber-500"
+      />
+      <div className="mt-3 flex justify-end gap-2">
+        <button
+          type="button"
+          disabled={isRunning}
+          onClick={() => void onSubmit(answer.trim() || "不继续", "reject")}
+          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          停止任务
+        </button>
+        <button
+          type="button"
+          disabled={isRunning || !answer.trim()}
+          onClick={() => void onSubmit(answer.trim(), "confirm")}
+          className="rounded-lg bg-amber-600 px-3 py-2 text-xs font-bold text-white hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          确认并继续
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function getAppendMessageText(message: AppendMessage) {
@@ -594,6 +718,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
   const [executionTraceError, setExecutionTraceError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [activeRunTurnId, setActiveRunTurnId] = useState<string>();
+  const [pendingConfirmation, setPendingConfirmation] = useState<PendingHarnessConfirmation>();
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const pendingStartedRef = useRef(false);
@@ -604,10 +729,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
     /** 同时拉取会话详情和消息列表，用于刷新标题与聊天记录。 */
 
     try {
-      const data = await apiGet("/api/conversations", {
-        conversation_id: conversationId,
-        include_messages: true,
-      });
+      const data = await conversationService.detail(conversationId);
       const history = data as ConversationHistoryData;
       const turnsById = new Map(
         (history.turns ?? []).map((turn) => [turn.turn_id, turn]),
@@ -628,6 +750,36 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
           ),
         ),
       );
+
+      const activeRunId = typeof asRecord(history.conversation).active_run_id === "string"
+        ? String(asRecord(history.conversation).active_run_id)
+        : latestTurn?.run_id;
+      if (activeRunId) {
+        try {
+          const runStatus = await harnessService.status(activeRunId, "dev-user");
+          const pending = asRecord(runStatus?.pending_confirmation);
+          if (
+            runStatus?.status === "waiting_confirmation"
+            && typeof pending.confirmation_id === "string"
+            && typeof pending.question === "string"
+          ) {
+            setPendingConfirmation({
+              run_id: activeRunId,
+              confirmation_id: pending.confirmation_id,
+              question: pending.question,
+              reason_code: typeof pending.reason_code === "string" ? pending.reason_code : undefined,
+              required_fields: Array.isArray(pending.required_fields)
+                ? pending.required_fields.filter((value): value is string => typeof value === "string")
+                : undefined,
+              expires_at: typeof pending.expires_at === "string" ? pending.expires_at : undefined,
+              assistant_message_id: "",
+            });
+            setExecutionMode("clarification");
+          }
+        } catch {
+          // 运行状态不是会话历史的强依赖；状态接口不可用时仍显示历史消息。
+        }
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "无法加载会话历史";
       setError(`会话历史加载失败：${message}`);
@@ -667,6 +819,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       setExecutionTraceError("");
       setActiveRunTurnId(undefined);
       executionTraceRequestRef.current += 1;
+      setPendingConfirmation(undefined);
       setIsRunning(true);
       setMessages((current) => [...current, userMessage, assistantMessage]);
 
@@ -679,8 +832,11 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       let typewriterRunning = false;
       let responseMeta: ConversationTurnMeta | undefined;
       let currentTurnId: string | undefined;
+      let currentRunId: string | undefined;
       const startedAt = Date.now();
       let terminalEventReceived = false;
+      let waitingForConfirmation = false;
+      let streamFailureMessage = "";
 
       const updateAssistantMessage = (text: string, status: ThreadMessageLike["status"]) => {
         /** 更新本地 assistant 消息，用于打字机逐步刷新气泡内容。 */
@@ -732,100 +888,169 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       };
 
       try {
-        for await (const runEvent of streamAgentEvents(
-          conversationId,
-          normalizedQuestion,
-          abortController.signal,
+        for await (const event of harnessService.streamRun(
+          {
+            conversation_id: conversationId,
+            input_text: normalizedQuestion,
+            user_id: "dev-user",
+          },
+          { signal: abortController.signal },
         )) {
-          const payload = runEvent;
-          setDebugEvents((current) => appendExecutionEvent(current, runEvent as StreamEvent));
-
-          if (runEvent.type === "run.started" && typeof payload.turn_id === "string") {
-            currentTurnId = payload.turn_id;
-            setActiveRunTurnId(payload.turn_id);
+          const runEvent = toHarnessStreamEvent(event);
+          setDebugEvents((current) => appendExecutionEvent(current, runEvent));
+          setExecutionPanelOpen(true);
+          if (runEvent.run_ref?.turn_id) {
+            currentTurnId = runEvent.run_ref.turn_id;
+            setActiveRunTurnId(currentTurnId);
+          }
+          if (runEvent.run_ref?.run_id) {
+            currentRunId = runEvent.run_ref.run_id;
           }
 
-          if (runEvent.type === "question_route") {
-            const mode = asExecutionMode(payload.execution_mode);
-            if (mode) {
-              setExecutionMode(mode);
-              if (currentTurnId && (mode === "analysis" || mode === "single_query")) {
-                responseMeta = {
-                  turn_id: currentTurnId,
-                  execution_mode: mode,
-                  response_type: mode === "analysis" ? "analysis" : "simple_data",
-                  assistant_text: assistantText,
-                  status: "running",
-                  elapsed_seconds: Math.max(0, (Date.now() - startedAt) / 1000),
-                };
-                updateAssistantMessage(visibleAssistantText, { type: "running" });
-              }
-            }
-          }
-
-          if (runEvent.type === "message.delta" && payload.content) {
-            assistantText += payload.content;
-            void drainTypewriter();
-          }
-
-          if (runEvent.type === "message.completed" && payload.content) {
-            assistantText = payload.content;
-            const mode = asExecutionMode(payload.execution_mode);
-            if (mode) {
-              setExecutionMode(mode);
-            }
-            const outputType = typeof payload.output_type === "string"
-              ? payload.output_type
-              : undefined;
-            responseMeta = buildConversationMeta(
-              assistantText,
-              outputType,
-              asRecord(payload.output),
-              {
-                turn_id: typeof payload.turn_id === "string" ? payload.turn_id : undefined,
-                execution_mode: mode,
-              },
-              Math.max(0, (Date.now() - startedAt) / 1000),
+          if (runEvent.type === "stream.failed") {
+            const fallback = typeof runEvent.message === "string"
+              ? runEvent.message
+              : "Harness 流式连接失败。";
+            const reconciled = await reconcileHarnessStreamFailure(
+              currentRunId,
+              assistantMessageId,
+              fallback,
             );
-            if (mode && responseMeta) responseMeta = { ...responseMeta, execution_mode: mode };
-            void drainTypewriter();
+            if (reconciled.status === "waiting_confirmation" && reconciled.pendingConfirmation) {
+              const pending = reconciled.pendingConfirmation;
+              waitingForConfirmation = true;
+              terminalEventReceived = true;
+              assistantText = pending.question;
+              visibleAssistantText = assistantText;
+              responseMeta = buildConversationMeta(
+                assistantText,
+                "clarification",
+                { question: assistantText },
+                { turn_id: currentTurnId, execution_mode: "clarification", status: "waiting_confirmation" },
+                Math.max(0, (Date.now() - startedAt) / 1000),
+              );
+              setExecutionMode("clarification");
+              setPendingConfirmation(pending);
+              updateAssistantMessage(assistantText, { type: "complete", reason: "stop" });
+            } else if (reconciled.status === "completed") {
+              terminalEventReceived = true;
+            } else if (
+              reconciled.status === "failed"
+              || reconciled.status === "timeout"
+              || reconciled.status === "cancelled"
+            ) {
+              terminalEventReceived = true;
+              failedMessage = reconciled.errorMessage;
+            } else {
+              streamFailureMessage = reconciled.status === "running"
+                ? fallback + " Harness 仍在运行，请稍后刷新查看最终状态。"
+                : reconciled.errorMessage;
+            }
+            continue;
+          }
+
+          if (runEvent.type === "confirmation.required") {
+            const pending = confirmationFromHarnessEvent(runEvent, assistantMessageId);
+            if (pending) {
+              waitingForConfirmation = true;
+              terminalEventReceived = true;
+              assistantText = pending.question;
+              visibleAssistantText = assistantText;
+              responseMeta = buildConversationMeta(
+                assistantText,
+                "clarification",
+                { question: assistantText },
+                { turn_id: currentTurnId, execution_mode: "clarification", status: "waiting_confirmation" },
+                Math.max(0, (Date.now() - startedAt) / 1000),
+              );
+              setExecutionMode("clarification");
+              setPendingConfirmation(pending);
+              updateAssistantMessage(assistantText, { type: "complete", reason: "stop" });
+            }
+            continue;
+          }
+
+          if (runEvent.type === "run.result") {
+            const loopResult = asRecord(runEvent.loop_result);
+            if (loopResult.status === "waiting_confirmation") {
+              const pending = confirmationFromHarnessEvent(runEvent, assistantMessageId);
+              if (pending) {
+                waitingForConfirmation = true;
+                terminalEventReceived = true;
+                assistantText = pending.question;
+                visibleAssistantText = assistantText;
+                responseMeta = buildConversationMeta(
+                  assistantText,
+                  "clarification",
+                  { question: assistantText },
+                  { turn_id: currentTurnId, execution_mode: "clarification", status: "waiting_confirmation" },
+                  Math.max(0, (Date.now() - startedAt) / 1000),
+                );
+                setExecutionMode("clarification");
+                setPendingConfirmation(pending);
+                updateAssistantMessage(assistantText, { type: "complete", reason: "stop" });
+              }
+              continue;
+            }
+            const finalization = asRecord(loopResult.finalization_result);
+            const nestedAnswer = finalization.final_answer;
+            if (typeof nestedAnswer === "string" && nestedAnswer.trim()) {
+              assistantText = nestedAnswer;
+            }
           }
 
           if (runEvent.type === "run.completed") {
             terminalEventReceived = true;
-            const mode = asExecutionMode(payload.execution_mode);
-            if (mode) setExecutionMode(mode);
+            const answer = finalAnswerForHarnessEvent(runEvent);
+            if (answer) assistantText = answer;
+            responseMeta = buildConversationMeta(
+              assistantText || "任务已完成。",
+              "text",
+              { message: assistantText },
+              { turn_id: currentTurnId, status: "completed" },
+              Math.max(0, (Date.now() - startedAt) / 1000),
+            );
+            void drainTypewriter();
             await waitForTypewriterIdle();
-            updateAssistantMessage(assistantText, { type: "complete", reason: "stop" });
-            setIsRunning(false);
-            try {
-              await loadConversation();
-            } catch {
-              // 历史刷新失败时保留刚刚完成的本地消息，避免误报为运行失败。
-            }
-            notifyConversationsChanged();
-            break;
+            updateAssistantMessage(assistantText || "任务已完成。", { type: "complete", reason: "stop" });
+            continue;
           }
 
-          if (runEvent.type === "run.failed") {
+          if (runEvent.type === "run.failed"
+            || runEvent.type === "run.timeout"
+            || runEvent.type === "run.cancelled") {
             terminalEventReceived = true;
-            failedMessage = payload.message ?? "运行失败";
+            failedMessage = finalAnswerForHarnessEvent(runEvent)
+              || (typeof runEvent.message === "string" ? runEvent.message : "运行失败");
             responseMeta = buildConversationMeta(
               failedMessage,
               "failure",
               { message: failedMessage },
-              { turn_id: currentTurnId },
+              { turn_id: currentTurnId, status: runEvent.type.slice(4) },
               Math.max(0, (Date.now() - startedAt) / 1000),
             );
-            break;
+            updateAssistantMessage(failedMessage, { type: "incomplete", reason: "error" });
+            continue;
           }
         }
 
-        if (failedMessage) {
+        if (waitingForConfirmation) {
+          setIsRunning(false);
+        } else if (failedMessage) {
           setError(failedMessage);
           updateAssistantMessage(failedMessage, { type: "incomplete", reason: "error" });
-          await loadConversation();
+          try { await loadConversation(); } catch { /* 保留本地失败消息。 */ }
           notifyConversationsChanged();
+        } else if (streamFailureMessage) {
+          setError(streamFailureMessage);
+          responseMeta = buildConversationMeta(
+            streamFailureMessage,
+            "failure",
+            { message: streamFailureMessage },
+            { turn_id: currentTurnId, status: "stream_failed" },
+            Math.max(0, (Date.now() - startedAt) / 1000),
+          );
+          updateAssistantMessage(streamFailureMessage, { type: "incomplete", reason: "error" });
         } else if (!terminalEventReceived) {
           const message = "执行连接已结束，但没有收到最终状态。";
           setError(message);
@@ -842,23 +1067,45 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
           } catch {
             // 历史刷新失败时保留本地终态消息，避免覆盖可见错误。
           }
+        } else {
+          try { await loadConversation(); } catch { /* 保留本地完成消息。 */ }
+          notifyConversationsChanged();
         }
       } catch (err) {
         if (!abortController.signal.aborted) {
-          const message = err instanceof Error ? err.message : "运行失败";
-          setError(message);
-          responseMeta = buildConversationMeta(
-            message,
-            "failure",
-            { message },
-            { turn_id: currentTurnId },
-            Math.max(0, (Date.now() - startedAt) / 1000),
+          const fallback = err instanceof Error ? err.message : "运行流式连接失败";
+          const reconciled = await reconcileHarnessStreamFailure(
+            currentRunId,
+            assistantMessageId,
+            fallback,
           );
-          updateAssistantMessage(message, { type: "incomplete", reason: "error" });
-          try {
-            await loadConversation();
-          } catch {
-            // 历史刷新失败时保留本地终态消息，避免覆盖可见错误。
+          if (reconciled.status === "waiting_confirmation" && reconciled.pendingConfirmation) {
+            setPendingConfirmation(reconciled.pendingConfirmation);
+            setExecutionMode("clarification");
+            updateAssistantMessage(reconciled.pendingConfirmation.question, { type: "complete", reason: "stop" });
+          } else if (reconciled.status === "completed") {
+            try {
+              await loadConversation();
+              notifyConversationsChanged();
+            } catch {
+              const message = "任务已完成，但前端未能同步最终结果。";
+              setError(message);
+              updateAssistantMessage(message, { type: "incomplete", reason: "error" });
+            }
+          } else {
+            const message = reconciled.status === "running"
+              ? fallback + " Harness 仍在运行，请稍后刷新查看最终状态。"
+              : reconciled.errorMessage;
+            setError(message);
+            responseMeta = buildConversationMeta(
+              message,
+              "failure",
+              { message },
+              { turn_id: currentTurnId, status: reconciled.status || "stream_failed" },
+              Math.max(0, (Date.now() - startedAt) / 1000),
+            );
+            updateAssistantMessage(message, { type: "incomplete", reason: "error" });
+            try { await loadConversation(); } catch { /* 保留本地流错误。 */ }
           }
         }
       } finally {
@@ -870,6 +1117,265 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       }
     },
     [conversationId, isRunning, loadConversation],
+  );
+
+  const resumeConfirmation = useCallback(
+    async (answer: string, decision: "confirm" | "reject") => {
+      /** 提交确认并恢复同一个 Harness run，不创建新的 turn 或 conversation。 */
+
+      const confirmation = pendingConfirmation;
+      if (!confirmation || isRunning) return;
+
+      setError("");
+      setIsRunning(true);
+      setExecutionPanelOpen(true);
+      setExecutionMode(null);
+
+      const abortController = new AbortController();
+      activeAbortControllerRef.current = abortController;
+      const assistantMessageId = confirmation.assistant_message_id || `local_assistant_${crypto.randomUUID()}`;
+      if (confirmation.assistant_message_id) {
+        setMessages((current) => current.map((message) => (
+          message.id === assistantMessageId
+            ? ({
+                ...message,
+                content: [{ type: "text", text: "正在根据你的确认继续处理..." }],
+                status: { type: "running" },
+              } as ThreadMessageLike)
+            : message
+        )));
+      } else {
+        setMessages((current) => [
+          ...current,
+          {
+            id: assistantMessageId,
+            role: "assistant",
+            content: [{ type: "text", text: "正在根据你的确认继续处理..." }],
+            createdAt: new Date(),
+            status: { type: "running" },
+          } as ThreadMessageLike,
+        ]);
+      }
+
+      let assistantText = "正在根据你的确认继续处理...";
+      let failedMessage = "";
+      let currentTurnId: string | undefined;
+      let terminalEventReceived = false;
+      let waitingForConfirmation = false;
+      let nextConfirmation: PendingHarnessConfirmation | undefined;
+      let streamFailureMessage = "";
+      const startedAt = Date.now();
+      let responseMeta: ConversationTurnMeta | undefined;
+
+      const updateAssistantMessage = (text: string, status: ThreadMessageLike["status"]) => {
+        setMessages((current) => current.map((message) => (
+          message.id === assistantMessageId
+            ? ({
+                ...message,
+                content: [{ type: "text", text }],
+                status,
+                ...(responseMeta
+                  ? { metadata: { custom: { conversation: responseMeta } } }
+                  : {}),
+              } as ThreadMessageLike)
+            : message
+        )));
+      };
+
+      try {
+        for await (const event of harnessService.streamResume(
+          {
+            run_id: confirmation.run_id,
+            user_id: "dev-user",
+            confirmation_id: confirmation.confirmation_id,
+            answer: answer.trim(),
+            decision,
+            resolved_conditions: {},
+          },
+          { signal: abortController.signal },
+        )) {
+            const runEvent = toHarnessStreamEvent(event);
+            setDebugEvents((current) => appendExecutionEvent(current, runEvent));
+            if (runEvent.run_ref?.turn_id) {
+              currentTurnId = runEvent.run_ref.turn_id;
+              setActiveRunTurnId(currentTurnId);
+            }
+
+            if (runEvent.type === "stream.failed") {
+              const fallback = typeof runEvent.message === "string"
+                ? runEvent.message
+                : "Harness 恢复流式连接失败。";
+              const reconciled = await reconcileHarnessStreamFailure(
+                confirmation.run_id,
+                assistantMessageId,
+                fallback,
+              );
+              if (reconciled.status === "waiting_confirmation" && reconciled.pendingConfirmation) {
+                nextConfirmation = reconciled.pendingConfirmation;
+                waitingForConfirmation = true;
+                terminalEventReceived = true;
+                assistantText = nextConfirmation.question;
+                responseMeta = buildConversationMeta(
+                  assistantText,
+                  "clarification",
+                  { question: assistantText },
+                  { turn_id: currentTurnId, execution_mode: "clarification", status: "waiting_confirmation" },
+                  Math.max(0, (Date.now() - startedAt) / 1000),
+                );
+                setExecutionMode("clarification");
+                updateAssistantMessage(assistantText, { type: "complete", reason: "stop" });
+              } else if (reconciled.status === "completed") {
+                terminalEventReceived = true;
+              } else if (
+                reconciled.status === "failed"
+                || reconciled.status === "timeout"
+                || reconciled.status === "cancelled"
+              ) {
+                terminalEventReceived = true;
+                failedMessage = reconciled.errorMessage;
+              } else {
+                streamFailureMessage = reconciled.status === "running"
+                  ? fallback + " Harness 仍在运行，请稍后刷新查看最终状态。"
+                  : reconciled.errorMessage;
+              }
+              continue;
+            }
+
+            if (runEvent.type === "confirmation.required") {
+              nextConfirmation = confirmationFromHarnessEvent(runEvent, assistantMessageId);
+              waitingForConfirmation = Boolean(nextConfirmation);
+              if (nextConfirmation) {
+                assistantText = nextConfirmation.question;
+                responseMeta = buildConversationMeta(
+                  assistantText,
+                  "clarification",
+                  { question: assistantText },
+                  { turn_id: currentTurnId, execution_mode: "clarification", status: "waiting_confirmation" },
+                  Math.max(0, (Date.now() - startedAt) / 1000),
+                );
+                setExecutionMode("clarification");
+                updateAssistantMessage(assistantText, { type: "complete", reason: "stop" });
+              }
+              continue;
+            }
+
+            if (runEvent.type === "run.result") {
+              const loopResult = asRecord(runEvent.loop_result);
+              if (loopResult.status === "waiting_confirmation") {
+                nextConfirmation = confirmationFromHarnessEvent(runEvent, assistantMessageId);
+                waitingForConfirmation = Boolean(nextConfirmation);
+                if (nextConfirmation) {
+                  assistantText = nextConfirmation.question;
+                  responseMeta = buildConversationMeta(
+                    assistantText,
+                    "clarification",
+                    { question: assistantText },
+                    { turn_id: currentTurnId, execution_mode: "clarification", status: "waiting_confirmation" },
+                    Math.max(0, (Date.now() - startedAt) / 1000),
+                  );
+                  setExecutionMode("clarification");
+                  updateAssistantMessage(assistantText, { type: "complete", reason: "stop" });
+                }
+                continue;
+              }
+              const finalization = asRecord(loopResult.finalization_result);
+              const nestedAnswer = finalization.final_answer;
+              if (typeof nestedAnswer === "string" && nestedAnswer.trim()) {
+                assistantText = nestedAnswer;
+              }
+            }
+
+            if (runEvent.type === "run.completed") {
+              terminalEventReceived = true;
+              assistantText = finalAnswerForHarnessEvent(runEvent) || assistantText;
+              responseMeta = buildConversationMeta(
+                assistantText,
+                "text",
+                { message: assistantText },
+                { turn_id: currentTurnId, status: "completed" },
+                Math.max(0, (Date.now() - startedAt) / 1000),
+              );
+              updateAssistantMessage(assistantText, { type: "complete", reason: "stop" });
+              continue;
+            }
+
+            if (runEvent.type === "run.failed"
+              || runEvent.type === "run.timeout"
+              || runEvent.type === "run.cancelled") {
+              terminalEventReceived = true;
+              failedMessage = finalAnswerForHarnessEvent(runEvent)
+                || (typeof runEvent.message === "string" ? runEvent.message : "运行失败");
+              responseMeta = buildConversationMeta(
+                failedMessage,
+                "failure",
+                { message: failedMessage },
+                { turn_id: currentTurnId, status: runEvent.type.slice(4) },
+                Math.max(0, (Date.now() - startedAt) / 1000),
+              );
+              updateAssistantMessage(failedMessage, { type: "incomplete", reason: "error" });
+            }
+        }
+
+        if (waitingForConfirmation && nextConfirmation) {
+          setPendingConfirmation(nextConfirmation);
+        } else if (failedMessage) {
+          setError(failedMessage);
+          try { await loadConversation(); } catch { /* 保留本地失败消息。 */ }
+          notifyConversationsChanged();
+        } else if (terminalEventReceived) {
+          setPendingConfirmation(undefined);
+          try { await loadConversation(); } catch { /* 保留本地完成消息。 */ }
+          notifyConversationsChanged();
+        } else if (streamFailureMessage) {
+          setError(streamFailureMessage);
+          updateAssistantMessage(streamFailureMessage, { type: "incomplete", reason: "error" });
+        } else {
+          const message = "恢复连接已结束，但没有收到最终状态。";
+          setError(message);
+          updateAssistantMessage(message, { type: "incomplete", reason: "error" });
+        }
+      } catch (err) {
+        if (!abortController.signal.aborted) {
+          const fallback = err instanceof Error ? err.message : "恢复运行流式连接失败";
+          const reconciled = await reconcileHarnessStreamFailure(
+            confirmation.run_id,
+            assistantMessageId,
+            fallback,
+          );
+          if (reconciled.status === "waiting_confirmation" && reconciled.pendingConfirmation) {
+            setPendingConfirmation(reconciled.pendingConfirmation);
+            setExecutionMode("clarification");
+            updateAssistantMessage(
+              reconciled.pendingConfirmation.question,
+              { type: "complete", reason: "stop" },
+            );
+          } else if (reconciled.status === "completed") {
+            setPendingConfirmation(undefined);
+            try {
+              await loadConversation();
+              notifyConversationsChanged();
+            } catch {
+              const message = "任务已完成，但前端未能同步最终结果。";
+              setError(message);
+              updateAssistantMessage(message, { type: "incomplete", reason: "error" });
+            }
+          } else {
+            const message = reconciled.status === "running"
+              ? fallback + " Harness 仍在运行，请稍后刷新查看最终状态。"
+              : reconciled.errorMessage;
+            setError(message);
+            updateAssistantMessage(message, { type: "incomplete", reason: "error" });
+          }
+        }
+      } finally {
+        if (activeAbortControllerRef.current === abortController) {
+          activeAbortControllerRef.current = null;
+        }
+        setActiveRunTurnId(undefined);
+        setIsRunning(false);
+      }
+    },
+    [isRunning, loadConversation, pendingConfirmation],
   );
 
   const handleNewMessage = useCallback(
@@ -900,6 +1406,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
     setExecutionTraceLoading(false);
     setExecutionTraceError("");
     setActiveRunTurnId(undefined);
+    setPendingConfirmation(undefined);
     executionTraceRequestRef.current += 1;
     pendingStartedRef.current = false;
     activeAbortControllerRef.current?.abort();
@@ -924,7 +1431,12 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
     return meta?.response_type === "analysis" || meta?.response_type === "simple_data";
   });
   const showExecutionPanel = executionPanelOpen && (
-    shouldShowExecutionPanel(executionMode) || hasProcessOutput
+    isRunning
+    || Boolean(activeRunTurnId)
+    || debugEvents.length > 0
+    || shouldShowExecutionPanel(executionMode)
+    || hasProcessOutput
+    || Boolean(pendingConfirmation)
   );
 
   const toggleExecutionProcess = useCallback((turnId?: string) => {
@@ -957,10 +1469,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
     executionTraceRequestRef.current = requestId;
     setDebugEvents([]);
     setExecutionTraceLoading(true);
-    void apiGet("/api/conversations/execution-trace", {
-      conversation_id: conversationId,
-      turn_id: turnId,
-    })
+    void conversationService.executionTrace(conversationId, turnId)
       .then((data) => {
         if (executionTraceRequestRef.current !== requestId) return;
         const payload = asRecord(data?.payload);
@@ -1038,6 +1547,14 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
           >
             <AssistantChatThread />
           </AssistantChatRuntime>
+        )}
+
+        {pendingConfirmation && (
+          <HarnessConfirmationPanel
+            confirmation={pendingConfirmation}
+            isRunning={isRunning}
+            onSubmit={resumeConfirmation}
+          />
         )}
 
         {error && (

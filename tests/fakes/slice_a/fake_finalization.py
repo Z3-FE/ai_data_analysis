@@ -20,7 +20,7 @@ class FakeFinalizationService:
         self.calls.append(value)
         return FinalizationResult(
             run_ref=value.run_ref,
-            status=HarnessStatus.COMPLETED,
+            status=value.terminal_status,
             final_answer=value.final_answer,
         )
 

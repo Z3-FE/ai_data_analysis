@@ -42,8 +42,7 @@ class MySQLClientManager:
     async def close(self) -> None:
         """释放连接池资源。"""
         if self.engine is not None:
-            # 这里直接关闭底层同步引擎，避免 async dispose 触发 greenlet 依赖。
-            self.engine.sync_engine.dispose()
+            await self.engine.dispose()
             self.engine = None
             self.session_factory = None
 

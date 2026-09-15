@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.api.dependencies import get_conversation_repository
@@ -21,7 +21,12 @@ class ConversationCreateRequest(BaseModel):
     adopted_semantic_draft_titles: list[str] = Field(default_factory=list)
 
 
-@router.post("")
+class ConversationLookupRequest(BaseModel):
+    conversation_id: str = Field(min_length=1, max_length=128)
+    turn_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+@router.post("/create")
 async def create_conversation(
     payload: ConversationCreateRequest,
     repository: Annotated[ConversationRepository, Depends(get_conversation_repository)],
@@ -39,25 +44,11 @@ async def create_conversation(
     return conversation
 
 
-@router.get("")
-async def get_conversations(
+@router.get("/list")
+async def list_conversations(
     repository: Annotated[ConversationRepository, Depends(get_conversation_repository)],
-    conversation_id: str | None = Query(default=None),
-    include_messages: bool = Query(default=True),
 ) -> dict:
-    """无 ID 返回列表，有 ID 返回可恢复的会话详情。"""
-    if conversation_id:
-        detail = await repository.get_conversation(
-            user_id=settings.app.default_user_id,
-            conversation_id=conversation_id,
-        )
-        if detail is None:
-            raise HTTPException(status_code=404, detail="会话不存在")
-        if not include_messages:
-            detail.pop("messages", None)
-            detail.pop("outputs", None)
-        return detail
-
+    """读取当前用户的会话列表。"""
     return {
         "conversations": await repository.list_conversations(
             user_id=settings.app.default_user_id
@@ -65,36 +56,56 @@ async def get_conversations(
     }
 
 
-@router.get("/execution-trace")
-async def get_execution_trace(
+@router.get("/detail")
+async def get_conversation_detail(
     repository: Annotated[ConversationRepository, Depends(get_conversation_repository)],
-    conversation_id: str = Query(...),
-    turn_id: str = Query(...),
+    conversation_id: str,
+    include_messages: bool = True,
 ) -> dict:
-    """读取指定轮次的执行过程，供历史消息点击后恢复执行面板。"""
-    output = await repository.get_execution_trace(
+    """读取可恢复的会话详情。"""
+    detail = await repository.get_conversation(
         user_id=settings.app.default_user_id,
         conversation_id=conversation_id,
-        turn_id=turn_id,
+    )
+    if detail is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    if not include_messages:
+        detail.pop("messages", None)
+        detail.pop("outputs", None)
+    return detail
+
+
+@router.post("/execution-trace")
+async def get_execution_trace(
+    payload: ConversationLookupRequest,
+    repository: Annotated[ConversationRepository, Depends(get_conversation_repository)],
+) -> dict:
+    """读取指定轮次的执行过程，供历史消息点击后恢复执行面板。"""
+    if payload.turn_id is None:
+        raise HTTPException(status_code=422, detail="turn_id 必填")
+    output = await repository.get_execution_trace(
+        user_id=settings.app.default_user_id,
+        conversation_id=payload.conversation_id,
+        turn_id=payload.turn_id,
     )
     return {
-        "conversation_id": conversation_id,
-        "turn_id": turn_id,
+        "conversation_id": payload.conversation_id,
+        "turn_id": payload.turn_id,
         "available": output is not None,
         "payload": output["payload"] if output else {"events": []},
     }
 
 
-@router.delete("")
+@router.post("/delete")
 async def delete_conversation(
+    payload: ConversationLookupRequest,
     repository: Annotated[ConversationRepository, Depends(get_conversation_repository)],
-    conversation_id: str = Query(...),
 ) -> dict:
     """删除当前用户的会话及其历史内容。"""
     deleted = await repository.delete_conversation(
         user_id=settings.app.default_user_id,
-        conversation_id=conversation_id,
+        conversation_id=payload.conversation_id,
     )
     if not deleted:
         raise HTTPException(status_code=404, detail="会话不存在")
-    return {"conversation_id": conversation_id, "deleted": True}
+    return {"conversation_id": payload.conversation_id, "deleted": True}

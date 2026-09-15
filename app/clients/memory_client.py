@@ -3,7 +3,6 @@
 import logging
 
 from app.agent.memory.factory import MemoryRuntime, build_memory_runtime
-from app.agent.memory.types.working import create_working_state_loader
 from app.clients.embedding_client import embedding_client_manager
 from app.clients.llm_client import llm_client_manager
 from app.clients.neo4j_client import neo4j_client_manager
@@ -21,23 +20,18 @@ class MemoryClientManager:
         self.runtime: MemoryRuntime | None = None
 
     async def init(self) -> None:
-        """在 PostgreSQL Agent 图初始化后组装记忆层。"""
+        """使用已初始化的基础设施组装记忆层。"""
         if self.runtime is not None:
             return
         session_factory = postgres_client_manager.session_factory
         if session_factory is None:
             raise RuntimeError("Memory Runtime 需要先初始化 PostgreSQL 客户端")
 
-        graph = postgres_client_manager.checkpointed_agent_graph
-        working_state_loader = (
-            create_working_state_loader(graph) if graph is not None else None
-        )
         self.runtime = await build_memory_runtime(
             session_factory=session_factory,
             qdrant_client=qdrant_client_manager.client,
             embedding_client=embedding_client_manager.client,
             neo4j_driver=neo4j_client_manager.driver,
-            working_state_loader=working_state_loader,
             llm_client=llm_client_manager.client,
         )
         logger.info(

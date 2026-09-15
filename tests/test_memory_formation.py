@@ -33,7 +33,10 @@ from app.agent.memory.interfaces import (
 from app.agent.memory.llm_extractor import LlmMemoryExtractor
 from app.agent.memory.writer import MemoryWriter
 from app.agent.memory.write_policy import resolve_memory_write_identity
-from app.repositories.memory.postgres_memory_repository import _same_payload
+from app.repositories.memory.postgres_memory_repository import (
+    PostgresMemoryRepository,
+    _same_payload,
+)
 from app.services.agent_service import AgentService
 
 
@@ -68,8 +71,41 @@ class FakeFormationRepository:
         self.assets = assets or {}
         self.runs: dict[str, dict] = {}
 
-    async def create_formation_run(self, payload: dict) -> None:
+    async def create_formation_run(self, payload: dict) -> bool:
+        if payload["formation_key"] in {
+            item["formation_key"] for item in self.runs.values()
+        }:
+            return False
         self.runs[payload["formation_run_id"]] = dict(payload)
+        return True
+
+    async def get_formation_run(self, *, formation_key: str, user_id: str):
+        for payload in self.runs.values():
+            if (
+                payload["formation_key"] == formation_key
+                and payload["user_id"] == user_id
+            ):
+                return self._formation_record(payload)
+        return None
+
+    @staticmethod
+    def _formation_record(payload):
+        from app.agent.memory.interfaces import MemoryFormationRecord
+
+        return MemoryFormationRecord(
+            formation_run_id=payload["formation_run_id"],
+            formation_key=payload["formation_key"],
+            status=MemoryFormationStatus(payload["status"]),
+            trigger=MemoryFormationTrigger(payload["trigger"]),
+            candidate_count=payload.get("candidate_count", 0),
+            accepted_count=payload.get("accepted_count", 0),
+            rejected_count=payload.get("rejected_count", 0),
+            duplicate_count=payload.get("duplicate_count", 0),
+            replaced_count=payload.get("replaced_count", 0),
+            failed_count=payload.get("failed_count", 0),
+            decisions=payload.get("decisions", []),
+            error_message=payload.get("error_message") or "",
+        )
 
     async def update_formation_run(self, formation_run_id: str, **changes) -> None:
         self.runs.setdefault(formation_run_id, {}).update(changes)
@@ -127,6 +163,28 @@ class MemoryFormationTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(skipped.trigger, MemoryFormationTrigger.SKIPPED)
         self.assertTrue(explicit.eligible)
         self.assertEqual(explicit.trigger, MemoryFormationTrigger.EXPLICIT)
+
+    async def test_postgres_repository_validates_turn_source_by_turn_id(self) -> None:
+        class Session:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return None
+
+            async def scalar(self, _statement):
+                return object()
+
+        repository = PostgresMemoryRepository(lambda: Session())
+
+        exists = await repository.source_exists(
+            user_id="user-1",
+            source_type="turn",
+            source_id="turn-1",
+            conversation_id="conversation-1",
+        )
+
+        self.assertTrue(exists)
 
     def test_negative_memory_request_is_skipped(self) -> None:
         result = MemoryEligibilityEvaluator().evaluate(
@@ -248,6 +306,26 @@ class MemoryFormationTest(unittest.IsolatedAsyncioTestCase):
         audit = repository.runs[result.formation_run_id]
         self.assertEqual(audit["status"], MemoryFormationStatus.COMPLETED.value)
         self.assertEqual(audit["candidate_count"], 1)
+
+    async def test_repeated_submission_reuses_formation_run_without_rewriting(
+        self,
+    ) -> None:
+        """同一 Harness 终态重试不能重复提取或写入长期记忆。"""
+        repository = FakeFormationRepository()
+        writer = FakeWriter()
+        service = MemoryFormationService(
+            repository=repository,
+            governance=MemoryGovernance(repository),
+            writer=writer,
+        )
+
+        first = await service.submit(_turn(input_text="请记住我叫张三"))
+        second = await service.submit(_turn(input_text="请记住我叫张三"))
+
+        self.assertEqual(second.formation_run_id, first.formation_run_id)
+        self.assertEqual(second.status, MemoryFormationStatus.COMPLETED)
+        self.assertEqual(len(repository.runs), 1)
+        self.assertEqual(len(writer.governed), 1)
 
     async def test_automatic_candidate_runs_in_background(self) -> None:
         repository = FakeFormationRepository()

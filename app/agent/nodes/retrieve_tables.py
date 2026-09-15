@@ -1,12 +1,14 @@
+import asyncio
 import logging
 from dataclasses import asdict
 from pprint import pprint
 
 from langgraph.runtime import Runtime
 
-from app.agent.context import AgentContext
+from app.agent.context import AgentContext, get_metadata_recall_semaphore
 from app.agent.state import AgentState
 from app.agent.utils.terms import build_recall_terms
+from app.core.config import settings
 
 from app.entities.qdrant import QdMetaTables
 
@@ -18,10 +20,17 @@ async def search_tables_by_terms(recall_terms: list[str] , runtime: Runtime) -> 
     tables_semantic_map: dict[str,QdMetaTables] = {}
     embedding_client = runtime.context["embedding_client"]
     repository = runtime.context["meta_tables_semantic_repository"]
-    for recall_term in recall_terms:
-        vector = await embedding_client.aembed_query(recall_term)
+    terms = recall_terms[: settings.metadata_recall.max_recall_terms]
+    semaphore = get_metadata_recall_semaphore(runtime.context)
 
-        hits: list[QdMetaTables] = await repository.search(vector=vector)
+    async def search_one(term: str) -> tuple[str, list[QdMetaTables]]:
+        async with semaphore:
+            vector = await embedding_client.aembed_query(term)
+            hits = await repository.search(vector=vector)
+            return term, hits
+
+    results = await asyncio.gather(*(search_one(term) for term in terms))
+    for _, hits in results:
         for hit in hits:
             table_id = hit.payload.table_id
             if not table_id:

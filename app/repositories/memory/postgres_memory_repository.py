@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent.memory.enums import (
     MemoryDecisionAction,
+    MemoryFormationStatus,
+    MemoryFormationTrigger,
     MemoryScope,
     MemoryStatus,
     MemoryType,
@@ -18,6 +20,7 @@ from app.agent.memory.enums import (
 from app.agent.memory.interfaces import (
     MemoryAsset,
     MemoryCreate,
+    MemoryFormationRecord,
     MemoryRecord,
     MemorySource,
     MemoryWriteResult,
@@ -94,6 +97,24 @@ def _asset(model: MemoryAssetModel) -> MemoryAsset:
         embedding_dimension=model.embedding_dimension,
         created_at=model.created_at,
         updated_at=model.updated_at,
+    )
+
+
+def _formation_record(model: MemoryFormationRunModel) -> MemoryFormationRecord:
+    """把形成审计 ORM 记录转换为领域快照。"""
+    return MemoryFormationRecord(
+        formation_run_id=model.formation_run_id,
+        formation_key=model.formation_key,
+        status=MemoryFormationStatus(model.status),
+        trigger=MemoryFormationTrigger(model.trigger),
+        candidate_count=model.candidate_count,
+        accepted_count=model.accepted_count,
+        rejected_count=model.rejected_count,
+        duplicate_count=model.duplicate_count,
+        replaced_count=model.replaced_count,
+        failed_count=model.failed_count,
+        decisions=list(model.decisions or []),
+        error_message=model.error_message or "",
     )
 
 
@@ -730,36 +751,59 @@ class PostgresMemoryRepository:
                         )
                     )
 
-    async def create_formation_run(self, payload: dict[str, Any]) -> None:
-        """创建一次记忆形成审计记录。"""
+    async def create_formation_run(self, payload: dict[str, Any]) -> bool:
+        """幂等创建一次记忆形成审计记录。"""
         async with self.session_factory() as session:
-            session.add(
-                MemoryFormationRunModel(
-                    formation_run_id=payload["formation_run_id"],
-                    user_id=payload["user_id"],
-                    conversation_id=payload["conversation_id"],
-                    turn_id=payload["turn_id"],
-                    run_id=payload["run_id"],
-                    trigger=str(payload["trigger"]),
-                    status=str(payload["status"]),
-                    extractor_version=payload.get(
-                        "extractor_version", "m3-v1"
-                    ),
-                    eligibility_reason=payload.get("eligibility_reason", ""),
-                    candidate_count=int(payload.get("candidate_count", 0)),
-                    accepted_count=int(payload.get("accepted_count", 0)),
-                    rejected_count=int(payload.get("rejected_count", 0)),
-                    duplicate_count=int(payload.get("duplicate_count", 0)),
-                    replaced_count=int(payload.get("replaced_count", 0)),
-                    failed_count=int(payload.get("failed_count", 0)),
-                    attempts=int(payload.get("attempts", 0)),
-                    decisions=_json_safe(payload.get("decisions", [])),
-                    error_message=payload.get("error_message") or None,
-                    started_at=payload.get("started_at"),
-                    completed_at=payload.get("completed_at"),
+            values = {
+                "formation_run_id": payload["formation_run_id"],
+                "formation_key": payload["formation_key"],
+                "user_id": payload["user_id"],
+                "conversation_id": payload["conversation_id"],
+                "turn_id": payload["turn_id"],
+                "run_id": payload["run_id"],
+                "trigger": str(payload["trigger"]),
+                "status": str(payload["status"]),
+                "extractor_version": payload.get(
+                    "extractor_version", "m3-v1"
+                ),
+                "eligibility_reason": payload.get("eligibility_reason", ""),
+                "candidate_count": int(payload.get("candidate_count", 0)),
+                "accepted_count": int(payload.get("accepted_count", 0)),
+                "rejected_count": int(payload.get("rejected_count", 0)),
+                "duplicate_count": int(payload.get("duplicate_count", 0)),
+                "replaced_count": int(payload.get("replaced_count", 0)),
+                "failed_count": int(payload.get("failed_count", 0)),
+                "attempts": int(payload.get("attempts", 0)),
+                "decisions": _json_safe(payload.get("decisions", [])),
+                "error_message": payload.get("error_message") or None,
+                "started_at": payload.get("started_at"),
+                "completed_at": payload.get("completed_at"),
+            }
+            statement = (
+                insert(MemoryFormationRunModel)
+                .values(**values)
+                .on_conflict_do_nothing(
+                    index_elements=[MemoryFormationRunModel.formation_key]
+                )
+                .returning(MemoryFormationRunModel.formation_run_id)
+            )
+            created_id = (await session.execute(statement)).scalar_one_or_none()
+            await session.commit()
+            # PostgreSQL 唯一键负责并发认领；返回 False 表示已有请求先认领。
+            return created_id is not None
+
+    async def get_formation_run(
+        self, *, formation_key: str, user_id: str
+    ) -> MemoryFormationRecord | None:
+        """按稳定幂等键读取形成审计快照。"""
+        async with self.session_factory() as session:
+            model = await session.scalar(
+                select(MemoryFormationRunModel).where(
+                    MemoryFormationRunModel.formation_key == formation_key,
+                    MemoryFormationRunModel.user_id == user_id,
                 )
             )
-            await session.commit()
+            return _formation_record(model) if model is not None else None
 
     async def update_formation_run(
         self, formation_run_id: str, **changes: Any
@@ -834,11 +878,12 @@ class PostgresMemoryRepository:
             model = source_models.get(source_type)
             if model is None:
                 return False
-            identity_field = {
-                "turn": model.turn_id,
-                "message": model.message_id,
-                "asset": model.asset_id,
+            identity_field_name = {
+                "turn": "turn_id",
+                "message": "message_id",
+                "asset": "asset_id",
             }[source_type]
+            identity_field = getattr(model, identity_field_name)
             conditions = [identity_field == source_id, model.user_id == user_id]
             if conversation_id:
                 conditions.append(model.conversation_id == conversation_id)

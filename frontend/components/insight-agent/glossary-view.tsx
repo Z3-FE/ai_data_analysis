@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { 
   Tags, 
   Search, 
@@ -16,7 +16,6 @@ import {
   Sliders,
   CheckSquare
 } from 'lucide-react';
-import { apiGet } from '../../lib/api';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -47,37 +46,8 @@ export default function GlossaryView() {
   const [typeFilter, setTypeFilter] = useState('all');
   const [selectedGlossary, setSelectedGlossary] = useState<any | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(true);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-
-  useEffect(() => {
-    let ignore = false;
-
-    async function loadGlossary() {
-      /** 从后端读取业务术语资产，并默认选中第一条作为详情。 */
-
-      try {
-        setLoading(true);
-        const data: any = await apiGet('/api/semantic', { asset_type: 'glossary' });
-        if (ignore) return;
-        const nextGlossary = data.glossary ?? [];
-        setGlossaries(nextGlossary);
-        setSelectedGlossary(nextGlossary[0] ?? null);
-        setError('');
-      } catch (err) {
-        if (ignore) return;
-        setError(err instanceof Error ? err.message : '业务术语接口请求失败');
-      } finally {
-        if (!ignore) setLoading(false);
-      }
-    }
-
-    loadGlossary();
-
-    return () => {
-      ignore = true;
-    };
-  }, []);
 
   const filteredGlossaries = glossaries.filter(g => {
     const matchesSearch = g.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
@@ -215,12 +185,12 @@ export default function GlossaryView() {
         {/* Glossary Table list */}
         {error && (
           <Alert className="mb-4 border-rose-100 bg-rose-50 text-rose-600">
-            <AlertDescription className="text-xs font-bold">业务术语接口加载失败：{error}</AlertDescription>
+            <AlertDescription className="text-xs font-bold">业务术语加载失败：{error}</AlertDescription>
           </Alert>
         )}
-        {loading && (
+        {!loading && glossaries.length === 0 && (
           <Alert className="mb-4 border-blue-100 bg-blue-50 text-blue-600">
-            <AlertDescription className="text-xs font-bold">正在从 FastAPI 加载业务术语资产...</AlertDescription>
+            <AlertDescription className="text-xs font-bold">暂无业务术语，请先创建术语定义</AlertDescription>
           </Alert>
         )}
         <Card className="overflow-hidden border-slate-200/80 bg-white p-0 shadow-xs">

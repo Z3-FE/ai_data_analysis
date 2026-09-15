@@ -154,10 +154,12 @@ class ConversationRepository:
         now = datetime.utcnow()
         async with self.session_factory() as session:
             conversation = await session.scalar(
-                select(ConversationModel).where(
+                select(ConversationModel)
+                .where(
                     ConversationModel.conversation_id == conversation_id,
                     ConversationModel.user_id == user_id,
                 )
+                .with_for_update()
             )
             if conversation is None:
                 conversation = ConversationModel(
@@ -168,8 +170,22 @@ class ConversationRepository:
                     data_source_id="olist",
                 )
                 session.add(conversation)
-            elif conversation.title == "新建会话" and input_text.strip():
-                conversation.title = input_text.strip()[:80]
+            else:
+                if conversation.active_run_id not in (None, run_id):
+                    raise ValueError("当前会话已有未完成的 Harness 运行")
+                existing_turn = await session.scalar(
+                    select(ConversationTurnModel).where(
+                        ConversationTurnModel.turn_id == turn_id,
+                        ConversationTurnModel.conversation_id == conversation_id,
+                        ConversationTurnModel.user_id == user_id,
+                    )
+                )
+                if existing_turn is not None:
+                    if existing_turn.run_id != run_id or existing_turn.input_text != input_text:
+                        raise ValueError("重复 turn_id 对应了不同的运行请求")
+                    return True
+                if conversation.title == "新建会话" and input_text.strip():
+                    conversation.title = input_text.strip()[:80]
 
             turn = ConversationTurnModel(
                 turn_id=turn_id,
@@ -220,21 +236,54 @@ class ConversationRepository:
         """保存助手最终消息和受控结构化输出，并结束当前轮次。"""
         now = datetime.utcnow()
         async with self.session_factory() as session:
+            conversation = await session.scalar(
+                select(ConversationModel)
+                .where(
+                    ConversationModel.conversation_id == conversation_id,
+                    ConversationModel.user_id == user_id,
+                )
+                .with_for_update()
+            )
             turn = await session.scalar(
-                select(ConversationTurnModel).where(
+                select(ConversationTurnModel)
+                .where(
                     ConversationTurnModel.turn_id == turn_id,
                     ConversationTurnModel.conversation_id == conversation_id,
                     ConversationTurnModel.user_id == user_id,
                 )
-            )
-            conversation = await session.scalar(
-                select(ConversationModel).where(
-                    ConversationModel.conversation_id == conversation_id,
-                    ConversationModel.user_id == user_id,
-                )
+                .with_for_update()
             )
             if turn is None or conversation is None:
                 return False
+
+            # 恢复请求可能在最终收口提交后再次到达；相同结果直接幂等返回，
+            # 不重复创建助手消息或结构化输出。
+            if turn.completed_at is not None:
+                if turn.status != status:
+                    raise ValueError("同一 turn 已以不同状态完成")
+                existing_message = await session.scalar(
+                    select(ConversationMessageModel).where(
+                        ConversationMessageModel.turn_id == turn_id,
+                        ConversationMessageModel.sequence_no == 1,
+                    )
+                )
+                if (
+                    existing_message is not None
+                    and existing_message.content != assistant_content
+                ):
+                    raise ValueError("同一 turn 已存在不同的助手结果")
+                existing_output = await session.scalar(
+                    select(TurnOutputModel).where(
+                        TurnOutputModel.turn_id == turn_id,
+                        TurnOutputModel.output_type == output_type,
+                    )
+                ) if output_type else None
+                if (
+                    existing_output is not None
+                    and existing_output.payload != _json_safe(output_payload)
+                ):
+                    raise ValueError("同一 turn 已存在不同的结构化输出")
+                return True
 
             turn.execution_mode = execution_mode
             turn.status = status

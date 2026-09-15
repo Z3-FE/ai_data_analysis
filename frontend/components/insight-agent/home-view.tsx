@@ -27,7 +27,7 @@ import {
   mockGlossarySemanticDrafts,
   mockMetricSemanticDrafts,
 } from '../../data/insight-agent';
-import { apiPost } from '../../lib/api';
+import { conversationService } from '../../services/conversations';
 import { SemanticDraft, SemanticUploadCategory, SemanticUploadTask } from '../../types/insight-agent';
 import SemanticUploadReview from './semantic-upload-review';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -308,7 +308,7 @@ export default function HomeView({ onExecuteQuery }: HomeViewProps) {
     setIsCreatingConversation(true);
     setCreateConversationError('');
     try {
-      const result = await apiPost('/api/conversations', {
+      const result = await conversationService.create({
         data_source_id: 'olist',
         adopted_semantic_draft_ids: adoptedSemanticDrafts.map((draft) => draft.id),
         adopted_semantic_draft_titles: adoptedSemanticDrafts.map((draft) => draft.title),

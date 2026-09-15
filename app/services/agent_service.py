@@ -136,6 +136,9 @@ class AgentService:
             meta_catalog_repository=self.meta_catalog_repository,
             dw_repository=self.dw_repository,
             llm_timeout_seconds=settings.llm.timeout_seconds,
+            metadata_recall_semaphore=asyncio.Semaphore(
+                settings.metadata_recall.max_concurrent_terms
+            ),
         )
 
     def _new_identity(self, conversation_id: str) -> dict[str, str]:

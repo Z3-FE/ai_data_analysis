@@ -24,7 +24,7 @@ from app.agent.memory.manager import MemoryManager
 from app.agent.memory.types.episodic import EpisodicMemory
 from app.agent.memory.types.perceptual import PerceptualMemory
 from app.agent.memory.types.semantic import SemanticMemory
-from app.agent.memory.types.working import WorkingMemory, WorkingStateLoader
+from app.agent.memory.types.working import WorkingMemory
 from app.agent.memory.writer import MemoryWriter
 from app.core.config import Neo4jConfig, QdrantConfig, settings
 from app.repositories.memory.neo4j_graph_repository import Neo4jGraphRepository
@@ -62,7 +62,6 @@ async def build_memory_runtime(
     neo4j_config: Neo4jConfig | None = None,
     initialize_graph_schema: bool = True,
     strict_graph_schema: bool = False,
-    working_state_loader: WorkingStateLoader | None = None,
     llm_client: Any = None,
 ) -> MemoryRuntime:
     """按可用基础设施组装 Memory，不改变现有 Agent 图。
@@ -129,8 +128,8 @@ async def build_memory_runtime(
         vector_repository=vector_repository,
         encoder=encoder,
     )
-    # 只有显式提供 Checkpointer-backed 状态加载器时才启用 Working Memory。
-    working = WorkingMemory(working_state_loader) if working_state_loader else None
+    # Working Memory 与 Harness 共用 PostgreSQL 的会话消息表。
+    working = WorkingMemory(session_factory)
     manager = MemoryManager(
         working=working,
         episodic=episodic,

@@ -116,6 +116,13 @@ function record(value: unknown): Record<string, unknown> {
 function statusOf(value: unknown): RunStatus | undefined {
   if (value === "completed") return "success";
   if (value === "created") return "pending";
+  if (value === "waiting_confirmation" || value === "needs_user") return "partial";
+  if (
+    value === "temporary_error"
+    || value === "unrecoverable_error"
+    || value === "timeout"
+    || value === "cancelled"
+  ) return "failed";
   if (value === "pending" || value === "running" || value === "success" || value === "partial" || value === "failed") return value;
   return undefined;
 }
@@ -125,7 +132,7 @@ function terminal(status: RunStatus | undefined) {
 }
 
 function mainStep(sourceStep: string, type: string) {
-  if (type === "run.started" || type === "run.completed" || type === "run.failed") return "开始执行";
+  if (type.startsWith("run.") || type === "stream.failed") return "开始执行";
   if (type === "question_route") return "判断问题路由";
   if (sourceStep === "问题路由" || sourceStep === "判断问题路由") return "判断问题路由";
   if (sourceStep === "抽取关键词" || sourceStep === "提取关键词") return "提取关键词";
@@ -203,7 +210,12 @@ export function appendExecutionEvent(events: DebugEvent[], event: StreamEvent): 
 function statusForEvents(events: DebugEvent[], fallback?: RunStatus): RunStatus {
   let latestStatus = fallback;
   for (const event of events.slice().sort((left, right) => eventOrder(left) - eventOrder(right))) {
-    if (event.type === "error") {
+    if (
+      event.type === "error"
+      || event.type.endsWith(".failed")
+      || event.type === "run.timeout"
+      || event.type === "run.cancelled"
+    ) {
       latestStatus = "failed";
     } else if (event.status) {
       latestStatus = event.status;
@@ -278,6 +290,23 @@ function displayLabel(event: DebugEvent) {
   if (event.type === "run.started") return "运行开始";
   if (event.type === "run.completed") return "运行完成";
   if (event.type === "run.failed") return "运行失败";
+  if (event.type === "run.timeout") return "运行超时";
+  if (event.type === "run.cancelled") return "运行已取消";
+  if (event.type === "run.result") return "运行结果";
+  if (event.type === "stream.failed") return "流式连接失败";
+  if (event.type === "context.started") return "开始构建上下文";
+  if (event.type === "context.completed") return "上下文构建完成";
+  if (event.type === "planner.started") return "开始规划下一步";
+  if (event.type === "planner.completed") return "规划完成";
+  if (event.type === "planner.retrying") return "重新规划";
+  if (event.type === "planner.failed") return "规划失败";
+  if (event.type === "action.committed") return "动作已提交";
+  if (event.type === "tool.started") return "工具开始执行";
+  if (event.type === "tool.progress") return "工具执行进度";
+  if (event.type === "tool.completed") return "工具执行完成";
+  if (event.type === "tool.failed") return "工具执行失败";
+  if (event.type === "confirmation.required") return "等待用户确认";
+  if (event.type === "confirmation.resolved") return "用户确认已处理";
   if (event.type === "reasoning_result") return "思考过程" + phase;
   if (event.type === "reasoning_chunk") {
     const chunkCount = typeof event.payload.chunk_count === "number" ? event.payload.chunk_count : 0;

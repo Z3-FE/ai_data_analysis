@@ -578,8 +578,19 @@ async def _execute_task(
         # Query Agent 负责独立召回当前任务所需的维度、指标和关联关系。
         # 同时消费 custom/value 两类事件，既转发过程，也拿到最终 sql_result。
         current_phase = "查询数据"
+        query_state: AgentState = {
+            "input_text": resolved_question,
+            "original_question": resolved_question,
+            "user_id": state.get("user_id", ""),
+            "conversation_id": state.get("conversation_id", ""),
+            "thread_id": state.get("thread_id", ""),
+            "turn_id": state.get("turn_id", ""),
+            "run_id": state.get("run_id", ""),
+            "asset_ids": list(state.get("asset_ids", [])),
+            "query_max_rows": state.get("query_max_rows", 2_000),
+        }
         async for query_event in query_graph.astream(
-            {"input_text": resolved_question},
+            query_state,
             context=runtime.context,
             stream_mode=["custom", "values"],
         ):

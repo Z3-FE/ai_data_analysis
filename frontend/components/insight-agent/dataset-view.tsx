@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { 
   Search, 
   FileText, 
@@ -8,7 +8,6 @@ import {
   Network, 
   RefreshCw, 
 } from 'lucide-react';
-import { apiGet } from '../../lib/api';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -29,37 +28,8 @@ export default function DatasetView() {
   const [tables, setTables] = useState<any[]>([]);
   const [selectedTableName, setSelectedTableName] = useState('orders');
   const [searchQuery, setSearchQuery] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-
-  useEffect(() => {
-    let ignore = false;
-
-    async function loadDatasets() {
-      /** 从后端读取数据集表结构，并默认选中 orders 表。 */
-
-      try {
-        setLoading(true);
-        const data: any = await apiGet('/api/semantic', { asset_type: 'datasets' });
-        if (ignore) return;
-        const nextTables = data.datasets ?? [];
-        setTables(nextTables);
-        setSelectedTableName(nextTables.find((table: any) => table.name === 'orders')?.name ?? nextTables[0]?.name ?? 'orders');
-        setError('');
-      } catch (err) {
-        if (ignore) return;
-        setError(err instanceof Error ? err.message : '数据集接口请求失败');
-      } finally {
-        if (!ignore) setLoading(false);
-      }
-    }
-
-    loadDatasets();
-
-    return () => {
-      ignore = true;
-    };
-  }, []);
 
   const currentTable = tables.find(t => t.name === selectedTableName) || tables[0];
   const filteredSidebarRows = tables.filter(table => 
@@ -174,12 +144,12 @@ export default function DatasetView() {
         {/* Selected Table specs cards */}
         {error && (
           <Alert className="mb-4 border-rose-100 bg-rose-50 text-rose-600">
-            <AlertDescription className="text-xs font-bold">数据集接口加载失败：{error}</AlertDescription>
+            <AlertDescription className="text-xs font-bold">数据集加载失败：{error}</AlertDescription>
           </Alert>
         )}
-        {loading && (
+        {!loading && tables.length === 0 && (
           <Alert className="mb-4 border-blue-100 bg-blue-50 text-blue-600">
-            <AlertDescription className="text-xs font-bold">正在从 FastAPI 加载 Olist 数据集说明...</AlertDescription>
+            <AlertDescription className="text-xs font-bold">暂无数据集，请先在数据库中创建表结构</AlertDescription>
           </Alert>
         )}
         {currentTable && (

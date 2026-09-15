@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from pydantic import Field
 
@@ -13,6 +13,9 @@ from app.agent.state_result_store.contracts import (
     ToolResult,
 )
 
+if TYPE_CHECKING:
+    from app.agent.tool_runtime.artifacts import ArtifactReadRequest, ArtifactRecord
+
 
 class ToolExecutionRequest(ContractModel):
     """只允许执行已提交动作的工具请求。"""
@@ -20,11 +23,16 @@ class ToolExecutionRequest(ContractModel):
     run_ref: HarnessRunRef
     tool_call: ToolCall
     action_seq: int = Field(ge=1)
+    iteration: int = Field(default=0, ge=0)
     attempt: int = Field(default=1, ge=1)
 
 
 class ToolRuntime(Protocol):
     async def execute(self, request: ToolExecutionRequest) -> ToolResult: ...
+
+    async def read_result(
+        self, request: "ArtifactReadRequest"
+    ) -> "ArtifactRecord": ...
 
 
 __all__ = ["ToolExecutionRequest", "ToolRuntime"]

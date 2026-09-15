@@ -9,8 +9,8 @@ from app.agent.memory.contracts import GovernedCandidate
 from app.agent.memory.enums import MemoryDecisionAction, MemoryType
 from app.agent.memory.interfaces import (
     MemoryAsset,
-    MemoryRepository,
     MemoryRecord,
+    MemoryRepository,
     MemorySearchResult,
     MemorySource,
     MemoryWriteResult,

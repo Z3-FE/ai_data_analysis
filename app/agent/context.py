@@ -4,6 +4,7 @@ Context 保存一次图执行过程中需要复用的外部依赖对象。它不
 state 合并，避免把连接类、客户端对象塞进业务状态。
 """
 
+import asyncio
 from typing import Any, TypedDict
 
 from app.repositories.dw_repository import DwRepository
@@ -23,6 +24,7 @@ from app.repositories.qdrant.qa_meta_metrics_repository import (
 from app.repositories.qdrant.qa_meta_tables_repository import (
     MetaTablesSemanticRepository,
 )
+from app.core.config import settings
 
 
 class AgentContext(TypedDict):
@@ -40,3 +42,14 @@ class AgentContext(TypedDict):
     # LLM 流式响应的空闲超时时间，由 config.yaml 的 llm.timeout_seconds 注入。
     # 每收到一条流式事件都会重新计时，不限制整个节点的累计执行时长。
     llm_timeout_seconds: float
+    # 同一次 query_data 内四路元数据召回共享的 Embedding/Qdrant/ES 并发闸门。
+    metadata_recall_semaphore: asyncio.Semaphore
+
+
+def get_metadata_recall_semaphore(context: AgentContext) -> asyncio.Semaphore:
+    """返回本次问数共享的元数据召回闸门；测试或独立节点调用时按配置懒创建。"""
+    semaphore = context.get("metadata_recall_semaphore")
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(settings.metadata_recall.max_concurrent_terms)
+        context["metadata_recall_semaphore"] = semaphore
+    return semaphore

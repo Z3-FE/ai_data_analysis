@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from dataclasses import asdict
 
@@ -5,10 +6,11 @@ from langchain_core.output_parsers import JsonOutputParser
 from langgraph.runtime import Runtime
 from langchain_core.prompts import PromptTemplate
 
-from app.agent.context import AgentContext
+from app.agent.context import AgentContext, get_metadata_recall_semaphore
 from app.agent.prompts.prompt_loader import load_prompt
 from app.agent.state import AgentState
 from app.agent.utils.terms import build_recall_terms
+from app.core.config import settings
 from app.entities.qdrant import QdMetaMetrics
 
 logger = logging.getLogger(__name__)
@@ -17,9 +19,17 @@ async def search_metrics_by_terms(recall_terms: list[str], runtime: Runtime) -> 
     metrics_semantic_map: dict[str, QdMetaMetrics] = {}
     embedding = runtime.context['embedding_client']
     meta_metrics_semantic_repository = runtime.context['meta_metrics_semantic_repository']
-    for term in recall_terms:
-        vortices = await embedding.aembed_query(term)
-        hits:list[QdMetaMetrics] = await meta_metrics_semantic_repository.search(vector=vortices)
+    terms = recall_terms[: settings.metadata_recall.max_recall_terms]
+    semaphore = get_metadata_recall_semaphore(runtime.context)
+
+    async def search_one(term: str) -> tuple[str, list[QdMetaMetrics]]:
+        async with semaphore:
+            vector = await embedding.aembed_query(term)
+            hits = await meta_metrics_semantic_repository.search(vector=vector)
+            return term, hits
+
+    results = await asyncio.gather(*(search_one(term) for term in terms))
+    for _, hits in results:
         for hit in hits:
             metric_id = hit.payload.metric_id
             if metric_id is None:

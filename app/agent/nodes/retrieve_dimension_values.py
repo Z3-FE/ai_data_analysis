@@ -10,7 +10,7 @@ from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.prompts import PromptTemplate
 from langgraph.runtime import Runtime
 
-from app.agent.context import AgentContext
+from app.agent.context import AgentContext, get_metadata_recall_semaphore
 from app.agent.prompts.prompt_loader import load_prompt
 from app.agent.state import AgentState
 from app.agent.utils.terms import build_recall_terms
@@ -127,13 +127,16 @@ async def retrieve_dimension_values(
     )
     recall_terms: list[str] = build_recall_terms(llm_keywords, keywords)
 
-    # 步骤 2：逐个处理 recall_term。
-    # 无论某个词最后能否命中，它都会完整执行一次 ES + Qdrant 召回。
-    # 两级融合尚未结束，这里传递候选对象，不提前转换为 Agent State 字典。
-    term_results: list[list[DimensionValueRetrievalCandidate]] = []
-    for recall_term in recall_terms:
-        candidates = await _retrieve_one_term(recall_term, runtime)
-        term_results.append(candidates)
+    # 步骤 2：限制召回词规模，并以有界并发完成每个词的 ES + Qdrant 召回。
+    # gather 保持输入顺序，因此不会改变后续两级融合的排名和去重语义。
+    terms = recall_terms[: settings.metadata_recall.max_recall_terms]
+    semaphore = get_metadata_recall_semaphore(runtime.context)
+
+    async def retrieve_one(term: str) -> list[DimensionValueRetrievalCandidate]:
+        async with semaphore:
+            return await _retrieve_one_term(term, runtime)
+
+    term_results = await asyncio.gather(*(retrieve_one(term) for term in terms))
 
     # 步骤 3：把所有关键词的候选做第二次融合。
     # 相同 (column_id, raw_value) 合并为一条，并汇总 matched_terms。

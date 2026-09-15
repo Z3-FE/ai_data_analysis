@@ -264,6 +264,9 @@ class MemoryFormationRunModel(Base):
             "conversation_id",
             "created_at",
         ),
+        UniqueConstraint(
+            "formation_key", name="uk_memory_formation_run_key"
+        ),
         Index("idx_memory_formation_runs_status", "status", "created_at"),
         Index("idx_memory_formation_runs_turn", "turn_id"),
         {"comment": "长期记忆形成审计"},
@@ -271,6 +274,8 @@ class MemoryFormationRunModel(Base):
 
     # 一次记忆形成任务的稳定 ID。
     formation_run_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    # 同一轮、同一触发方式和提取器版本的幂等身份。
+    formation_key: Mapped[str] = mapped_column(String(64), nullable=False)
     # 形成任务所属用户，用于审计数据隔离。
     user_id: Mapped[str] = mapped_column(String(128), nullable=False)
     # 产生候选的业务会话 ID。

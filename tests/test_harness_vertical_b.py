@@ -23,15 +23,17 @@ from tests.test_context_engine import FakeMemoryReader, _engine
 
 
 class ScriptedPlannerClient:
-    def __init__(self, response: str) -> None:
-        self.response = response
+    def __init__(self, *responses: str) -> None:
+        self.responses = list(responses)
 
     async def complete(self, prompt: str) -> str:
-        return self.response
+        if not self.responses:
+            raise AssertionError("测试 Planner 没有预置下一次响应")
+        return self.responses.pop(0)
 
 
 class SliceBVerticalTest(unittest.IsolatedAsyncioTestCase):
-    async def run_case(self, action_json: str):
+    async def run_case(self, action_json: str, *follow_up_responses: str):
         context_engine, _, _ = _engine(FakeMemoryReader())
         action_committer = FakeActionCommitter()
         tool_runtime = FakeToolRuntime()
@@ -39,7 +41,7 @@ class SliceBVerticalTest(unittest.IsolatedAsyncioTestCase):
         finalization_service = FakeFinalizationService()
         run_store = FakeRunStore()
         planning_agent = PlanningAgent(
-            llm_client=ScriptedPlannerClient(action_json),
+            llm_client=ScriptedPlannerClient(action_json, *follow_up_responses),
             capabilities=PlannerCapabilities(allow_ask_user=True),
         )
         tool_specs = (
@@ -74,19 +76,31 @@ class SliceBVerticalTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_tool_call_commits_before_fake_runtime(self) -> None:
         result, committer, runtime, confirmation, finalization, store, planner = await self.run_case(
-            '{"action_type":"tool_call","tool_call":{"tool_name":"query_data","arguments":{}}}'
+            '{"action_type":"tool_call","tool_call":{"tool_name":"query_data","arguments":{}}}',
+            '{"action_type":"final_answer","final_answer":"工具结果已处理"}',
         )
         self.assertEqual(result.status, HarnessStatus.COMPLETED)
         self.assertEqual(result.phase, LoopPhase.FINALIZATION)
-        self.assertEqual(store.states["run-b"]["harness"]["action_seq"], 1)
-        self.assertEqual(committer.events, [("prepared", 1), ("checkpoint", 1), ("committed", 1)])
+        self.assertEqual(store.states["run-b"]["harness"]["action_seq"], 2)
+        self.assertEqual(
+            committer.events,
+            [
+                ("prepared", 1), ("checkpoint", 1), ("committed", 1),
+                ("prepared", 2), ("checkpoint", 2), ("committed", 2),
+            ],
+        )
         self.assertEqual(len(runtime.calls), 1)
         self.assertEqual(runtime.calls[0].action_seq, 1)
         self.assertEqual(runtime.calls[0].tool_call.action_id, "run-b:i0:a1")
         self.assertEqual(len(confirmation.calls), 0)
         self.assertEqual(
             [snapshot["harness"]["phase"] for snapshot in store.snapshots],
-            ["start_run", "build_context", "plan", "validate_action", "execute_tool", "finalization", "finalization"],
+            [
+                "start_run", "build_context", "plan", "validate_action",
+                "execute_tool", "handle_tool_result", "record_observation",
+                "build_context", "plan", "validate_action",
+                "finalization", "finalization",
+            ],
         )
         self.assertEqual(planner.calls[0].tool_specs[0].name, "query_data")
 

@@ -33,7 +33,16 @@ class HarnessControlState(TypedDict, total=False):
     plan_progress: dict[str, Any]
     observations: list[dict[str, Any]]
     resolved_conditions: dict[str, Any]
+    # 最近一次用户确认的原始短文本，供恢复后的 ContextEngine 读取。
+    last_confirmation_answer: str | None
+    # 当前运行已经消费过的用户确认次数，用于限制重复澄清。
+    confirmation_attempt_count: int
+    # 最近一次已消费确认的原因，用于识别相同确认请求循环。
+    last_confirmation_reason_code: str | None
+    # 最近一次已消费确认的问题，用于识别相同确认请求循环。
+    last_confirmation_question: str | None
     pending_confirmation: dict[str, Any] | None
+    final_answer: str | None
     last_error: dict[str, Any] | None
 
 
@@ -60,7 +69,12 @@ _DEFAULTS: HarnessControlState = {
     "plan_progress": {},
     "observations": [],
     "resolved_conditions": {},
+    "last_confirmation_answer": None,
+    "confirmation_attempt_count": 0,
+    "last_confirmation_reason_code": None,
+    "last_confirmation_question": None,
     "pending_confirmation": None,
+    "final_answer": None,
     "last_error": None,
 }
 
@@ -123,6 +137,10 @@ def new_harness_control_state(
         "plan_progress": {},
         "observations": [],
         "resolved_conditions": {},
+        "last_confirmation_answer": None,
+        "confirmation_attempt_count": 0,
+        "last_confirmation_reason_code": None,
+        "last_confirmation_question": None,
         "original_goal": original_goal,
     }
     return decode_harness_state(state)

@@ -4,18 +4,30 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from pydantic import BaseModel
+
 from app.agent.state_result_store.contracts import ToolSpec
 
 
 class RegisteredTool(Protocol):
+    name: str
+    input_model: type[BaseModel]
+
     async def execute(self, value: Any) -> Any: ...
 
 
 class ToolRegistry:
-    """切片 C 只注册 query_data，避免 API 层手工分派工具。"""
+    """保存名称、规格和实现一致的已注册 Harness 工具。"""
 
     def __init__(self, tools: dict[str, tuple[ToolSpec, RegisteredTool]]) -> None:
-        self._tools = tools
+        for name, (spec, tool) in tools.items():
+            if name != spec.name or name != tool.name:
+                raise ValueError(f"工具注册名称不一致: {name}")
+            if not isinstance(tool.input_model, type) or not issubclass(
+                tool.input_model, BaseModel
+            ):
+                raise ValueError(f"工具必须声明 Pydantic input_model: {name}")
+        self._tools = dict(tools)
 
     def get(self, name: str) -> tuple[ToolSpec, RegisteredTool]:
         try:

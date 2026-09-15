@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import logging
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -21,7 +22,7 @@ from app.agent.memory.enums import (
 )
 from app.agent.memory.explicit_extractor import ExplicitMemoryExtractor
 from app.agent.memory.governance import MemoryGovernance, MemoryGovernanceError
-from app.agent.memory.interfaces import MemoryRepository
+from app.agent.memory.interfaces import MemoryFormationRecord, MemoryRepository
 from app.agent.memory.llm_extractor import LlmMemoryExtractor
 from app.agent.memory.perceptual_extractor import PerceptualMemoryExtractor
 from app.agent.memory.writer import MemoryWriter
@@ -74,15 +75,17 @@ class MemoryFormationService:
     async def submit(self, turn: TurnMemoryInput) -> MemoryFormationResult:
         """提交一次形成任务；显式请求同步，自动候选后台执行。"""
         eligibility = self.eligibility.evaluate(turn)
+        formation_key = self._formation_key(turn, eligibility.trigger)
         formation_run_id = str(uuid4())
         initial_status = (
             MemoryFormationStatus.PENDING
             if eligibility.eligible
             else MemoryFormationStatus.SKIPPED
         )
-        await self.repository.create_formation_run(
+        claimed = await self.repository.create_formation_run(
             {
                 "formation_run_id": formation_run_id,
+                "formation_key": formation_key,
                 "user_id": turn.user_id,
                 "conversation_id": turn.conversation_id,
                 "turn_id": turn.turn_id,
@@ -94,6 +97,13 @@ class MemoryFormationService:
                 "completed_at": None if eligibility.eligible else _utcnow(),
             }
         )
+        if not claimed:
+            existing = await self.repository.get_formation_run(
+                formation_key=formation_key, user_id=turn.user_id
+            )
+            if existing is None:
+                raise RuntimeError("记忆形成幂等记录创建冲突后无法读取已有记录")
+            return self._result_from_record(existing)
         if not eligibility.eligible:
             return MemoryFormationResult(
                 formation_run_id=formation_run_id,
@@ -105,6 +115,7 @@ class MemoryFormationService:
                 turn,
                 formation_run_id=formation_run_id,
                 eligibility=eligibility,
+                formation_key=formation_key,
             )
 
         task = asyncio.create_task(
@@ -112,6 +123,7 @@ class MemoryFormationService:
                 turn,
                 formation_run_id=formation_run_id,
                 eligibility=eligibility,
+                formation_key=formation_key,
             )
         )
         self._background_tasks.add(task)
@@ -128,14 +140,19 @@ class MemoryFormationService:
         *,
         formation_run_id: str | None = None,
         eligibility: FormationEligibility | None = None,
+        formation_key: str | None = None,
     ) -> MemoryFormationResult:
         """同步完成一次形成任务，供显式请求、后台任务和维护工具复用。"""
         resolved_eligibility = eligibility or self.eligibility.evaluate(turn)
+        resolved_key = formation_key or self._formation_key(
+            turn, resolved_eligibility.trigger
+        )
         resolved_run_id = formation_run_id or str(uuid4())
         if formation_run_id is None:
-            await self.repository.create_formation_run(
+            claimed = await self.repository.create_formation_run(
                 {
                     "formation_run_id": resolved_run_id,
+                    "formation_key": resolved_key,
                     "user_id": turn.user_id,
                     "conversation_id": turn.conversation_id,
                     "turn_id": turn.turn_id,
@@ -146,6 +163,13 @@ class MemoryFormationService:
                     "eligibility_reason": resolved_eligibility.reason,
                 }
             )
+            if not claimed:
+                existing = await self.repository.get_formation_run(
+                    formation_key=resolved_key, user_id=turn.user_id
+                )
+                if existing is None:
+                    raise RuntimeError("记忆形成幂等记录创建冲突后无法读取已有记录")
+                return self._result_from_record(existing)
         decisions: list[MemoryDecision] = []
         candidate_count = 0
         try:
@@ -217,6 +241,42 @@ class MemoryFormationService:
         """应用关闭时等待已经提交的后台形成任务完成。"""
         if self._background_tasks:
             await asyncio.gather(*tuple(self._background_tasks), return_exceptions=True)
+
+    def _formation_key(
+        self, turn: TurnMemoryInput, trigger: MemoryFormationTrigger
+    ) -> str:
+        """生成跨请求稳定的形成身份；不把候选正文纳入 key。"""
+        payload = {
+            "user_id": turn.user_id,
+            "conversation_id": turn.conversation_id,
+            "run_id": turn.run_id,
+            "turn_id": turn.turn_id,
+            "trigger": trigger.value,
+            "extractor_version": self.extractor_version,
+        }
+        return hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def _result_from_record(
+        record: MemoryFormationRecord,
+    ) -> MemoryFormationResult:
+        """把重复提交命中的数据库审计快照转换为服务结果。"""
+        decisions = [MemoryDecision.model_validate(item) for item in record.decisions]
+        return MemoryFormationResult(
+            formation_run_id=record.formation_run_id,
+            status=record.status,
+            trigger=record.trigger,
+            candidate_count=record.candidate_count,
+            accepted_count=record.accepted_count,
+            rejected_count=record.rejected_count,
+            duplicate_count=record.duplicate_count,
+            replaced_count=record.replaced_count,
+            failed_count=record.failed_count,
+            decisions=decisions,
+            error_message=record.error_message,
+        )
 
     def _finish_background_task(
         self, task: asyncio.Task[MemoryFormationResult]

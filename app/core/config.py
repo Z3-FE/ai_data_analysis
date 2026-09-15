@@ -26,6 +26,26 @@ class AppConfig:
 
 
 @dataclass(frozen=True)
+class HarnessConfig:
+    """Data Agent Harness 的运行边界配置。"""
+
+    # Planner 单个动作规划阶段允许的最大重试次数。
+    max_planner_retries: int
+    # 具备幂等条件的工具调用允许的最大重试次数。
+    max_tool_retries: int
+    # 单次 Harness 运行允许完成的最大工具迭代次数。
+    max_iterations: int
+    # 从 start 到终态或暂停的最大运行时长，单位为秒。
+    run_timeout_seconds: int
+    # query_data 单次工具调用的超时时间，单位为秒。
+    query_timeout_seconds: int
+    # analyze_data 单次工具调用的超时时间，单位为秒。
+    analyze_timeout_seconds: int
+    # SSE 在没有业务事件时发送注释心跳的间隔，单位为秒。
+    sse_heartbeat_seconds: int
+
+
+@dataclass(frozen=True)
 class MysqlConfig:
     """MySQL 连接配置。"""
 
@@ -162,6 +182,16 @@ class DimensionValueSearchConfig:
 
 
 @dataclass(frozen=True)
+class MetadataRecallConfig:
+    """问数元数据召回的统一并发和规模边界。"""
+
+    # 每类元数据最多使用多少个召回词，避免一次问题放大成过多外部请求。
+    max_recall_terms: int
+    # 同一类元数据同时执行的 Embedding/向量或全文请求数量上限。
+    max_concurrent_terms: int
+
+
+@dataclass(frozen=True)
 class LlmConfig:
     """LLM 调用配置。"""
 
@@ -189,12 +219,14 @@ class Settings:
     """项目所有配置的聚合对象。"""
 
     app: AppConfig
+    harness: HarnessConfig
     mysql: MysqlConfig
     postgres: PostgresConfig
     neo4j: Neo4jConfig
     qdrant: QdrantConfig
     elasticsearch: ElasticsearchConfig
     dimension_value_search: DimensionValueSearchConfig
+    metadata_recall: MetadataRecallConfig
     embedding: EmbeddingConfig
     llm: LlmConfig
     logging: LoggingConfig
@@ -232,6 +264,7 @@ def load_settings(path: Path = CONFIG_PATH) -> Settings:
     search_config = raw["dimension_value_search"]
     return Settings(
         app=AppConfig(**raw["app"]),
+        harness=HarnessConfig(**raw["harness"]),
         mysql=MysqlConfig(**raw["mysql"]),
         postgres=PostgresConfig(**raw["postgres"]),
         neo4j=Neo4jConfig(**raw["neo4j"]),
@@ -246,6 +279,7 @@ def load_settings(path: Path = CONFIG_PATH) -> Settings:
             vector_score_threshold=search_config["vector_score_threshold"],
             rrf_k=search_config["rrf_k"],
         ),
+        metadata_recall=MetadataRecallConfig(**raw["metadata_recall"]),
         embedding=EmbeddingConfig(**raw["embedding"]),
         llm=LlmConfig(**raw["llm"]),
         logging=LoggingConfig(**raw["logging"]),

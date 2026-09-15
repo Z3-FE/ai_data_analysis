@@ -1,7 +1,7 @@
 """验证 Memory 面向 ContextEngine 的稳定只读边界。"""
 
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from app.agent.memory.enums import MemoryScope, MemoryStatus, MemoryType
 from app.agent.memory.interfaces import (
@@ -103,6 +103,119 @@ class FakeRepository:
         return None
 
 
+class FakeScalarResult:
+    """模拟 SQLAlchemy scalars(...).all() 的最小结果对象。"""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def all(self):
+        return self.rows
+
+
+class FakeSession:
+    """按查询参数执行 conversation_messages 的最小异步数据库替身。"""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    async def scalars(self, statement):
+        params = statement.compile().params
+        conversation_id = next(
+            value for key, value in params.items() if key.startswith("conversation_id")
+        )
+        user_id = next(
+            value for key, value in params.items() if key.startswith("user_id")
+        )
+        if user_id != "user-1":
+            return FakeScalarResult([])
+        rows = [
+            row
+            for row in self.rows
+            if row.conversation_id == conversation_id and row.user_id == user_id
+        ]
+        rows.sort(key=lambda row: (row.created_at, row.sequence_no))
+        return FakeScalarResult(rows)
+
+
+class FakeSessionFactory:
+    """提供 async with session_factory() 语义的数据库替身。"""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def __call__(self):
+        factory = self
+
+        class SessionContext:
+            async def __aenter__(self):
+                return FakeSession(factory.rows)
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+        return SessionContext()
+
+
+def _message_rows():
+    """构造 conversation_messages 的数据库行。"""
+    from app.models.agent_history import ConversationMessageModel
+
+    base_time = datetime.now(UTC).replace(tzinfo=None)
+    return [
+        ConversationMessageModel(
+            message_id="message-1",
+            conversation_id="conversation-1",
+            turn_id="turn-1",
+            user_id="user-1",
+            role="user",
+            message_type="text",
+            sequence_no=1,
+            content="第一条",
+            message_metadata={},
+            created_at=base_time,
+        ),
+        ConversationMessageModel(
+            message_id="message-2",
+            conversation_id="conversation-1",
+            turn_id="turn-1",
+            user_id="user-1",
+            role="assistant",
+            message_type="text",
+            sequence_no=2,
+            content="第二条",
+            message_metadata={},
+            created_at=base_time + timedelta(seconds=1),
+        ),
+        ConversationMessageModel(
+            message_id="message-3",
+            conversation_id="conversation-1",
+            turn_id="turn-2",
+            user_id="user-1",
+            role="user",
+            message_type="text",
+            sequence_no=1,
+            content="第三条",
+            message_metadata={
+                "turn_id": "turn-2",
+                "asset_ids": ["asset-1", "asset-2"],
+            },
+            created_at=base_time + timedelta(seconds=2),
+        ),
+        ConversationMessageModel(
+            message_id="message-other",
+            conversation_id="conversation-1",
+            turn_id="turn-other",
+            user_id="other-user",
+            role="user",
+            message_type="text",
+            sequence_no=1,
+            content="其他用户的内容",
+            message_metadata={},
+            created_at=base_time + timedelta(seconds=3),
+        ),
+    ]
+
 class MemoryManagerContextBoundaryTest(unittest.IsolatedAsyncioTestCase):
     """ContextEngine 只通过 Manager 读接口选择和读取记忆。"""
 
@@ -154,33 +267,14 @@ class MemoryManagerContextBoundaryTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_working_memory_rejects_mismatched_user(self):
-        async def load(_conversation_id):
-            return {
-                "user_id": "user-1",
-                "messages": [
-                    {"role": "user", "content": "第一条"},
-                    {"role": "assistant", "content": "第二条"},
-                ],
-            }
-
-        records = await WorkingMemory(load).load(
+        records = await WorkingMemory(FakeSessionFactory(_message_rows())).load(
             user_id="other-user", conversation_id="conversation-1"
         )
 
         self.assertEqual(records, [])
 
     async def test_working_memory_records_are_chronological(self):
-        async def load(_conversation_id):
-            return {
-                "user_id": "user-1",
-                "messages": [
-                    {"role": "user", "content": "第一条"},
-                    {"role": "assistant", "content": "第二条"},
-                    {"role": "user", "content": "第三条"},
-                ],
-            }
-
-        records = await WorkingMemory(load).load(
+        records = await WorkingMemory(FakeSessionFactory(_message_rows())).load(
             user_id="user-1", conversation_id="conversation-1"
         )
 
@@ -192,29 +286,13 @@ class MemoryManagerContextBoundaryTest(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_working_memory_preserves_context_reference_metadata(self):
-        async def load(_conversation_id):
-            return {
-                "user_id": "user-1",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": "请分析附件",
-                        "additional_kwargs": {
-                            "turn_id": "turn-1",
-                            "message_index": 12,
-                            "asset_ids": ["asset-1", "asset-2"],
-                        },
-                    }
-                ],
-            }
-
-        records = await WorkingMemory(load).load(
+        records = await WorkingMemory(FakeSessionFactory(_message_rows())).load(
             user_id="user-1", conversation_id="conversation-1"
         )
 
-        self.assertEqual(records[0].structured_data["message_index"], 12)
+        self.assertEqual(records[-1].structured_data["message_index"], 2)
         self.assertEqual(
-            records[0].structured_data["asset_ids"], ["asset-1", "asset-2"]
+            records[-1].structured_data["asset_ids"], ["asset-1", "asset-2"]
         )
 
 

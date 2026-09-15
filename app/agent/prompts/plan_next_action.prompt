@@ -4,6 +4,9 @@
 动作类型只能是 tool_call、ask_user、final_answer。
 - tool_call 必须从 tool_specs 选择工具，参数必须符合 input_schema。
 - ask_user 用于缺少关键条件；它不包含 confirmation_id。
+- 如果 state_view 或上下文中已经提供了 Last User Confirmation、Confirmed Conditions，
+  必须优先使用这些信息继续规划；不要因为已经回答过的问题再次生成相同的 ask_user。
+- 只有确认回复仍然缺少完成任务所必需的新条件时，才能提出新的、更具体的问题。
 - final_answer 只有在当前上下文足以回答时使用。
 - 不要输出 action_seq、action_id。
 
