@@ -33,6 +33,7 @@ import {
   type DebugEvent,
   type StreamEvent,
 } from "./execution-panel";
+import { ChatRunSummaryChip, ChatRunTimeline } from "./chat-run-progress";
 
 interface ChatSessionViewProps {
   conversationId: string;
@@ -114,6 +115,9 @@ interface ExecutionProcessContextValue {
 }
 
 const ExecutionProcessContext = createContext<ExecutionProcessContextValue | null>(null);
+
+/** 本轮 SSE 事件缓冲，供聊天气泡内的运行进度展示与执行面板共用。 */
+const RunProgressContext = createContext<DebugEvent[]>([]);
 
 function formatTime(value?: Date | string) {
   /** 格式化消息时间，用于聊天气泡下方展示。 */
@@ -636,6 +640,7 @@ function AssistantMessageBubble() {
   const isUser = message.role === "user";
   const meta = conversationMeta(message);
   const executionProcess = useContext(ExecutionProcessContext);
+  const liveEvents = useContext(RunProgressContext);
   const displayText = getDisplayMessageText(message);
   // Harness 每个轮次都会落 execution_trace，所以统一提供入口；旧图轮次保持原有判断。
   const traceTurnId = meta?.turn_id;
@@ -658,6 +663,18 @@ function AssistantMessageBubble() {
     !isUser &&
     message.id === lastMessageId &&
     message.status?.type === "running";
+  // 占位消息（空文本或恢复流提示语）期间气泡内展示实时运行进度，打字机输出开始后让位给正文。
+  const isLivePlaceholder =
+    showStreamingCursor
+    && (displayText.trim() === "" || displayText.trim() === "正在根据你的确认继续处理...");
+  const metaElapsedSeconds = typeof meta?.elapsed_seconds === "number" ? meta.elapsed_seconds : 0;
+  const showSummaryChip = !!meta
+    && !isLivePlaceholder
+    && meta.response_type !== "chat"
+    && metaElapsedSeconds > 0;
+  const traceToggle = executionProcess && canViewExecution && traceTurnId
+    ? () => executionProcess.toggle(traceTurnId)
+    : undefined;
 
   return (
     <MessagePrimitive.Root className={`w-full flex gap-3 ${isUser ? "justify-end" : "justify-start"}`}>
@@ -674,25 +691,40 @@ function AssistantMessageBubble() {
               : "bg-white text-slate-700 border border-slate-200 shadow-sm"
             }`}
         >
-          {displayText}
-          {showStreamingCursor && (
-            <span className="ml-1 inline-block w-1.5 h-4 bg-blue-500 animate-pulse align-middle" />
+          {isLivePlaceholder ? (
+            <ChatRunTimeline events={liveEvents} />
+          ) : (
+            <>
+              {displayText}
+              {showStreamingCursor && (
+                <span className="ml-1 inline-block w-1.5 h-4 bg-blue-500 animate-pulse align-middle" />
+              )}
+            </>
           )}
         </div>
         <span className="text-[10px] text-slate-400 mt-1 px-1">
           {formatTime(message.createdAt)}
         </span>
         {meta?.query_result && <QueryResultView result={meta.query_result} />}
-        {executionProcess && executionLabel && traceTurnId && (
-          <button
-            type="button"
-            onClick={() => executionProcess.toggle(traceTurnId)}
-            className="mt-4 inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
-          >
-            <ListTree className="size-3.5" />
-            {executionLabel}
-            <ChevronRight className={"size-3.5 transition-transform " + (traceActive ? "rotate-180" : "")} />
-          </button>
+        {showSummaryChip ? (
+          <ChatRunSummaryChip
+            status={meta?.status}
+            elapsedSeconds={metaElapsedSeconds}
+            traceLabel={executionLabel || undefined}
+            onOpenTrace={traceToggle}
+          />
+        ) : (
+          executionProcess && executionLabel && traceTurnId && (
+            <button
+              type="button"
+              onClick={() => executionProcess.toggle(traceTurnId)}
+              className="mt-4 inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
+            >
+              <ListTree className="size-3.5" />
+              {executionLabel}
+              <ChevronRight className={"size-3.5 transition-transform " + (traceActive ? "rotate-180" : "")} />
+            </button>
+          )
         )}
         {meta?.rendered_report && (
           <div className="mt-6 w-full min-w-0">
@@ -1585,6 +1617,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
         toggle: toggleExecutionProcess,
       }}
     >
+      <RunProgressContext.Provider value={debugEvents}>
       <div className="flex-1 flex overflow-hidden bg-slate-50">
         <section className="flex-1 min-w-0 flex flex-col border-r border-slate-200">
         <div className="bg-white border-b border-slate-200 px-6 py-4">
@@ -1652,6 +1685,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
           />
         )}
       </div>
+      </RunProgressContext.Provider>
     </ExecutionProcessContext.Provider>
   );
 }

@@ -24,7 +24,7 @@ export interface StreamEvent {
   [key: string]: unknown;
 }
 
-type RunStatus = "pending" | "running" | "success" | "partial" | "failed";
+export type RunStatus = "pending" | "running" | "success" | "partial" | "failed";
 
 export interface DebugEvent {
   key: string;
@@ -55,7 +55,7 @@ interface NodeGroup {
   events: DisplayEvent[];
 }
 
-interface TaskSummary {
+export interface TaskSummary {
   task_id: string;
   status: RunStatus;
   question?: string;
@@ -454,7 +454,7 @@ function streamText(event: DebugEvent) {
 }
 
 /** 工具进度按归一化前的原始事件类型分桶：思考/正文各自连同结果事件聚合，普通进度单独合并。 */
-function progressKind(event: DebugEvent) {
+export function progressKind(event: DebugEvent) {
   const customType = event.payload.custom_type;
   if (customType === "reasoning_chunk" || customType === "reasoning_result") return "reasoning";
   if (customType === "llm_chunk" || customType === "llm_result") return "llm";
@@ -549,7 +549,7 @@ function nodeGroups(events: DebugEvent[], fallback?: RunStatus, runCompleted = f
   })).sort((left, right) => eventOrder(left.latest) - eventOrder(right.latest));
 }
 
-function buildTasks(events: DebugEvent[]): TaskSummary[] {
+export function buildTasks(events: DebugEvent[]): TaskSummary[] {
   const summaries = new Map<string, TaskSummary>();
   for (const event of events) {
     if (event.type !== "analysis_plan" || !Array.isArray(event.payload.tasks)) continue;
@@ -694,7 +694,7 @@ function json(value: unknown) {
     : serialized.replaceAll("\\n", "\n").replaceAll("\\r", "\r").replaceAll("\\t", "\t");
 }
 
-function StatusIcon({ status }: { status: RunStatus | undefined }) {
+export function StatusIcon({ status }: { status: RunStatus | undefined }) {
   if (status === "success") return <CheckCircle2 className="size-4 shrink-0 text-emerald-500" />;
   if (status === "failed") return <XCircle className="size-4 shrink-0 text-rose-500" />;
   if (status === "partial") return <AlertCircle className="size-4 shrink-0 text-amber-500" />;
