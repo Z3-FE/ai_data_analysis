@@ -685,7 +685,7 @@ async def run_harness_stream(payload: HarnessRunRequest) -> StreamingResponse:
                     dw_session=dw_session,
                     event_writer=writer,
                 )
-                # 新建会话、重新聊天
+                # 开始一轮对话
                 await ConversationRepository(session_factory).start_turn(
                     conversation_id=conversation_id,
                     user_id=payload.user_id,
