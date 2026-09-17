@@ -64,9 +64,11 @@ class QueueEventSink:
 
     def __init__(self, queue: asyncio.Queue[Any]) -> None:
         self.queue = queue
+        self.events: list[HarnessEvent] = []
 
     def publish(self, event: HarnessEvent) -> None:
         # SSE 队列与 Harness worker 位于同一事件循环；入队不能阻塞工具执行。
+        self.events.append(event)
         self.queue.put_nowait(event)
 
 

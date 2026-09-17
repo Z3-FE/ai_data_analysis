@@ -69,6 +69,8 @@ class FinalizationResult(ContractModel):
     run_ref: HarnessRunRef
     status: HarnessStatus
     final_answer: str = Field(min_length=1, max_length=20_000)
+    final_output_type: str = Field(default="text", min_length=1, max_length=64)
+    final_output_ref: str | None = Field(default=None, min_length=1, max_length=256)
     iteration: int = Field(default=0, ge=0)
     last_error: RunError | None = None
 

@@ -149,10 +149,10 @@ class ToolRuntime:
                 request=request,
                 started_at=started_at,
                 started=started,
-                status=ResultStatus.TEMPORARY_ERROR,
+                status=ResultStatus.UNRECOVERABLE_ERROR,
                 category=ErrorCategory.TIMEOUT,
                 code="tool_timeout",
-                retryable=True,
+                retryable=False,
                 error=exc,
             )
             self._publish_result(writer, request, result)
@@ -162,10 +162,10 @@ class ToolRuntime:
                 request=request,
                 started_at=started_at,
                 started=started,
-                status=ResultStatus.TEMPORARY_ERROR,
+                status=ResultStatus.UNRECOVERABLE_ERROR,
                 category=ErrorCategory.TOOL,
                 code="tool_dependency_unavailable",
-                retryable=True,
+                retryable=False,
                 error=exc,
             )
             self._publish_result(writer, request, result)
@@ -221,6 +221,26 @@ class ToolRuntime:
                 "row_count": getattr(result, "row_count", None),
             },
         )
+        if result.status not in {ResultStatus.SUCCESS, ResultStatus.PARTIAL}:
+            logger.warning(
+                "Harness tool failed: run_id=%s action_id=%s tool=%s attempt=%s error_code=%s retryable=%s error=%s",
+                request.run_ref.run_id,
+                request.tool_call.action_id,
+                result.tool_name,
+                request.attempt,
+                result.error_code,
+                result.retryable,
+                result.error_message,
+                extra={
+                    "run_id": request.run_ref.run_id,
+                    "turn_id": request.run_ref.turn_id,
+                    "action_id": request.tool_call.action_id,
+                    "tool_name": result.tool_name,
+                    "attempt": request.attempt,
+                    "status": result.status.value,
+                    "error_code": result.error_code,
+                },
+            )
         logger.info(
             "Harness tool finished: run_id=%s action_id=%s tool=%s attempt=%s status=%s duration_ms=%s error_code=%s",
             request.run_ref.run_id,

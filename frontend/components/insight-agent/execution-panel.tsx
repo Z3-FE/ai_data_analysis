@@ -6,10 +6,8 @@ import {
   Braces,
   CheckCircle2,
   ChevronRight,
-  CircleHelp,
   Circle,
   ClipboardList,
-  Layers3,
   Loader2,
   Timer,
   XCircle,
@@ -103,10 +101,8 @@ const RESULT_EVENT_TYPES = new Set([
   "rendered_report",
 ]);
 const STEP_ORDER = [
-  "开始执行", "判断问题路由", "生成分析计划", "提取关键词",
-  "召回字段", "召回表", "召回指标", "召回维度值", "合并召回信息", "过滤指标",
-  "过滤表", "整理 SQL 上下文", "生成 SQL", "执行 SQL", "增强查询结果",
-  "执行分析任务", "汇总全部分析证据", "生成报告规划", "渲染最终报告",
+  "开始执行", "构建上下文", "任务划分", "提交动作", "执行工具",
+  "记录观察结果", "等待用户确认", "最终收口", "运行结果",
 ];
 
 function record(value: unknown): Record<string, unknown> {
@@ -132,7 +128,15 @@ function terminal(status: RunStatus | undefined) {
 }
 
 function mainStep(sourceStep: string, type: string) {
-  if (type.startsWith("run.") || type === "stream.failed") return "开始执行";
+  if (type === "run.started") return "开始执行";
+  if (type === "run.completed" || type === "run.failed" || type === "run.timeout" || type === "run.cancelled" || type === "run.result" || type === "stream.failed") return "运行结果";
+  if (type.startsWith("context.")) return "构建上下文";
+  if (type.startsWith("planner.")) return "任务划分";
+  if (type === "action.committed") return "提交动作";
+  if (type.startsWith("tool.")) return "执行工具";
+  if (type === "observation.recorded") return "记录观察结果";
+  if (type.startsWith("confirmation.")) return "等待用户确认";
+  if (type.startsWith("finalization.")) return "最终收口";
   if (type === "question_route") return "判断问题路由";
   if (sourceStep === "问题路由" || sourceStep === "判断问题路由") return "判断问题路由";
   if (sourceStep === "抽取关键词" || sourceStep === "提取关键词") return "提取关键词";
@@ -151,6 +155,23 @@ function mainStep(sourceStep: string, type: string) {
   if (sourceStep.startsWith("生成报告规划")) return "生成报告规划";
   if (sourceStep === "生成最终报告" || sourceStep === "渲染最终报告") return "渲染最终报告";
   return sourceStep || "未命名步骤";
+}
+
+function moduleNode(event: StreamEvent, type: string, payload: Record<string, unknown>) {
+  const source = typeof event.source === "string" ? event.source.trim() : "";
+  if (type.startsWith("context.")) return "context_engine";
+  if (type.startsWith("planner.")) return "planning_agent";
+  if (type === "action.committed" || type === "observation.recorded" || type.startsWith("confirmation.")) return "loop_controller";
+  if (type.startsWith("finalization.")) return "finalization";
+  if (type.startsWith("run.") || type === "stream.failed") return "loop_controller";
+  if (type.startsWith("tool.")) {
+    const toolName = event.tool_name ?? payload.tool_name;
+    if (typeof toolName === "string" && toolName.trim()) return toolName.trim();
+    if (source && source !== "harness") return source;
+    return "tool_runtime";
+  }
+  if (source && source !== "harness") return source;
+  return typeof event.node === "string" && event.node.trim() ? event.node.trim() : "unknown_node";
 }
 
 function safePayload(value: unknown, truncated: string[], path = ""): unknown {
@@ -172,7 +193,6 @@ function makeEvent(event: StreamEvent): DebugEvent {
   const type = event.type.trim();
   const sourceStep = typeof event.step === "string" && event.step.trim() ? event.step.trim() : "未命名步骤";
   const taskId = typeof event.task_id === "string" || typeof event.task_id === "number" ? String(event.task_id) : undefined;
-  const node = typeof event.node === "string" && event.node.trim() ? event.node.trim() : "unknown_node";
   const phase = typeof event.phase === "string" ? event.phase : "";
   const truncated: string[] = [];
   const payload = safePayload(event, truncated) as Record<string, unknown>;
@@ -180,13 +200,14 @@ function makeEvent(event: StreamEvent): DebugEvent {
     payload.debug_truncated = true;
     payload.debug_truncated_fields = truncated;
   }
+  const resolvedNode = moduleNode(event, type, payload);
   return {
-    key: type + ":" + sourceStep + ":" + node + ":" + phase + ":" + (taskId || ""),
+    key: type + ":" + sourceStep + ":" + resolvedNode + ":" + phase + ":" + (taskId || ""),
     sequence: -1,
     type,
     step: mainStep(sourceStep, type),
     sourceStep,
-    node,
+    node: resolvedNode,
     taskId,
     status: statusOf(event.status),
     receivedAt: new Date().toISOString(),
@@ -207,7 +228,37 @@ export function appendExecutionEvent(events: DebugEvent[], event: StreamEvent): 
   });
 }
 
-function statusForEvents(events: DebugEvent[], fallback?: RunStatus): RunStatus {
+const CONTEXT_PROGRESS_EVENT_TYPES = new Set([
+  "context.memory_retrieved",
+  "context.knowledge_retrieved",
+  "context.context_compiled",
+]);
+
+/** Harness 事件名自带生命周期语义；缺少显式 status 时按类型推导展示状态。 */
+function statusFromEventType(type: string): RunStatus | undefined {
+  if (
+    // run.started 到达即代表“开始执行”模块完成，后续阶段由各自事件驱动。
+    type === "run.started"
+    || type.endsWith(".completed")
+    || type === "action.committed"
+    || type === "confirmation.resolved"
+    || RESULT_EVENT_TYPES.has(type)
+  ) {
+    return "success";
+  }
+  if (
+    type.endsWith(".started")
+    || type.endsWith(".retrying")
+    || type === "tool.progress"
+    || type === "confirmation.required"
+    || CONTEXT_PROGRESS_EVENT_TYPES.has(type)
+  ) {
+    return "running";
+  }
+  return undefined;
+}
+
+function statusForEvents(events: DebugEvent[], fallback?: RunStatus, runCompleted = false): RunStatus {
   let latestStatus = fallback;
   for (const event of events.slice().sort((left, right) => eventOrder(left) - eventOrder(right))) {
     if (
@@ -219,10 +270,15 @@ function statusForEvents(events: DebugEvent[], fallback?: RunStatus): RunStatus 
       latestStatus = "failed";
     } else if (event.status) {
       latestStatus = event.status;
-    } else if (RESULT_EVENT_TYPES.has(event.type)) {
-      latestStatus = "success";
+    } else {
+      const derived = statusFromEventType(event.type);
+      if (derived) latestStatus = derived;
     }
   }
+  if (runCompleted && events.length && latestStatus !== "failed") return "success";
+  // 被取消或超时的运行：已完成模块保持终态，仍在执行的模块标记为中断（partial）。
+  const interrupted = events.some((event) => event.type === "run.cancelled" || event.type === "run.timeout");
+  if (interrupted) return latestStatus === "running" ? "partial" : latestStatus || "pending";
   return latestStatus || "pending";
 }
 
@@ -295,16 +351,25 @@ function displayLabel(event: DebugEvent) {
   if (event.type === "run.result") return "运行结果";
   if (event.type === "stream.failed") return "流式连接失败";
   if (event.type === "context.started") return "开始构建上下文";
+  if (event.type === "context.memory_retrieved") return "读取记忆";
+  if (event.type === "context.knowledge_retrieved") return "召回语义知识";
+  if (event.type === "context.context_compiled") return "上下文已组装";
   if (event.type === "context.completed") return "上下文构建完成";
-  if (event.type === "planner.started") return "开始规划下一步";
-  if (event.type === "planner.completed") return "规划完成";
-  if (event.type === "planner.retrying") return "重新规划";
-  if (event.type === "planner.failed") return "规划失败";
+  if (event.type === "planner.started") return "开始任务划分";
+  if (event.type === "planner.completed") return "任务划分完成";
+  if (event.type === "planner.retrying") return "任务划分重试";
+  if (event.type === "planner.failed") return "任务划分失败";
   if (event.type === "action.committed") return "动作已提交";
   if (event.type === "tool.started") return "工具开始执行";
-  if (event.type === "tool.progress") return "工具执行进度";
+  if (event.type === "tool.progress") {
+    const count = typeof event.payload.compacted_count === "number"
+      ? event.payload.compacted_count
+      : 1;
+    return count > 1 ? `工具执行进度（${count} 条内部事件）` : "工具执行进度";
+  }
   if (event.type === "tool.completed") return "工具执行完成";
   if (event.type === "tool.failed") return "工具执行失败";
+  if (event.type === "tool.retrying") return "工具执行重试";
   if (event.type === "confirmation.required") return "等待用户确认";
   if (event.type === "confirmation.resolved") return "用户确认已处理";
   if (event.type === "reasoning_result") return "思考过程" + phase;
@@ -356,16 +421,23 @@ function streamText(event: DebugEvent) {
 
 function compactAllEvents(events: DebugEvent[]): DebugEvent[] {
   const compacted: DebugEvent[] = [];
-  const streamIndexes = new Map<string, number>();
+  const compactIndexes = new Map<string, number>();
 
   for (const event of events) {
-    if (!STREAM_EVENT_TYPES.has(event.type)) {
+    const isStream = STREAM_EVENT_TYPES.has(event.type);
+    const isToolProgress = event.type === "tool.progress";
+    if (!isStream && !isToolProgress) {
       compacted.push(event);
       continue;
     }
 
-    const scope = streamScope(event);
-    const existingIndex = streamIndexes.get(scope);
+    const scope = isToolProgress
+      ? "tool.progress::"
+        + String(event.payload.action_id || event.payload.source || event.node)
+        + "::"
+        + String(event.payload.phase || event.step || "")
+      : streamScope(event);
+    const existingIndex = compactIndexes.get(scope);
     if (existingIndex === undefined) {
       const chunk = streamText(event);
       compacted.push({
@@ -376,11 +448,12 @@ function compactAllEvents(events: DebugEvent[]): DebugEvent[] {
           chunk: chunk || event.payload.chunk,
           combined_text: chunk,
           chunk_count: 1,
+          ...(isToolProgress ? { compacted_count: 1 } : {}),
           first_sequence: event.sequence,
           last_sequence: event.sequence,
         },
       });
-      streamIndexes.set(scope, compacted.length - 1);
+      compactIndexes.set(scope, compacted.length - 1);
       continue;
     }
 
@@ -388,6 +461,9 @@ function compactAllEvents(events: DebugEvent[]): DebugEvent[] {
     const currentText = typeof current.payload.combined_text === "string" ? current.payload.combined_text : "";
     const chunk = streamText(event);
     const chunkCount = typeof current.payload.chunk_count === "number" ? current.payload.chunk_count : 1;
+    const compactedCount = typeof current.payload.compacted_count === "number"
+      ? current.payload.compacted_count
+      : 1;
     compacted[existingIndex] = {
       ...current,
       sequence: event.sequence,
@@ -398,6 +474,7 @@ function compactAllEvents(events: DebugEvent[]): DebugEvent[] {
         chunk: currentText + chunk,
         combined_text: currentText + chunk,
         chunk_count: chunkCount + 1,
+        ...(isToolProgress ? { compacted_count: compactedCount + 1 } : {}),
         last_sequence: event.sequence,
       },
     };
@@ -411,12 +488,12 @@ function orderOf(step: string) {
   return index === -1 ? STEP_ORDER.length : index;
 }
 
-function nodeGroups(events: DebugEvent[], fallback?: RunStatus): NodeGroup[] {
+function nodeGroups(events: DebugEvent[], fallback?: RunStatus, runCompleted = false): NodeGroup[] {
   const grouped = new Map<string, DebugEvent[]>();
   for (const event of events) grouped.set(event.node, [...(grouped.get(event.node) || []), event]);
   return Array.from(grouped.entries()).map(([node, nodeEvents]) => ({
     node,
-    status: statusForEvents(nodeEvents, fallback),
+    status: statusForEvents(nodeEvents, fallback, runCompleted),
     latest: nodeEvents[nodeEvents.length - 1],
     events: displayEvents(nodeEvents),
   })).sort((left, right) => eventOrder(left.latest) - eventOrder(right.latest));
@@ -459,7 +536,7 @@ function buildTasks(events: DebugEvent[]): TaskSummary[] {
   });
 }
 
-function buildTaskGroups(tasks: TaskSummary[]): TaskGroup[] {
+function buildTaskGroups(tasks: TaskSummary[], runCompleted = false): TaskGroup[] {
   return tasks.map((task) => {
     const events = currentEvents(task.events).filter((event) => event.type !== "progress");
     const grouped = new Map<string, DebugEvent[]>();
@@ -472,7 +549,7 @@ function buildTaskGroups(tasks: TaskSummary[]): TaskGroup[] {
         label,
         status: statusForEvents(stepEvents, task.status),
         latest: stepEvents[stepEvents.length - 1],
-        nodes: nodeGroups(stepEvents, task.status),
+        nodes: nodeGroups(stepEvents, task.status, runCompleted),
         display: displayEvents(stepEvents),
       }))
       .sort((left, right) => eventOrder(left.latest) - eventOrder(right.latest));
@@ -501,6 +578,7 @@ function aggregateTaskStatus(tasks: TaskSummary[]): RunStatus {
 }
 
 function buildStepGroups(events: DebugEvent[], tasks: TaskSummary[]): StepGroup[] {
+  const runCompleted = events.some((event) => event.type === "run.completed");
   const grouped = new Map<string, DebugEvent[]>();
   const publicEvents = events.filter((item) => !STREAM_EVENT_TYPES.has(item.type) && !item.taskId);
   for (const event of publicEvents) {
@@ -511,10 +589,10 @@ function buildStepGroups(events: DebugEvent[], tasks: TaskSummary[]): StepGroup[
     const visible = currentEvents(stepEvents);
     return {
       step,
-      status: statusForEvents(visible),
+      status: statusForEvents(visible, undefined, runCompleted),
       latest: visible[visible.length - 1] || stepEvents[stepEvents.length - 1],
       events: visible,
-      nodes: nodeGroups(visible),
+      nodes: nodeGroups(visible, undefined, runCompleted),
       tasks: [],
     };
   });
@@ -525,7 +603,7 @@ function buildStepGroups(events: DebugEvent[], tasks: TaskSummary[]): StepGroup[
       latest: taskOverview(tasks),
       events: [],
       nodes: [],
-      tasks: buildTaskGroups(tasks),
+      tasks: buildTaskGroups(tasks, runCompleted),
     });
   }
   return result.sort((left, right) => orderOf(left.step) - orderOf(right.step));
@@ -547,7 +625,7 @@ function StatusIcon({ status }: { status: RunStatus | undefined }) {
   if (status === "success") return <CheckCircle2 className="size-4 shrink-0 text-emerald-500" />;
   if (status === "failed") return <XCircle className="size-4 shrink-0 text-rose-500" />;
   if (status === "partial") return <AlertCircle className="size-4 shrink-0 text-amber-500" />;
-  if (status === "pending") return <CircleHelp className="size-4 shrink-0 text-slate-400" />;
+  if (status === "pending") return <Loader2 className="size-4 shrink-0 animate-spin text-slate-300" />;
   if (status === "running") return <Loader2 className="size-4 shrink-0 animate-spin text-blue-500" />;
   return <Circle className="size-4 shrink-0 text-slate-300" />;
 }
@@ -577,6 +655,7 @@ function StepCard({ group }: { group: StepGroup }) {
 }
 
 function ProgressView({ events, tasks }: { events: DebugEvent[]; tasks: TaskSummary[] }) {
+  const runCompleted = events.some((event) => event.type === "run.completed");
   const groups = new Map<string, DebugEvent[]>();
   for (const event of events.filter((item) => !STREAM_EVENT_TYPES.has(item.type) && !item.taskId)) {
     const label = event.step;
@@ -586,18 +665,12 @@ function ProgressView({ events, tasks }: { events: DebugEvent[]; tasks: TaskSumm
   const steps = Array.from(groups.entries())
     .map(([step, values]) => ({
       step,
-      status: step === "执行分析任务" ? aggregateTaskStatus(tasks) : statusForEvents(currentEvents(values)),
+      status: step === "执行分析任务" ? aggregateTaskStatus(tasks) : statusForEvents(currentEvents(values), undefined, runCompleted),
       latest: values[values.length - 1],
     }))
     .sort((left, right) => orderOf(left.step) - orderOf(right.step));
   const completed = tasks.filter((task) => terminal(task.status)).length;
   return <><div className="space-y-3">{steps.map((step, index) => <div key={step.step} className="relative flex gap-3">{index < steps.length - 1 && <span className="absolute left-[7px] top-5 h-[calc(100%+12px)] w-px bg-slate-200" />}<StatusIcon status={step.status} /><div className="min-w-0 pb-1"><div className="text-xs font-bold text-slate-700">{step.step}</div>{step.step === "执行分析任务" && tasks.length ? <div className="mt-1 text-[11px] text-slate-400">已完成 {completed} / {tasks.length} 个分析任务</div> : typeof step.latest.payload.message === "string" ? <div className="mt-1 break-words text-[11px] leading-5 text-slate-400">{step.latest.payload.message}</div> : null}</div></div>)}{!steps.length && <div className="py-10 text-center text-xs text-slate-400">提交问题后显示执行步骤</div>}</div>{tasks.length ? <div className="mt-4 border-t border-slate-100 pt-4"><div className="mb-2 flex items-center justify-between text-[11px] font-bold text-slate-400"><span>分析任务总进度</span><span>{completed} / {tasks.length}</span></div><div className="h-1.5 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: (completed / tasks.length * 100) + "%" }} /></div></div> : null}</>;
-}
-
-function TaskList({ tasks }: { tasks: TaskSummary[] }) {
-  const groups = buildTaskGroups(tasks);
-  if (!groups.length) return <div className="py-10 text-center text-xs text-slate-400">分析计划返回后，这里会按 task_id 展示任务</div>;
-  return <div className="space-y-2">{groups.map((group) => <TaskCard key={group.taskId} group={group} />)}</div>;
 }
 
 function AllEvents({ events }: { events: DebugEvent[] }) {
@@ -633,5 +706,5 @@ export function ExecutionPanel({
     scrollRef.current?.scrollTo({ top: 0, behavior: "auto" });
     requestAnimationFrame(() => scrollRef.current?.scrollTo({ top: 0, behavior: "auto" }));
   };
-  return <aside className="flex min-h-0 min-w-0 basis-[430px] shrink-0 flex-[0_0_430px] flex-col border-l border-slate-200 bg-white 2xl:basis-[500px] 2xl:flex-[0_0_500px]"><div className="border-b border-slate-200 px-5 py-4"><div className="flex items-center gap-2 text-sm font-extrabold text-slate-800"><ClipboardList className="size-4 text-blue-600" />执行过程</div><p className="mt-1 text-[11px] text-slate-400">实时展示本次运行的总体进度、任务返回和节点事件</p></div><Tabs value={tab} onValueChange={handleTab} className="min-h-0 flex-1 gap-0"><TabsList variant="line" className="sticky top-0 z-20 grid h-12 w-full shrink-0 grid-cols-4 justify-stretch overflow-x-auto rounded-none border-b border-slate-200 bg-white px-5 py-0 shadow-[0_4px_10px_-8px_rgba(15,23,42,0.35)]"><TabsTrigger value="progress" className="gap-1 text-[11px]"><ClipboardList className="size-3.5" />进度</TabsTrigger><TabsTrigger value="returns" className="gap-1 text-[11px]"><Braces className="size-3.5" />步骤返回{steps.length ? " " + steps.length : ""}</TabsTrigger><TabsTrigger value="tasks" className="gap-1 text-[11px]"><Layers3 className="size-3.5" />分析任务{tasks.length ? " " + tasks.length : ""}</TabsTrigger><TabsTrigger value="events" className="gap-1 text-[11px]"><Braces className="size-3.5" />全部事件{compactedEvents.length ? " " + compactedEvents.length : ""}</TabsTrigger></TabsList>{loading && <div className="flex items-center gap-2 border-b border-blue-100 bg-blue-50 px-5 py-2.5 text-[11px] font-semibold text-blue-700"><Loader2 className="size-3.5 animate-spin" />正在加载该轮次的执行过程...</div>}{error && <div className="border-b border-amber-100 bg-amber-50 px-5 py-2.5 text-[11px] leading-5 text-amber-800">{error}</div>}<div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain"><TabsContent value="progress" className="mt-4 px-5 pb-5"><ProgressView events={orderedEvents} tasks={tasks} /></TabsContent><TabsContent value="returns" className="mt-4 space-y-2 px-5 pb-5">{steps.length ? steps.map((group) => <StepCard key={group.step} group={group} />) : <div className="py-10 text-center text-xs text-slate-400">收到节点返回后，这里会显示主步骤摘要</div>}</TabsContent><TabsContent value="tasks" className="mt-4 px-5 pb-5"><TaskList tasks={tasks} /></TabsContent><TabsContent value="events" className="mt-4 px-5 pb-5"><AllEvents events={compactedEvents} /></TabsContent></div></Tabs><div className="border-t border-slate-200 px-5 py-3"><div className="flex items-center gap-2 text-[11px] font-semibold text-slate-400"><Timer className="size-3.5" />{loading ? "正在加载执行过程" : running ? "正在执行" : rawEvents.length ? "本次执行已结束" : "等待提问"}</div></div></aside>;
+  return <aside className="flex min-h-0 min-w-0 basis-[430px] shrink-0 flex-[0_0_430px] flex-col border-l border-slate-200 bg-white 2xl:basis-[500px] 2xl:flex-[0_0_500px]"><div className="border-b border-slate-200 px-5 py-4"><div className="flex items-center gap-2 text-sm font-extrabold text-slate-800"><ClipboardList className="size-4 text-blue-600" />执行过程</div><p className="mt-1 text-[11px] text-slate-400">实时展示本次运行的总体进度、任务返回和节点事件</p></div><Tabs value={tab} onValueChange={handleTab} className="min-h-0 flex-1 gap-0"><TabsList variant="line" className="sticky top-0 z-20 grid h-12 w-full shrink-0 grid-cols-3 justify-stretch overflow-x-auto rounded-none border-b border-slate-200 bg-white px-5 py-0 shadow-[0_4px_10px_-8px_rgba(15,23,42,0.35)]"><TabsTrigger value="progress" className="gap-1 text-[11px]"><ClipboardList className="size-3.5" />进度</TabsTrigger><TabsTrigger value="returns" className="gap-1 text-[11px]"><Braces className="size-3.5" />步骤返回{steps.length ? " " + steps.length : ""}</TabsTrigger><TabsTrigger value="events" className="gap-1 text-[11px]"><Braces className="size-3.5" />工具与事件{compactedEvents.length ? " " + compactedEvents.length : ""}</TabsTrigger></TabsList>{loading && <div className="flex items-center gap-2 border-b border-blue-100 bg-blue-50 px-5 py-2.5 text-[11px] font-semibold text-blue-700"><Loader2 className="size-3.5 animate-spin" />正在加载该轮次的执行过程...</div>}{error && <div className="border-b border-amber-100 bg-amber-50 px-5 py-2.5 text-[11px] leading-5 text-amber-800">{error}</div>}<div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain"><TabsContent value="progress" className="mt-4 px-5 pb-5"><ProgressView events={orderedEvents} tasks={tasks} /></TabsContent><TabsContent value="returns" className="mt-4 space-y-2 px-5 pb-5">{steps.length ? steps.map((group) => <StepCard key={group.step} group={group} />) : <div className="py-10 text-center text-xs text-slate-400">收到节点返回后，这里会显示主步骤摘要</div>}</TabsContent><TabsContent value="events" className="mt-4 px-5 pb-5"><AllEvents events={compactedEvents} /></TabsContent></div></Tabs><div className="border-t border-slate-200 px-5 py-3"><div className="flex items-center gap-2 text-[11px] font-semibold text-slate-400"><Timer className="size-3.5" />{loading ? "正在加载执行过程" : running ? "正在执行" : rawEvents.length ? "本次执行已结束" : "等待提问"}</div></div></aside>;
 }

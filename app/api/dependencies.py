@@ -177,6 +177,5 @@ def get_agent_service(
         meta_catalog_repository=meta_catalog_repository,
         dw_repository=dw_repository,
         conversation_repository=conversation_repository,
-        graph=postgres_client_manager.checkpointed_agent_graph,
         memory_formation_service=memory_formation_service,
     )

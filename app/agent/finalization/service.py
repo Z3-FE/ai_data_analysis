@@ -137,6 +137,8 @@ class PostgresFinalizationService(FinalizationPort):
             run_ref=value.run_ref,
             status=value.terminal_status,
             final_answer=value.final_answer,
+            final_output_type=value.final_output_type,
+            final_output_ref=value.final_output_ref,
             iteration=snapshot.iteration,
             last_error=snapshot.last_error,
         )

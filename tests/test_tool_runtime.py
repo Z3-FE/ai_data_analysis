@@ -98,19 +98,19 @@ class ToolRuntimeTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.retryable)
         self.assertEqual(tool.calls, [])
 
-    async def test_timeout_is_retryable(self) -> None:
+    async def test_timeout_fails_directly_without_retry(self) -> None:
         result = await runtime(ExampleTool(TimeoutError("too slow"))).execute(request())
 
-        self.assertEqual(result.status, ResultStatus.TEMPORARY_ERROR)
+        self.assertEqual(result.status, ResultStatus.UNRECOVERABLE_ERROR)
         self.assertEqual(result.error_code, "tool_timeout")
-        self.assertTrue(result.retryable)
+        self.assertFalse(result.retryable)
 
-    async def test_connection_error_is_retryable(self) -> None:
+    async def test_connection_error_fails_directly_without_retry(self) -> None:
         result = await runtime(ExampleTool(ConnectionError("offline"))).execute(request())
 
-        self.assertEqual(result.status, ResultStatus.TEMPORARY_ERROR)
+        self.assertEqual(result.status, ResultStatus.UNRECOVERABLE_ERROR)
         self.assertEqual(result.error_code, "tool_dependency_unavailable")
-        self.assertTrue(result.retryable)
+        self.assertFalse(result.retryable)
 
     async def test_unexpected_error_is_not_retryable(self) -> None:
         result = await runtime(ExampleTool(RuntimeError("broken"))).execute(request())

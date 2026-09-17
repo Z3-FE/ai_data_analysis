@@ -7,8 +7,10 @@ import hashlib
 import json
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from app.agent.context_engine.harness_context import HarnessContextRequestFactory
+from app.agent.context_engine.contracts import CompiledContext, ContextSourceKind
 from app.agent.finalization.errors import FinalizationFailure
 from app.agent.loop_controller.action_commit import ActionCommitRequest, ActionCommitter
 from app.agent.loop_controller.contracts import (
@@ -115,7 +117,7 @@ class LoopController:
         self.event_writer = event_writer
 
     async def start(self, command: StartRunCommand) -> LoopResult:
-        """创建新运行并执行，直到暂停或进入终态。"""
+        """创建新运行并执行，直到暂停或进入终态。(运行状态组织吗)？"""
         state = self._new_state(command)
         await self.run_store.create(command.run_ref, state)
         self._emit(
@@ -123,7 +125,6 @@ class LoopController:
             "run.started",
             phase=LoopPhase.START_RUN,
             iteration=0,
-            payload={"status": HarnessStatus.RUNNING.value},
         )
         logger.info(
             "Harness run started: run_id=%s turn_id=%s",
@@ -839,6 +840,7 @@ class LoopController:
             },
         )
 
+    # 构建上下文
     async def _build_context(self, state):
         run_ref = self._run_ref_from_state(state)
         phase = LoopPhase(state["harness"]["phase"])
@@ -856,18 +858,119 @@ class LoopController:
         compiled_context = await self.context_builder.build(request)
         state["harness"]["last_context_build_id"] = compiled_context.build_id
         state["harness"]["last_context_token_count"] = compiled_context.token_count
+        selected_by_kind: dict[str, int] = {}
+        for decision in compiled_context.trace.decisions:
+            if decision.selected:
+                key = decision.source_kind.value
+                selected_by_kind[key] = selected_by_kind.get(key, 0) + 1
+        memory_count = sum(
+            selected_by_kind.get(kind.value, 0)
+            for kind in (
+                ContextSourceKind.SEMANTIC,
+                ContextSourceKind.EPISODIC,
+                ContextSourceKind.PERCEPTUAL,
+            )
+        )
+        knowledge_count = selected_by_kind.get(ContextSourceKind.RAG.value, 0)
+        self._emit(
+            run_ref,
+            "context.memory_retrieved",
+            phase=phase,
+            iteration=int(state["harness"]["iteration"]),
+            payload={
+                "selected_count": memory_count,
+                "source_counts": {
+                    kind: selected_by_kind.get(kind, 0)
+                    for kind in (
+                        ContextSourceKind.SEMANTIC.value,
+                        ContextSourceKind.EPISODIC.value,
+                        ContextSourceKind.PERCEPTUAL.value,
+                    )
+                },
+            },
+        )
+        self._emit(
+            run_ref,
+            "context.knowledge_retrieved",
+            phase=phase,
+            iteration=int(state["harness"]["iteration"]),
+            payload={
+                "selected_count": knowledge_count,
+                "evidence_count": len(compiled_context.sections.external_evidence),
+            },
+        )
+        snapshot = self._context_snapshot(compiled_context)
+        self._emit(
+            run_ref,
+            "context.context_compiled",
+            phase=phase,
+            iteration=int(state["harness"]["iteration"]),
+            payload=snapshot,
+        )
         self._emit(
             run_ref,
             "context.completed",
             phase=phase,
             iteration=int(state["harness"]["iteration"]),
-            payload={
-                "build_id": compiled_context.build_id,
-                "token_count": compiled_context.token_count,
-                "selected_count": compiled_context.trace.selected_count,
+        )
+        logger.info(
+            "Harness context compiled: run_id=%s build_id=%s token_count=%s selected_count=%s snapshot=%s",
+            run_ref.run_id,
+            compiled_context.build_id,
+            compiled_context.token_count,
+            compiled_context.trace.selected_count,
+            snapshot,
+            extra={
+                "run_id": run_ref.run_id,
+                "context_build_id": compiled_context.build_id,
+                "context_token_count": compiled_context.token_count,
+                "context_selected_count": compiled_context.trace.selected_count,
+                "context_snapshot": snapshot,
             },
         )
         return compiled_context
+
+    @staticmethod
+    def _context_snapshot(compiled_context: CompiledContext) -> dict[str, Any]:
+        """生成可展示的上下文快照，不把内部对象直接暴露给事件层。"""
+        sections = compiled_context.sections
+        trace = compiled_context.trace
+        return {
+            "build_id": compiled_context.build_id,
+            "token_count": compiled_context.token_count,
+            "resolved_asset_ids": list(compiled_context.resolved_asset_ids),
+            "model_messages": [
+                {
+                    "role": str(message.get("role", "")),
+                    "text": str(message.get("content", "")),
+                }
+                for message in compiled_context.messages
+            ],
+            "sections": {
+                "conversation_summary": list(sections.conversation_summary),
+                "known_facts": list(sections.known_facts),
+                "prior_work": list(sections.prior_work),
+                "attachments": list(sections.attachments),
+                "external_evidence": list(sections.external_evidence),
+                "unresolved_references": list(sections.unresolved_references),
+            },
+            "trace": {
+                "candidate_count": trace.candidate_count,
+                "selected_count": trace.selected_count,
+                "final_token_count": trace.final_token_count,
+                "summary_updated": trace.summary_updated,
+                "reference_resolution": {
+                    "asset_ids": list(trace.reference_resolution.asset_ids),
+                    "historical_asset_ids": list(
+                        trace.reference_resolution.historical_asset_ids
+                    ),
+                    "needs_working_context": trace.reference_resolution.needs_working_context,
+                    "unresolved_references": list(
+                        trace.reference_resolution.unresolved_references
+                    ),
+                },
+            },
+        }
 
     def _planner_input(self, state, compiled_context) -> PlannerInput:
         harness = state["harness"]
@@ -1011,6 +1114,8 @@ class LoopController:
             payload={
                 "status": finalization.status.value,
                 "final_answer": finalization.final_answer,
+                "final_output_type": finalization.final_output_type,
+                "final_output_ref": finalization.final_output_ref,
                 "error_code": (
                     None
                     if finalization.last_error is None

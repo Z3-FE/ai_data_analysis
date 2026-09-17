@@ -2,19 +2,21 @@
 
 增量技术文档：docs/data_agent_harness_incremental_sdd.md
 
+流程图：/Users/z523/.codex/visualizations/2026/08/18/01a01466-8d7c-7bd0-acaf-7c19690532bf/data-agent-harness-final.mmd
+
 ## 当前真实进度（2026-09-15）
 
-- [x] A：最小 Harness 闭环已完成并通过聚焦测试。
-- [x] B：真实 Planning Agent、动作提交和状态持久化已完成并通过聚焦测试。
-- [x] C：真实 `query_data` Tool Runtime 循环、结果引用和上下文重建已完成并通过聚焦测试。
-- [x] D：PostgreSQL 运行状态持久化、`ask_user` 暂停、确认消费、同一 `run_id` 恢复和重复确认保护已完成。
-- [x] D：运行级 deadline 和取消收口已有确定性测试；客户端断流已用真实 HTTP 验证为 `cancelled/finalization`，并释放 `active_run_id`。
-- [x] D：真实 PostgreSQL 的运行级 deadline 验收已完成（真实 HTTP 前端验收）。
-- [x] D：Finalization Ledger（`harness_finalizations`）+ 固定顺序收口 + `reconcile()` 已完成；真实 PostgreSQL 崩溃矩阵验收通过。
-- [x] E：真实 `PostgresFinalizationService`（历史 → 终态 checkpoint → 释放 active_run → Memory Formation → 账本完成）已接入主链；`tests/test_harness_vertical_e.py` 用真实 PostgreSQL 通过；全量 HTTP 跨基础设施统一验收仍待完成。
-- [x] D6：接入 `analyze_data` 高层工具，已通过 Harness 聚焦测试。
-- [x] D7：真实 HTTP 验证 `query_data` + `analyze_data` 循环；两条链路均完成 Planner、工具执行、Artifact、Observation、上下文重建和最终收口。
-- [x] D8：接入 `build_report` 高层工具，并把 `RenderedReport` 按引用收口为 `output_type="rendered_report"`；`tests/test_harness_d8_report.py` 通过。
+- [X]  A：最小 Harness 闭环已完成并通过聚焦测试。
+- [X]  B：真实 Planning Agent、动作提交和状态持久化已完成并通过聚焦测试。
+- [X]  C：真实 `query_data` Tool Runtime 循环、结果引用和上下文重建已完成并通过聚焦测试。
+- [X]  D：PostgreSQL 运行状态持久化、`ask_user` 暂停、确认消费、同一 `run_id` 恢复和重复确认保护已完成。
+- [X]  D：运行级 deadline 和取消收口已有确定性测试；客户端断流已用真实 HTTP 验证为 `cancelled/finalization`，并释放 `active_run_id`。
+- [X]  D：真实 PostgreSQL 的运行级 deadline 验收已完成（真实 HTTP 前端验收）。
+- [X]  D：Finalization Ledger（`harness_finalizations`）+ 固定顺序收口 + `reconcile()` 已完成；真实 PostgreSQL 崩溃矩阵验收通过。
+- [X]  E：真实 `PostgresFinalizationService`（历史 → 终态 checkpoint → 释放 active_run → Memory Formation → 账本完成）已接入主链；`tests/test_harness_vertical_e.py` 用真实 PostgreSQL 通过；全量 HTTP 跨基础设施统一验收仍待完成。
+- [X]  D6：接入 `analyze_data` 高层工具，已通过 Harness 聚焦测试。
+- [X]  D7：真实 HTTP 验证 `query_data` + `analyze_data` 循环；两条链路均完成 Planner、工具执行、Artifact、Observation、上下文重建和最终收口。
+- [X]  D8：接入 `build_report` 高层工具，并把 `RenderedReport` 按引用收口为 `output_type="rendered_report"`；`tests/test_harness_d8_report.py` 通过。
 
 D8 实现说明：
 
@@ -513,6 +515,7 @@ M1 状态层
     -> 切片 D
     -> 切片 E
 ```
+
 具体原因：
 
 * B 依赖 A 的最小 Controller 入口。

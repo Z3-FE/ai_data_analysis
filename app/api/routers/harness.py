@@ -135,13 +135,6 @@ def _require_runtime() -> tuple[Any, Any, Any]:
     return runtime, session_factory, llm_client
 
 
-async def _ensure_conversation(*, conversation_id: str, user_id: str) -> dict[str, Any]:
-    _, session_factory, _ = _require_runtime()
-    return await ConversationRepository(
-        session_factory=session_factory
-    ).ensure_conversation(conversation_id=conversation_id, user_id=user_id)
-
-
 def _agent_context(*, meta_session: Any, dw_session: Any, llm_client: Any) -> AgentContext:
     """在请求作用域内组装现有问数图所需的依赖。"""
     qdrant = qdrant_client_manager.client
@@ -306,6 +299,7 @@ def _build_controller(
         memory_formation_service=runtime.formation_service,
         artifact_store=artifact_store,
     )
+
     return LoopController(
         context_builder=context_engine,
         planning_agent=PlanningAgent(
@@ -478,6 +472,8 @@ def _sse_response(
     run_ref: HarnessRunRef,
     queue: asyncio.Queue[Any],
     writer: HarnessEventWriter,
+    event_sink: QueueEventSink,
+    session_factory: Any,
     heartbeat_seconds: float | None = None,
     on_operation_failure: Callable[[], Awaitable[None]] | None = None,
 ) -> StreamingResponse:
@@ -527,6 +523,23 @@ def _sse_response(
                 },
             )
         finally:
+            try:
+                await ConversationRepository(session_factory).save_execution_trace(
+                    user_id=run_ref.user_id,
+                    conversation_id=run_ref.conversation_id,
+                    turn_id=run_ref.turn_id,
+                    payload={
+                        "events": [
+                            event.model_dump(mode="json")
+                            for event in event_sink.events
+                        ]
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "Harness execution trace persistence failed: run_id=%s",
+                    run_ref.run_id,
+                )
             queue.put_nowait(stream_done_marker())
 
     task = asyncio.create_task(run_operation())
@@ -585,10 +598,6 @@ async def run_harness(payload: HarnessRunRequest) -> dict[str, Any]:
     conversation_id = payload.conversation_id or str(uuid4())
     asset_ids = tuple(dict.fromkeys(payload.asset_ids))
     try:
-        await _ensure_conversation(
-            conversation_id=conversation_id,
-            user_id=payload.user_id,
-        )
         runtime, session_factory, llm_client = _require_runtime()
         run_ref = HarnessRunRef(
             user_id=payload.user_id,
@@ -646,10 +655,6 @@ async def run_harness_stream(payload: HarnessRunRequest) -> StreamingResponse:
     conversation_id = payload.conversation_id or str(uuid4())
     asset_ids = tuple(dict.fromkeys(payload.asset_ids))
     try:
-        await _ensure_conversation(
-            conversation_id=conversation_id,
-            user_id=payload.user_id,
-        )
         runtime, session_factory, llm_client = _require_runtime()
         run_ref = HarnessRunRef(
             user_id=payload.user_id,
@@ -664,10 +669,12 @@ async def run_harness_stream(payload: HarnessRunRequest) -> StreamingResponse:
             raise RuntimeError("Meta/DW Session 工厂尚未初始化")
 
         queue: asyncio.Queue[Any] = asyncio.Queue()
-        writer = HarnessEventWriter(run_ref=run_ref, sink=QueueEventSink(queue))
+        event_sink = QueueEventSink(queue)
+        writer = HarnessEventWriter(run_ref=run_ref, sink=event_sink)
 
         async def operation() -> LoopResult:
             async with meta_factory() as meta_session, dw_factory() as dw_session:
+                # 构建loop_controller
                 controller = _build_controller(
                     run_ref=run_ref,
                     asset_ids=asset_ids,
@@ -678,6 +685,7 @@ async def run_harness_stream(payload: HarnessRunRequest) -> StreamingResponse:
                     dw_session=dw_session,
                     event_writer=writer,
                 )
+                # 新建会话、重新聊天
                 await ConversationRepository(session_factory).start_turn(
                     conversation_id=conversation_id,
                     user_id=payload.user_id,
@@ -686,6 +694,7 @@ async def run_harness_stream(payload: HarnessRunRequest) -> StreamingResponse:
                     run_id=run_ref.run_id,
                     input_text=payload.input_text,
                 )
+                # 开始调度中心
                 return await controller.start(
                     StartRunCommand(
                         run_ref=run_ref,
@@ -705,6 +714,8 @@ async def run_harness_stream(payload: HarnessRunRequest) -> StreamingResponse:
             run_ref=run_ref,
             queue=queue,
             writer=writer,
+            event_sink=event_sink,
+            session_factory=session_factory,
             on_operation_failure=cleanup_failed_operation,
         )
     except HTTPException:
@@ -779,7 +790,8 @@ async def resume_harness_stream(
             raise RuntimeError("Meta/DW Session 工厂尚未初始化")
 
         queue: asyncio.Queue[Any] = asyncio.Queue()
-        writer = HarnessEventWriter(run_ref=run_ref, sink=QueueEventSink(queue))
+        event_sink = QueueEventSink(queue)
+        writer = HarnessEventWriter(run_ref=run_ref, sink=event_sink)
 
         async def operation() -> LoopResult:
             async with meta_factory() as meta_session, dw_factory() as dw_session:
@@ -808,6 +820,8 @@ async def resume_harness_stream(
             run_ref=run_ref,
             queue=queue,
             writer=writer,
+            event_sink=event_sink,
+            session_factory=session_factory,
             on_operation_failure=cleanup_failed_operation,
         )
     except HTTPException:

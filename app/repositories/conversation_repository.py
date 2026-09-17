@@ -469,6 +469,49 @@ class ConversationRepository:
                 return None
             return self._output_dict(output)
 
+    async def save_execution_trace(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        turn_id: str,
+        payload: dict[str, Any],
+    ) -> bool:
+        """幂等保存指定轮次的执行过程，供历史面板恢复。"""
+        async with self.session_factory() as session:
+            turn = await session.scalar(
+                select(ConversationTurnModel).where(
+                    ConversationTurnModel.conversation_id == conversation_id,
+                    ConversationTurnModel.turn_id == turn_id,
+                    ConversationTurnModel.user_id == user_id,
+                )
+            )
+            if turn is None:
+                return False
+
+            output = await session.scalar(
+                select(TurnOutputModel).where(
+                    TurnOutputModel.conversation_id == conversation_id,
+                    TurnOutputModel.turn_id == turn_id,
+                    TurnOutputModel.output_type == "execution_trace",
+                )
+            )
+            safe_payload = _json_safe(payload)
+            if output is None:
+                session.add(
+                    TurnOutputModel(
+                        output_id=str(uuid4()),
+                        conversation_id=conversation_id,
+                        turn_id=turn_id,
+                        output_type="execution_trace",
+                        payload=safe_payload,
+                    )
+                )
+            else:
+                output.payload = safe_payload
+            await session.commit()
+            return True
+
     async def delete_conversation(self, user_id: str, conversation_id: str) -> bool:
         """删除当前用户的会话及其级联历史数据。"""
         async with self.session_factory() as session:

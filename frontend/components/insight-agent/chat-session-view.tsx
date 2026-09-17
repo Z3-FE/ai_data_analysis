@@ -46,7 +46,7 @@ interface BackendMessage {
   created_at?: string;
 }
 
-type ExecutionMode = "daily_chat" | "single_query" | "analysis" | "clarification";
+type ExecutionMode = "daily_chat" | "single_query" | "analysis" | "clarification" | "harness";
 
 interface BackendTurn {
   turn_id: string;
@@ -377,7 +377,7 @@ interface HarnessStreamEvent extends StreamEvent {
 function harnessStep(eventType: string, source: string, payload: Record<string, unknown>) {
   if (typeof payload.step === "string" && payload.step.trim()) return payload.step;
   if (eventType.startsWith("context.")) return "构建上下文";
-  if (eventType.startsWith("planner.")) return "规划下一步动作";
+  if (eventType.startsWith("planner.")) return "任务划分";
   if (eventType.startsWith("tool.")) return source ? `执行工具：${source}` : "执行工具";
   if (eventType.startsWith("confirmation.")) return "等待用户确认";
   if (eventType === "action.committed") return "提交动作";
@@ -386,13 +386,42 @@ function harnessStep(eventType: string, source: string, payload: Record<string, 
 }
 
 function toHarnessStreamEvent(event: HarnessEvent): HarnessStreamEvent {
-  const payload = event.payload;
+  const payload = event.payload ?? {};
+  const eventType = event.event_type ?? event.type;
+  const source = typeof event.source === "string" ? event.source : "harness";
   return {
     ...payload,
     ...event,
-    step: harnessStep(event.event_type, event.source, payload),
-    node: typeof payload.node === "string" ? payload.node : event.source,
-    type: event.event_type,
+    payload,
+    step: harnessStep(eventType, source, payload),
+    node: typeof payload.node === "string" ? payload.node : source,
+    type: eventType,
+    event_type: eventType,
+  };
+}
+
+function toHistoricalStreamEvent(value: unknown): StreamEvent | undefined {
+  const raw = asRecord(value);
+  const payload = asRecord(raw.payload);
+  const type = typeof raw.type === "string"
+    ? raw.type
+    : typeof raw.event_type === "string"
+      ? raw.event_type
+      : undefined;
+  if (!type) return undefined;
+  const source = typeof raw.source === "string" ? raw.source : "harness";
+  return {
+    ...raw,
+    ...payload,
+    type,
+    step: typeof raw.step === "string"
+      ? raw.step
+      : harnessStep(type, source, payload),
+    node: typeof raw.node === "string"
+      ? raw.node
+      : typeof payload.node === "string"
+        ? payload.node
+        : source,
   };
 }
 
@@ -602,6 +631,22 @@ function AssistantMessageBubble() {
   const meta = conversationMeta(message);
   const executionProcess = useContext(ExecutionProcessContext);
   const displayText = getDisplayMessageText(message);
+  // Harness 每个轮次都会落 execution_trace，所以统一提供入口；旧图轮次保持原有判断。
+  const traceTurnId = meta?.turn_id;
+  const canViewExecution = !!meta
+    && traceTurnId != null
+    && (meta.response_type === "analysis"
+      || meta.response_type === "simple_data"
+      || meta.execution_mode === "harness");
+  const traceActive = executionProcess?.open === true
+    && executionProcess.activeTurnId === meta?.turn_id;
+  const executionLabel = !canViewExecution
+    ? ""
+    : meta.response_type === "analysis"
+    ? traceActive ? "收起分析过程" : "查看分析过程"
+    : meta.response_type === "simple_data"
+    ? traceActive ? "收起查询过程" : "查看查询过程"
+    : traceActive ? "收起执行过程" : "查看执行过程";
   const showStreamingCursor =
     threadIsRunning &&
     !isUser &&
@@ -632,17 +677,15 @@ function AssistantMessageBubble() {
           {formatTime(message.createdAt)}
         </span>
         {meta?.query_result && <QueryResultView result={meta.query_result} />}
-        {executionProcess && meta?.turn_id && (meta.response_type === "analysis" || meta.response_type === "simple_data") && (
+        {executionProcess && executionLabel && traceTurnId && (
           <button
             type="button"
-            onClick={() => executionProcess.toggle(meta.turn_id)}
+            onClick={() => executionProcess.toggle(traceTurnId)}
             className="mt-4 inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
           >
             <ListTree className="size-3.5" />
-            {meta.response_type === "analysis"
-              ? executionProcess.open && executionProcess.activeTurnId === meta.turn_id ? "收起分析过程" : "查看分析过程"
-              : executionProcess.open && executionProcess.activeTurnId === meta.turn_id ? "收起查询过程" : "查看查询过程"}
-            <ChevronRight className={"size-3.5 transition-transform " + (executionProcess.open && executionProcess.activeTurnId === meta.turn_id ? "rotate-180" : "")} />
+            {executionLabel}
+            <ChevronRight className={"size-3.5 transition-transform " + (traceActive ? "rotate-180" : "")} />
           </button>
         )}
         {meta?.rendered_report && (
@@ -724,6 +767,8 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
   const pendingStartedRef = useRef(false);
   const activeAbortControllerRef = useRef<AbortController | null>(null);
   const executionTraceRequestRef = useRef(0);
+  const optimisticMessagesRef = useRef<ThreadMessageLike[]>([]);
+  const activeTurnIdRef = useRef<string | undefined>(undefined);
 
   const loadConversation = useCallback(async () => {
     /** 同时拉取会话详情和消息列表，用于刷新标题与聊天记录。 */
@@ -739,8 +784,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
 
       setConversation(history.conversation ?? null);
       setExecutionMode(latestTurn?.execution_mode ?? null);
-      setMessages(
-        (history.messages ?? []).map((message) =>
+      const historyMessages = (history.messages ?? []).map((message) =>
           toAssistantMessage(
             message,
             message.turn_id
@@ -748,8 +792,16 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
               : undefined,
             message.turn_id ? turnsById.get(message.turn_id) : undefined,
           ),
-        ),
+        );
+      const activeTurnId = activeTurnIdRef.current;
+      const currentTurnPersisted = Boolean(activeTurnId && turnsById.has(activeTurnId));
+      if (currentTurnPersisted) optimisticMessagesRef.current = [];
+      const localMessages = optimisticMessagesRef.current.filter(
+        (local) => !historyMessages.some((historyMessage) => historyMessage.id === local.id),
       );
+      setMessages(currentTurnPersisted || !localMessages.length
+        ? historyMessages
+        : [...historyMessages, ...localMessages]);
 
       const activeRunId = typeof asRecord(history.conversation).active_run_id === "string"
         ? String(asRecord(history.conversation).active_run_id)
@@ -822,6 +874,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
       setPendingConfirmation(undefined);
       setIsRunning(true);
       setMessages((current) => [...current, userMessage, assistantMessage]);
+      optimisticMessagesRef.current = [userMessage, assistantMessage];
 
       const abortController = new AbortController();
       activeAbortControllerRef.current = abortController;
@@ -900,12 +953,19 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
           setDebugEvents((current) => appendExecutionEvent(current, runEvent));
           // 事件始终记录到调试缓冲，供用户手动打开查看；
           // 但只有真实工具执行时才自动展开执行过程，纯聊天（直接 final_answer）不弹面板。
-          if (runEvent.type === "action.committed" || runEvent.type.startsWith("tool.")) {
+          if (
+            runEvent.type.startsWith("context.")
+            || runEvent.type.startsWith("planner.")
+            || runEvent.type === "action.committed"
+            || runEvent.type.startsWith("tool.")
+          ) {
             setExecutionPanelOpen(true);
           }
           if (runEvent.run_ref?.turn_id) {
             currentTurnId = runEvent.run_ref.turn_id;
+            activeTurnIdRef.current = currentTurnId;
             setActiveRunTurnId(currentTurnId);
+            setActiveExecutionTurnId(currentTurnId);
           }
           if (runEvent.run_ref?.run_id) {
             currentRunId = runEvent.run_ref.run_id;
@@ -1007,9 +1067,12 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
             terminalEventReceived = true;
             const answer = finalAnswerForHarnessEvent(runEvent);
             if (answer) assistantText = answer;
+            const outputType = typeof runEvent.final_output_type === "string"
+              ? runEvent.final_output_type
+              : "text";
             responseMeta = buildConversationMeta(
               assistantText || "任务已完成。",
-              "text",
+              outputType,
               { message: assistantText },
               { turn_id: currentTurnId, status: "completed" },
               Math.max(0, (Date.now() - startedAt) / 1000),
@@ -1202,7 +1265,9 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
             setDebugEvents((current) => appendExecutionEvent(current, runEvent));
             if (runEvent.run_ref?.turn_id) {
               currentTurnId = runEvent.run_ref.turn_id;
+              activeTurnIdRef.current = currentTurnId;
               setActiveRunTurnId(currentTurnId);
+              setActiveExecutionTurnId(currentTurnId);
             }
 
             if (runEvent.type === "stream.failed") {
@@ -1292,9 +1357,12 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
             if (runEvent.type === "run.completed") {
               terminalEventReceived = true;
               assistantText = finalAnswerForHarnessEvent(runEvent) || assistantText;
+              const outputType = typeof runEvent.final_output_type === "string"
+                ? runEvent.final_output_type
+                : "text";
               responseMeta = buildConversationMeta(
                 assistantText,
-                "text",
+                outputType,
                 { message: assistantText },
                 { turn_id: currentTurnId, status: "completed" },
                 Math.max(0, (Date.now() - startedAt) / 1000),
@@ -1413,6 +1481,8 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
     setPendingConfirmation(undefined);
     executionTraceRequestRef.current += 1;
     pendingStartedRef.current = false;
+    optimisticMessagesRef.current = [];
+    activeTurnIdRef.current = undefined;
     activeAbortControllerRef.current?.abort();
     activeAbortControllerRef.current = null;
     void loadConversation();
@@ -1478,11 +1548,9 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
         if (executionTraceRequestRef.current !== requestId) return;
         const payload = asRecord(data?.payload);
         const traceEvents = Array.isArray(payload.events)
-          ? payload.events.filter((event): event is StreamEvent => Boolean(
-              event &&
-              typeof event === "object" &&
-              typeof (event as Record<string, unknown>).type === "string",
-            ))
+          ? payload.events
+            .map(toHistoricalStreamEvent)
+            .filter((event): event is StreamEvent => Boolean(event))
           : [];
         setDebugEvents(traceEvents.reduce<DebugEvent[]>(
           (events, event) => appendExecutionEvent(events, event),

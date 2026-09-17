@@ -39,7 +39,7 @@ function getRouteMeta(pathname: string): RouteMeta {
     return {
       routeLabel: "分析画布",
       moduleName: "分析运行模块",
-      moduleDescription: "展示总体进度、任务返回、分析任务和原始事件",
+      moduleDescription: "展示总体进度、步骤返回和工具事件",
     };
   }
 

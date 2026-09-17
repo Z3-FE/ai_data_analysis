@@ -12,6 +12,22 @@ from langchain_huggingface import HuggingFaceEndpointEmbeddings
 from app.core.config import EmbeddingConfig, settings
 
 
+class TimeoutHuggingFaceEmbeddings(HuggingFaceEndpointEmbeddings):
+    """给 embedding 调用加硬超时；本地推理服务挂起时快速失败而不是无限等待。"""
+
+    timeout_seconds: float = 30.0
+
+    async def aembed_query(self, text: str) -> list[float]:
+        return await asyncio.wait_for(
+            super().aembed_query(text), timeout=self.timeout_seconds
+        )
+
+    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+        return await asyncio.wait_for(
+            super().aembed_documents(texts), timeout=self.timeout_seconds
+        )
+
+
 class EmbeddingClientManager:
     """管理 Embedding 服务客户端的初始化与复用"""
 
@@ -25,7 +41,10 @@ class EmbeddingClientManager:
 
     def init(self):
         """显式初始化客户端，避免模块导入时立即建立外部连接"""
-        self.client = HuggingFaceEndpointEmbeddings(model=self._get_url())
+        self.client = TimeoutHuggingFaceEmbeddings(
+            model=self._get_url(),
+            timeout_seconds=self.config.timeout_seconds,
+        )
 
 
 # 模块级单例，供整个项目复用同一套 Embedding 客户端管理器

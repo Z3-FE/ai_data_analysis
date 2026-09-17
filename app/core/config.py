@@ -108,15 +108,6 @@ class PostgresConfig:
             f"@{self.host}:{self.port}/{self.database}"
         )
 
-    @property
-    def checkpointer_url(self) -> str:
-        """返回官方 AsyncPostgresSaver 使用的 PostgreSQL URL。"""
-        return (
-            f"postgresql://{self._credentials()}"
-            f"@{self.host}:{self.port}/{self.database}"
-        )
-
-
 @dataclass(frozen=True)
 class Neo4jConfig:
     """Semantic Memory 使用的 Neo4j 图数据库配置。"""
@@ -158,6 +149,8 @@ class EmbeddingConfig:
     batch_size: int
     retry_count: int
     retry_backoff_seconds: float
+    # 单次 embedding 调用的硬超时；本地推理服务挂起时快速失败而不是无限等待。
+    timeout_seconds: float
 
 
 @dataclass(frozen=True)

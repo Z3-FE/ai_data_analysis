@@ -114,6 +114,8 @@ embedding:
   batch_size: 1
   retry_count: 3
   retry_backoff_seconds: 2
+  # 单次 embedding 调用硬超时；超时后工具直接失败，不做重试。
+  timeout_seconds: 30
 
 logging:
   level: INFO
