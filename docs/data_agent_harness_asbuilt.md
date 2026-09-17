@@ -163,16 +163,246 @@ stateDiagram-v2
 
 请求模型 `HarnessRunRequest`（harness.py:92-103）：`input_text`（1-20000 字）、`user_id`（默认 `settings.app.default_user_id`）、`conversation_id`（可空，为空则服务端生成 uuid4，harness.py:655）、`asset_ids`（≤32 个，去重，harness.py:656）。
 
-run 现场初始化顺序（以 stream 为例）：
+> 请求进入后的函数级初始化与执行步骤见 §2.2 主线步骤链（按执行顺序）。
 
-1. **运行时预检**：`_require_runtime()` 校验记忆运行时、PG session factory、LLM client（harness.py:124-135）；Meta/DW 工厂校验（harness.py:666-669）。
-2. **身份生成**：`HarnessRunRef{user_id, conversation_id, thread_id=conversation_id, turn_id=uuid4, run_id=uuid4}`（harness.py:659-665；契约 state_result_store/contracts.py:80-85）。thread_id 复用 conversation_id——**会话与 thread 一一对应**。
-3. **单跑互斥**：`ConversationRepository.start_turn` 以 `with_for_update()` 锁会话行，`active_run_id` 非空且 ≠ 本 run_id 时拒绝（conversation_repository.py:156-175，检查在 174-175；写入在 211；路由调用 harness.py:689-696）。
-4. **控制器装配**：`_build_controller` 从 `settings.harness.*` 读 max_planner_retries / max_tool_retries / max_iterations / run_timeout_seconds（harness.py:317-320；配置定义 config.py:29-47）。
-5. **SSE 装配**：`asyncio.Queue` → `QueueEventSink`（publish 同时留存事件列表供 trace 落库，writer.py:62-72）→ `HarnessEventWriter`（harness.py:671-673）；`_sse_response` 里 `run_operation()` 被包成后台 task（harness.py:545 `create_task`），HTTP 响应是 `body()` 迭代器：`queue.get()` 带 `sse_heartbeat_seconds` 超时，超时发注释行心跳 `": heartbeat"`（harness.py:551-556），done marker 结束（558-559），客户端断连则 cancel task 并 shield（561-569）。
-6. **deadline 在控制器侧计算**：`_new_state` 写 `deadline_at = now + run_timeout_seconds`（controller.py:1087-1094），每个循环边界由 `_check_deadline` 执行（controller.py:281-285）。
+### 2.2 主线步骤链（按执行顺序）
 
-### 2.2 事件序列
+> 本节是**函数级的执行地图**：按运行时调用顺序排列，每步给出 函数（file:line）→ 作用 → 逐字段注释。注意**执行顺序 ≠ 文件定义顺序**——如 `_build_controller` 定义在 harness.py:238，调用发生在 :678。代码块为节选 + 注释，`...` 表示省略行，以源码为准。
+>
+> 与 §2.3 事件表的关系：步骤表纵向回答"程序怎么跑"，事件表横向回答"每步发出什么"，互为索引。
+
+生产路径 `POST /harness/run/stream` 的 handler（harness.py:652-720）里，真正的执行体是 `operation()` 闭包（harness.py:675-704）：Meta/DW 会话贯穿整个 run，装配、会话开工、调度开工都发生在里面。
+
+#### 步骤 1 · 请求预处理与预检（harness.py:655-669）
+
+```python
+conversation_id = payload.conversation_id or str(uuid4())  # 前端带了就复用老会话，没带才新建
+asset_ids = tuple(dict.fromkeys(payload.asset_ids))        # 去重且保序（≤32 个）
+runtime, session_factory, llm_client = _require_runtime()  # 预检：记忆运行时/PG 工厂/LLM，缺一直接拒绝（:124-135）
+run_ref = HarnessRunRef(
+    user_id=payload.user_id,          # 默认 settings.app.default_user_id
+    conversation_id=conversation_id,  # 会话 ID：生命周期最顶层
+    thread_id=conversation_id,        # 会话即 thread：记忆/检查点全部挂 thread
+    turn_id=str(uuid4()),             # 一次提问 = 一个 turn（每次请求新生成）
+    run_id=str(uuid4()),              # 一次 harness 执行 = 一个 run
+)
+# Meta/DW Session 工厂判空（:666-669），未初始化直接 RuntimeError
+```
+
+#### 步骤 2 · SSE 管道三件套（harness.py:671-673）
+
+```python
+queue = asyncio.Queue()                                        # 事件通道：生产者 writer，消费者 body()
+event_sink = QueueEventSink(queue)                             # publish 双写：入队推送 + 留存列表（供 trace 落库）
+writer = HarnessEventWriter(run_ref=run_ref, sink=event_sink)  # 全链路唯一事件出口
+```
+
+#### 步骤 3 · 装配控制器：`_build_controller`（harness.py:238-322，调用点 :678）
+
+```python
+def _build_controller(*, run_ref, asset_ids, runtime, session_factory,
+                      llm_client, meta_session, dw_session, event_writer=None) -> LoopController:
+    """在请求作用域内组装完整 Harness；所有持久化实现均由此注入。"""
+    query_spec = _query_tool_spec()          # 工具 JSON Schema：Planner 看到的"工具说明书"
+    artifact_store = PostgresResultArtifactStore(session_factory)   # 大结果落 PG，状态里只留引用
+    query_tool = QueryDataTool(
+        context=agent_context,               # 旧图共享的 Meta/DW/LLM 上下文
+        run_ref=run_ref,                     # 身份绑进工具 → 工具内部桥接事件自带身份
+        asset_ids=asset_ids,                 # 本轮可用资产
+        event_writer=event_writer,           # 内部图事件从这里桥接为 tool.progress
+    )
+    ...
+    tool_runtime = ToolRuntime(
+        ToolRegistry({                       # 工具注册表：Planner 只能调这三个名字
+            "query_data": (query_spec, query_tool),
+            "analyze_data": (analyze_spec, analyze_tool),
+            "build_report": (report_spec, report_tool),
+        }),
+        artifact_store=artifact_store,
+        event_writer=event_writer,
+    )
+    context_engine = build_context_engine(
+        memory_reader=runtime.manager,       # 记忆读取（Qdrant 语义检索）
+        session_factory=session_factory,
+        llm_client=llm_client,
+        model_name=settings.llm.model_name,
+    )
+    run_store = PostgresHarnessRunStore(session_factory)            # 状态持久化；controller 与收口共用同一实例
+    finalization = PostgresFinalizationService(
+        conversation_repository=ConversationRepository(session_factory),  # history_saved stage 用
+        ledger=PostgresFinalizationLedger(session_factory),               # 收口账本（harness_finalizations 表）
+        run_store=run_store,                                              # checkpoint_saved stage 用
+        memory_formation_service=runtime.formation_service,               # formation_submitted stage 用
+        artifact_store=artifact_store,
+    )
+    return LoopController(
+        context_builder=context_engine,
+        planning_agent=PlanningAgent(
+            llm_client=AutoLLMPlannerClient(llm_client),            # 规划专用 LLM 适配层
+            capabilities=PlannerCapabilities(allow_ask_user=True),  # 允许 ask_user 动作
+        ),
+        finalization_service=finalization,
+        run_store=run_store,
+        context_request_factory=HarnessContextRequestFactory(),
+        action_committer=PostgresActionCommitter(session_factory),  # 动作提交 / 幂等 / fencing
+        tool_runtime=tool_runtime,
+        confirmation_dispatcher=None,    # 关键设计：无即时确认分派器 → ASK_USER 必须持久化暂停（第 3 章）
+        tool_specs=(query_spec, analyze_spec, report_spec),         # 校验 Planner 工具调用合法性
+        max_planner_retries=settings.harness.max_planner_retries,   # 规划重试预算
+        max_tool_retries=settings.harness.max_tool_retries,         # 幂等工具重试预算
+        max_iterations=settings.harness.max_iterations,             # 轮次上限
+        run_timeout_seconds=settings.harness.run_timeout_seconds,   # deadline_at 的来源
+        event_writer=event_writer,
+    )
+```
+
+要点：**controller 是请求作用域的**，每次请求新建、不缓存。为什么敢这么做——run 的生命周期活在 PostgreSQL 里（harness_runs 行 + state_version 乐观锁），所有组件无状态或状态下沉到 PG；对象只是当次请求的"操作手"。
+
+#### 步骤 4 · 会话层开工：`start_turn`（conversation_repository.py:143-220，调用点 harness.py:689-696）
+
+```python
+async def start_turn(self, *, conversation_id, user_id, thread_id,
+                     turn_id, run_id, input_text) -> bool:
+    """以一个事务写入用户问题，并把会话置为 running。"""
+    conversation = await session.scalar(
+        select(ConversationModel).where(...).with_for_update()   # 行锁：并发请求在这里排队
+    )
+    if conversation is None:                          # ① 只有新聊天才真正新建会话
+        conversation = ConversationModel(
+            thread_id=thread_id,                      #   thread_id = conversation_id
+            title=input_text[:80] or "新建会话",       #   标题 = 第一个问题的前 80 字
+            data_source_id="olist",
+        )
+    else:                                             # ② 老会话：互斥 + 幂等
+        if conversation.active_run_id not in (None, run_id):
+            raise ValueError("当前会话已有未完成的 Harness 运行")  # 单跑互斥；== run_id 是重试放行
+        if existing_turn is not None:                 #   同 turn_id 的重放
+            if existing_turn.run_id != run_id or existing_turn.input_text != input_text:
+                raise ValueError("重复 turn_id 对应了不同的运行请求") # 防客户端重试写脏数据
+            return True                               #   完全一致 → 幂等成功，什么都不写
+    turn = ConversationTurnModel(
+        turn_id=turn_id,
+        run_id=run_id,                                # turn ↔ run 在这里绑定
+        status="running",
+        started_at=now,
+    )
+    user_message = ConversationMessageModel(
+        role="user",                                  # 用户侧消息
+        sequence_no=0,                                # 用户问题固定第 0 条
+        content=input_text,                           # 原始问题
+    )
+    conversation.status = "running"
+    conversation.active_run_id = run_id               # 互斥标记，release_active_run 才释放
+    # conversation → turn → user_message 按外键依赖依次 flush，一个 commit 原子生效
+```
+
+要点：**不是"新建会话"**——conversation 复用与否取决于前端是否带 conversation_id，每次请求必然新建的是 turn。生命周期层级：conversation（会话）> turn（一次提问）> run（一次执行）。会话层收口镜像在 Ledger 里：`finish_turn`（history_saved stage）+ `release_active_run`（released stage）。
+
+#### 步骤 5 · 执行层开工：`controller.start`（controller.py:119-135，调用点 harness.py:698）
+
+```python
+async def start(self, command: StartRunCommand) -> LoopResult:
+    """创建新运行并执行，直到暂停或进入终态。"""
+    state = self._new_state(command)                        # 内存构建初始现场（见下）
+    await self.run_store.create(command.run_ref, state)     # harness_runs 行诞生 = 首次落库
+    self._emit(command.run_ref, "run.started",
+               phase=LoopPhase.START_RUN, iteration=0)      # 生命周期第一个事件
+    return await self._run_guarded(command, state)          # 进入守护主循环
+```
+
+`_new_state`（controller.py:1087-1106）：
+
+```python
+harness = new_harness_control_state(
+    original_goal=command.input_text,     # 用户原始目标
+    max_iterations=self.max_iterations,   # 轮次上限
+    started_at=now.isoformat(),
+    deadline_at=(now + timedelta(seconds=self.run_timeout_seconds)).isoformat(),  # 运行死线
+)
+return {
+    "user_id": command.run_ref.user_id,   # 身份五元组冗余进 state（恢复时只信库里这份）
+    "conversation_id": ..., "thread_id": ..., "turn_id": ..., "run_id": ...,
+    "asset_ids": list(command.asset_ids),
+    "harness": harness,                   # 全部可变控制字段集中在这个子字典
+}
+```
+
+`_DEFAULTS` 底座（state_result_store/state.py:43-79）关键字段：
+
+```python
+"status": HarnessStatus.RUNNING.value,   # 一创建就是 running
+"phase": LoopPhase.START_RUN.value,      # 入口相位，第一次 transition 就离开
+"iteration": 0,                          # 轮次：观察记录后 +1（controller.py:510）
+"action_seq": 0,                         # 动作序号：提交成功后写（controller.py:825）
+"state_version": 0,                      # 乐观锁：每次 transition +1
+"fencing_token": 0,                      # 防旧代次写入
+"observations": [],                      # 工具观察累积
+"pending_confirmation": None,            # 暂停现场（确认暂停时写入）
+"terminal_intent": None,                 # 收口意图，只有 _finalize 写
+"last_error": None,                      # 最近一次受控错误
+```
+
+关键认知：**生命周期只创建一次**——`_new_state` 全系统唯一调用点是 `start()`；此后 resume / 异常收口都是"从库读回来改"，绝不重新初始化。
+
+#### 步骤 6 · 主循环：`_run`（controller.py:329-532）
+
+骨架（省略重试与错误分支，对照 1.3 状态图读）：
+
+```python
+state = self._transition(state, status=RUNNING, phase=BUILD_CONTEXT)  # ① 构建上下文
+compiled_context = await self._build_context(state)                   #   每轮都重建，不复用！
+state = self._transition(state, status=RUNNING, phase=PLAN)           # ②
+while True:
+    action = await self._plan_action(...)                             # ③ 规划出 NextAction
+    state = self._transition(state, status=RUNNING, phase=VALIDATE_ACTION)
+    await self._commit_action(command, state, action)                 # ④ 提交（幂等 + fencing）
+    if action.action_type is ActionType.FINAL_ANSWER:                 # ⑤ finish → 收口
+        return await self._finalize(..., final_answer=action.final_answer)
+    if action.action_type is ActionType.ASK_USER:                     # ⑥ 规划要确认 → 暂停
+        return await self._pause_for_confirmation(...)
+    state = self._transition(state, status=RUNNING, phase=EXECUTE_TOOL)
+    tool_result = await self._execute_tool(...)                       # ⑦ 真实工具执行
+    state["harness"]["observations"].append(observation)              # ⑧ 记录观察
+    if tool_result.status is ResultStatus.NEEDS_USER:                 # ⑨ 工具要确认 → 暂停
+        return await self._pause_for_confirmation(...)
+    state = self._transition(state, status=RUNNING, phase=RECORD_OBSERVATION)
+    state["harness"]["iteration"] += 1                                # ⑩ 轮次推进
+    if state["harness"]["iteration"] >= state["harness"]["max_iterations"]:
+        return await self._finalize(..., terminal_status=HarnessStatus.TIMEOUT)  # 达上限收口
+    state = self._transition(state, status=RUNNING, phase=BUILD_CONTEXT)  # ⑪ 回到 ①
+```
+
+每个 phase 边界都有 `_save_running_state`（8 处：controller.py:339 / 346 / 376 / 454 / 466 / 511 / 524 / 531）——这是异常收口能"从最后持久化版本重来"的前提。
+
+#### 步骤 7 · 收口：`_finalize` + Ledger（controller.py:1006-1057）
+
+```python
+state["harness"]["final_answer"] = final_answer          # 终答先进 state
+state = self._transition(state, status=RUNNING,
+                         phase=LoopPhase.FINALIZATION,   # 全系统唯一带 terminal_intent 的迁移
+                         terminal_intent=terminal_status.value)
+await self.run_store.save(command.run_ref, state)        # 收口前现场落库
+finalization = await self.finalization_service.finalize(FinalizationInput(...))  # Ledger 六 stage
+self._emit_terminal(...)                                 # 终态事件：只在持久化成功后发（controller.py:1113）
+return LoopRunResult(...)                                # 经路由层包装为 run.result
+```
+
+Ledger 固定顺序（finalization_repository.py:28-35）：
+
+```python
+_STAGE_ORDER = (
+    "prepared",             # 建账本行 + SHA-256 digest 锁定收口内容（防内容被改）
+    "history_saved",        # finish_turn：助手消息 + 结构化输出 + execution_trace
+    "checkpoint_saved",     # 终态真正落库（status=terminal + run_store.save）
+    "released",             # 释放会话 active_run_id，解除单跑互斥
+    "formation_submitted",  # 仅 COMPLETED：提交记忆形成（formation_run_id 记入账本）
+    "completed",            # 账本推进到终点，attempts + 1
+)
+```
+
+每 stage 只允许 +1 推进；失败即 FinalizationFailure——账本停在最后成功 stage、run 停在 running/finalization，等 reconcile 从锁定内容续推（详见 §2.6）。
+
+### 2.3 事件序列
 
 事件只出自两处：`LoopController._emit`（controller.py:1138-1163）与 `ToolRuntime` 直接 `writer.emit`。**iteration 全程实时读 `state["harness"]["iteration"]`**：首轮 0，观察记录后 +1（controller.py:510），故"第 N 轮"事件 iteration = N-1，前端轮次标签 = iteration + 1。
 
@@ -204,7 +434,7 @@ run 现场初始化顺序（以 stream 为例）：
 
 终态事件顺序固定：**ledger 六 stage 走完 → run.completed → run.result**。run.completed 只在终态持久化成功后发布（controller.py:1113 注释）；run.result 由路由层在整个 operation 返回后发出（harness.py:487-500）。
 
-### 2.3 状态变化
+### 2.4 状态变化
 
 `_run()` 的 transition 序列（全部 status=RUNNING）：BUILD_CONTEXT(336) → PLAN(343) → VALIDATE_ACTION(373) → EXECUTE_TOOL(451) → HANDLE_TOOL_RESULT(463) → RECORD_OBSERVATION(507) → 回 BUILD_CONTEXT(521) → PLAN(528)……
 
@@ -220,7 +450,7 @@ harness state 关键字段随轮变化：
 
 进入收口：`_finalize` 先 transition 到 `RUNNING/FINALIZATION` 并写 `terminal_intent="completed"`（controller.py:1018-1023，全系统唯一携带 terminal_intent 的 transition），`final_answer` 写入 state（1017）。
 
-### 2.4 涉及模块
+### 2.5 涉及模块
 
 - **路由层**（harness.py）：身份生成、互斥、SSE 管道、trace 落库；不参与业务决策。
 - **LoopController**：唯一编排者。上下文构建（`_build_context` controller.py:844-942）、规划（`_plan_action` 737-801）、提交（`_commit_action` 803-841）、执行（`_execute_tool`，调用点 455-462）全部在其控制流内。
@@ -228,10 +458,10 @@ harness state 关键字段随轮变化：
 - **PlanningAgent**：纯计算——输入 planner_input，输出 NextAction；不发事件。
 - **ActionCommitter**：commit 双 guard——status ∈ {committed, idempotent}（controller.py:821）、action_seq 一致（823）；防重复提交与旧代次动作。
 - **ToolRuntime**：注册表 + Pydantic 入参校验（runtime.py:52-66，校验失败不产 tool.started 直接错误结果）→ `writer.bind` 包执行（80-85，桥接事件继承 source/iteration/action_id）→ `asyncio.wait_for` 工具超时（86-88）→ `_publish_result` 统一发终态（197-263）。
-- **FinalizationService**：见 §2.5。
-- **前端 execution-panel**：见 §2.6。
+- **FinalizationService**：见 §2.6。
+- **前端 execution-panel**：见 §2.7。
 
-### 2.5 收口方式
+### 2.6 收口方式
 
 `_finalize`（controller.py:1006-1057）四步：transition + terminal_intent（1018-1023）→ `run_store.save`（1024）→ `finalization_service.finalize(FinalizationInput)`（1032-1048）→ `_emit_terminal`（1049）→ 返回 `LoopRunResult`（1050-1057）。非 COMPLETED 终态时 `last_error.message` 复制进 `FinalizationInput.error_message`（1039-1043）。
 
@@ -250,7 +480,7 @@ Ledger 固定六 stage（finalization_repository.py:28-35），由 `PostgresFina
 
 终态不变量（HarnessStateSnapshot.validate_combination，state_result_store/contracts.py:285-316）：终态必须 phase=finalization、terminal_intent==status、pending_confirmation 为 None。
 
-### 2.6 前端表现
+### 2.7 前端表现
 
 execution-panel.tsx 三个 tab：
 
@@ -302,7 +532,7 @@ HTTP 响应在 LoopPausedResult 后正常结束；run 存活在数据库里，�
 
 ### 3.5 前端表现
 
-- 「等待用户确认」是 STEP_ORDER 固定步骤，confirmation.required → confirmation.resolved 之间显示等待态（族内配对推导，见 §2.6）。
+- 「等待用户确认」是 STEP_ORDER 固定步骤，confirmation.required → confirmation.resolved 之间显示等待态（族内配对推导，见 §2.7）。
 - 恢复后是**新的 SSE 连接**（/run/resume/stream）；先前事件经 `POST /conversations/execution-trace` 历史回放补齐（toHistoricalStreamEvent），iteration 连续所以轮次分组无缝衔接。
 
 ### 疑点清单
