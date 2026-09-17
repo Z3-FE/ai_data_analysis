@@ -109,6 +109,7 @@
         var nextTheme = document.body.classList.contains('theme-dark') ? 'light' : 'dark';
         localStorage.setItem(storageKey, nextTheme);
         applyTheme(nextTheme);
+        if (window.__renderMermaid) window.__renderMermaid();
       });
     }());
   </script>
@@ -134,15 +135,45 @@
         previousText: '上一页',
         nextText: '下一页',
         crossChapter: true
-      }
+      },
+      markdown: {
+        renderer: {
+          code: function (code, lang) {
+            if (lang === 'mermaid') {
+              return '<div class="mermaid" data-mermaid-src="' + encodeURIComponent(code) + '"></div>';
+            }
+            return this.origin.code(code, lang);
+          }
+        }
+      },
+      plugins: [
+        function (hook) {
+          hook.doneEach(function () {
+            if (window.__renderMermaid) window.__renderMermaid();
+          });
+        }
+      ]
+    };
+
+    // mermaid 块渲染：源码存 data 属性，换页/切主题时可重复渲染
+    window.__renderMermaid = function () {
+      if (!window.mermaid || !window.mermaid.run) return;
+      var dark = document.body.classList.contains('theme-dark');
+      window.mermaid.initialize({ startOnLoad: false, theme: dark ? 'dark' : 'default' });
+      var blocks = document.querySelectorAll('.mermaid[data-mermaid-src]');
+      blocks.forEach(function (el) {
+        el.removeAttribute('data-processed');
+        el.textContent = decodeURIComponent(el.getAttribute('data-mermaid-src'));
+      });
+      window.mermaid.run({ querySelector: '.mermaid' }).catch(function (error) {
+        console.warn('mermaid 渲染失败：', error);
+      });
     };
   </script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/docsify.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/docsify@4/lib/plugins/search.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/docsify-copy-code@3/dist/docsify-copy-code.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/docsify-pagination@2/dist/docsify-pagination.min.js"></script>
 </body>
 </html>
-    .content, .main, .search .search input {
-      background: var(--docs-bg);
-    }
