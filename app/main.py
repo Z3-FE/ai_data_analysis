@@ -40,6 +40,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     meta_mysql_client_manager.init()
     dw_mysql_client_manager.init()
     await postgres_client_manager.init()
+    # 启动期校验 embedding 输出维度与 Qdrant 配置一致，切换模型导致向量空间不兼容时直接失败。
+    await embedding_client_manager.verify_dimension(settings.qdrant.vector_size)
     await memory_client_manager.init()
     logger.info("应用级客户端初始化完成")
     try:

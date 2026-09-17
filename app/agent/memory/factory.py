@@ -83,7 +83,7 @@ async def build_memory_runtime(
         )
         encoder = TextMemoryEncoder(
             embedding_client,
-            name=settings.embedding.model,
+            name=settings.embedding.active_model,
             dimension=resolved_qdrant_config.vector_size,
         )
     elif qdrant_client is not None or embedding_client is not None:

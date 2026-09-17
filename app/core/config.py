@@ -141,16 +141,25 @@ class QdrantConfig:
 
 @dataclass(frozen=True)
 class EmbeddingConfig:
-    """Embedding 推理服务配置。"""
+    """Embedding 服务配置；provider 决定走云端兼容接口还是本地推理服务。"""
 
+    provider: str
+    model_name: str
+    dimensions: int
+    api_key: str
+    base_url: str
+    batch_size: int
+    # 单次 embedding 调用的硬超时；推理服务挂起时快速失败而不是无限等待。
+    timeout_seconds: float
+    # 以下字段仅在 provider: local 时使用。
     host: str
     port: int
     model: str
-    batch_size: int
-    retry_count: int
-    retry_backoff_seconds: float
-    # 单次 embedding 调用的硬超时；本地推理服务挂起时快速失败而不是无限等待。
-    timeout_seconds: float
+
+    @property
+    def active_model(self) -> str:
+        """当前生效的模型标识，用于记忆编码器命名等场景。"""
+        return self.model_name if self.provider == "dashscope" else self.model
 
 
 @dataclass(frozen=True)

@@ -107,15 +107,20 @@ metadata_recall:
   max_concurrent_terms: 4
 
 embedding:
+  # 当前使用阿里云百炼的 OpenAI 兼容 Embedding 接口；切回本地推理服务时改为 provider: local。
+  provider: dashscope
+  model_name: ${oc.env:DASHSCOPE_EMBEDDING_MODEL,text-embedding-v3}
+  dimensions: 1024
+  api_key: ${oc.env:DASHSCOPE_API_KEY,""}
+  base_url: ${oc.env:DASHSCOPE_BASE_URL,https://dashscope.aliyuncs.com/compatible-mode/v1}
+  # 兼容接口单次请求最多 6 条文本。
+  batch_size: 6
+  # 单次 embedding 调用硬超时；超时后工具直接失败，不做重试。
+  timeout_seconds: 30
+  # 以下字段仅在 provider: local 时使用。
   host: 127.0.0.1
   port: 8081
   model: BAAI/bge-large-zh-v1.5
-  # cpu-1.8 在当前 macOS Docker 环境中批量请求可能触发内部队列阻塞。
-  batch_size: 1
-  retry_count: 3
-  retry_backoff_seconds: 2
-  # 单次 embedding 调用硬超时；超时后工具直接失败，不做重试。
-  timeout_seconds: 30
 
 logging:
   level: INFO

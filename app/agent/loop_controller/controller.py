@@ -850,12 +850,23 @@ class LoopController:
             phase=phase,
             iteration=int(state["harness"]["iteration"]),
         )
-        request = self.context_request_factory.create(
-            state,
-            system_instructions=self.system_instructions,
-            agent_type="data_agent",
-        )
-        compiled_context = await self.context_builder.build(request)
+        try:
+            request = self.context_request_factory.create(
+                state,
+                system_instructions=self.system_instructions,
+                agent_type="data_agent",
+            )
+            compiled_context = await self.context_builder.build(request)
+        except Exception:
+            # context 是唯一可能 started 后没有终态的阶段；补发失败事件保证生命周期配对。
+            self._emit(
+                run_ref,
+                "context.failed",
+                phase=phase,
+                iteration=int(state["harness"]["iteration"]),
+                payload={"error_code": "context_build_failed"},
+            )
+            raise
         state["harness"]["last_context_build_id"] = compiled_context.build_id
         state["harness"]["last_context_token_count"] = compiled_context.token_count
         selected_by_kind: dict[str, int] = {}
