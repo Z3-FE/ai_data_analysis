@@ -390,17 +390,13 @@ function displayLabel(event: DebugEvent) {
   if (event.type === "action.committed") return "动作已提交";
   if (event.type === "tool.started") return "工具开始执行";
   if (event.type === "tool.progress") {
+    // custom_type 是 writer.custom 归一化前的原始事件类型；思考/正文流沿用原语义命名，不展示片段计数。
+    const kind = progressKind(event);
+    if (kind === "reasoning") return "思考过程";
+    if (kind === "llm") return "模型输出";
     const count = typeof event.payload.compacted_count === "number"
       ? event.payload.compacted_count
       : 1;
-    // custom_type 是 writer.custom 归一化前的原始事件类型；思考/正文流式片段沿用原语义命名。
-    const customType = typeof event.payload.custom_type === "string" ? event.payload.custom_type : "";
-    if (customType === "reasoning_chunk" || customType === "reasoning_result") {
-      return (count > 1 ? `思考过程（${count} 个片段）` : "思考过程") + phase;
-    }
-    if (customType === "llm_chunk" || customType === "llm_result") {
-      return (count > 1 ? `模型输出（${count} 个片段）` : "模型输出") + phase;
-    }
     return count > 1 ? `工具执行进度（${count} 条内部事件）` : "工具执行进度";
   }
   if (event.type === "tool.completed") return "工具执行完成";
@@ -434,9 +430,12 @@ function displayEvents(events: DebugEvent[]): DisplayEvent[] {
   const hasReasoningResult = events.some((event) => event.type === "reasoning_result");
   const hasLlmResult = events.some((event) => event.type === "llm_result");
   const hasNonProgress = events.some((event) => event.type !== "progress");
+  // 节点内已有思考/正文流时，裸进度标记只是重复的“已开始”信号，直接隐藏。
+  const hasStreamProgress = events.some((event) => event.type === "tool.progress" && progressKind(event) !== "progress");
   const visible: DisplayEvent[] = [];
   for (const event of events) {
     if (hasNonProgress && event.type === "progress") continue;
+    if (hasStreamProgress && event.type === "tool.progress" && progressKind(event) === "progress") continue;
     if (hasReasoningResult && event.type === "reasoning_chunk") continue;
     if (hasLlmResult && event.type === "llm_chunk") continue;
     // 同一个展示标题可能对应多个返回事件，不能用标题作为 Map key 覆盖前面的结果。
@@ -454,10 +453,12 @@ function streamText(event: DebugEvent) {
   return typeof event.payload.chunk === "string" ? event.payload.chunk : "";
 }
 
-/** 工具进度按归一化前的原始事件类型分桶：思考/正文流式片段各自聚合，普通进度单独合并。 */
+/** 工具进度按归一化前的原始事件类型分桶：思考/正文各自连同结果事件聚合，普通进度单独合并。 */
 function progressKind(event: DebugEvent) {
   const customType = event.payload.custom_type;
-  return customType === "reasoning_chunk" || customType === "llm_chunk" ? String(customType) : "progress";
+  if (customType === "reasoning_chunk" || customType === "reasoning_result") return "reasoning";
+  if (customType === "llm_chunk" || customType === "llm_result") return "llm";
+  return "progress";
 }
 
 function compactAllEvents(events: DebugEvent[]): DebugEvent[] {
@@ -472,6 +473,10 @@ function compactAllEvents(events: DebugEvent[]): DebugEvent[] {
       continue;
     }
 
+    // 结果事件（*_result）到达即代表该流式分桶完成；否则合并项会一直停留在 running。
+    const incomingStatus: RunStatus | undefined = isToolProgress && String(event.payload.custom_type || "").endsWith("_result")
+      ? "success"
+      : event.status;
     const scope = isToolProgress
       ? "tool.progress::"
         + progressKind(event)
@@ -485,6 +490,7 @@ function compactAllEvents(events: DebugEvent[]): DebugEvent[] {
       const chunk = streamText(event);
       compacted.push({
         ...event,
+        status: incomingStatus,
         key: event.key + ":compact",
         payload: {
           ...event.payload,
@@ -511,7 +517,7 @@ function compactAllEvents(events: DebugEvent[]): DebugEvent[] {
       ...current,
       sequence: event.sequence,
       receivedAt: event.receivedAt,
-      status: event.status || current.status,
+      status: incomingStatus || current.status,
       payload: {
         ...current.payload,
         chunk: currentText + chunk,
