@@ -268,11 +268,12 @@ function statusFromEventType(type: string): RunStatus | undefined {
   return undefined;
 }
 
-/** 事件条目的展示状态：显式 status 优先，其次按类型与同族生命周期推导。 */
+/** 事件条目的展示状态：显式终态优先，其次按类型与同族生命周期推导。 */
 function itemStatus(event: DebugEvent, siblings: DebugEvent[]): RunStatus | undefined {
-  if (event.status) return event.status;
+  if (event.status && event.status !== "running") return event.status;
   if (event.type === "error" || event.type.endsWith(".failed") || event.type === "run.timeout" || event.type === "run.cancelled") return "failed";
-  const derived = statusFromEventType(event.type);
+  // 显式 running 不能短路同族终态判断：进度标记在所属工具完成后应随同族事件收敛。
+  const derived = statusFromEventType(event.type) ?? (event.status === "running" ? "running" : undefined);
   if (derived === "running") {
     // 同族生命周期在其之后出现终态事件时，started/进度标记按已完成展示，避免运行结束后仍显示执行中。
     const family = event.type.split(".")[0];
@@ -392,6 +393,14 @@ function displayLabel(event: DebugEvent) {
     const count = typeof event.payload.compacted_count === "number"
       ? event.payload.compacted_count
       : 1;
+    // custom_type 是 writer.custom 归一化前的原始事件类型；思考/正文流式片段沿用原语义命名。
+    const customType = typeof event.payload.custom_type === "string" ? event.payload.custom_type : "";
+    if (customType === "reasoning_chunk" || customType === "reasoning_result") {
+      return (count > 1 ? `思考过程（${count} 个片段）` : "思考过程") + phase;
+    }
+    if (customType === "llm_chunk" || customType === "llm_result") {
+      return (count > 1 ? `模型输出（${count} 个片段）` : "模型输出") + phase;
+    }
     return count > 1 ? `工具执行进度（${count} 条内部事件）` : "工具执行进度";
   }
   if (event.type === "tool.completed") return "工具执行完成";
@@ -445,6 +454,12 @@ function streamText(event: DebugEvent) {
   return typeof event.payload.chunk === "string" ? event.payload.chunk : "";
 }
 
+/** 工具进度按归一化前的原始事件类型分桶：思考/正文流式片段各自聚合，普通进度单独合并。 */
+function progressKind(event: DebugEvent) {
+  const customType = event.payload.custom_type;
+  return customType === "reasoning_chunk" || customType === "llm_chunk" ? String(customType) : "progress";
+}
+
 function compactAllEvents(events: DebugEvent[]): DebugEvent[] {
   const compacted: DebugEvent[] = [];
   const compactIndexes = new Map<string, number>();
@@ -459,6 +474,8 @@ function compactAllEvents(events: DebugEvent[]): DebugEvent[] {
 
     const scope = isToolProgress
       ? "tool.progress::"
+        + progressKind(event)
+        + "::"
         + String(event.payload.action_id || event.payload.source || event.node)
         + "::"
         + String(event.payload.phase || event.step || "")
@@ -521,7 +538,8 @@ function nodeGroups(events: DebugEvent[], fallback?: RunStatus, runCompleted = f
     node,
     status: statusForEvents(nodeEvents, fallback, runCompleted),
     latest: nodeEvents[nodeEvents.length - 1],
-    events: displayEvents(nodeEvents),
+    // 与「全部事件」同源压缩：节点内的思考/正文流式片段、工具进度合并为少数几条，避免逐 chunk 刷屏。
+    events: displayEvents(compactAllEvents(nodeEvents)),
   })).sort((left, right) => eventOrder(left.latest) - eventOrder(right.latest));
 }
 
