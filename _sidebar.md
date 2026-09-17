@@ -2,6 +2,7 @@
   - [文档首页](README.md)
   - [Data Agent Harness SDD](docs/data_agent_harness_sdd.md)
   - [增量式 SDD](docs/data_agent_harness_incremental_sdd.md)
+  - [Harness 全量技术文档（as-built）](docs/data_agent_harness_asbuilt.md)
 
 - 流程与报告
   - [整体流程](docs/data_agent_harness_overall_flow.md)
