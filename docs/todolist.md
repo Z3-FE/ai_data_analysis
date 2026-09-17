@@ -591,3 +591,21 @@ M1 状态层
 * Finalization 已完成历史、checkpoint、active run 和 Formation 的顺序验证。
 * 旧 `AgentService` 路径不会与 Harness 重复执行收口。
 * 最后再单独处理 API/SSE 迁移、生产依赖装配和旧图兼容回归。
+
+---
+
+## 10. 已决策、暂缓事项（2026-09-17）
+
+### metrics 埋点（暂缓）
+
+**结论**：暂不做。当前排查问题靠执行面板事件流（进度 / 步骤返回 / 全部事件）已够用；执行历史已落库（`save_execution_trace`），可事后追溯。
+
+**启动时照此执行**（决策已定）：
+
+1. 埋点库：`prometheus-client`，不引入额外 APM。
+2. 埋点位置只加两处，不动业务代码结构：
+   * `HarnessEventWriter._emit`：按 `event_type` 打 counter + 事件时间直方图（覆盖全部事件，无需逐节点埋）；
+   * 收口点 `_finalize` / 结果发布：run 级 counter / gauge，按 terminal_status（completed / failed / timeout / cancelled）打标签。
+3. 暴露：FastAPI 挂 `/metrics` 端点（生产环境考虑内网限制）。
+4. 展示：Prometheus 抓取 + Grafana 看板 + 基础告警（failed 率、timeout 率、单 run 时长 P95）。**不做前端产品化监控页面**。
+5. 指标清单以 SDD 已列为准：`docs/data_agent_harness_incremental_sdd.md` metrics 章节。
