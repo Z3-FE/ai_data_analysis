@@ -202,7 +202,7 @@ function buildConversationMeta(
     output_type: outputType,
     status: turn?.status,
     elapsed_seconds: elapsedSeconds,
-    rendered_report: !isDailyChat && outputType === "rendered_report"
+    rendered_report: !isDailyChat && outputType === "rendered_report" && isRenderedReportPayload(payload)
       ? payload as unknown as RenderedReport
       : undefined,
     query_result: !isDailyChat && outputType === "query_result"
@@ -217,6 +217,12 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+function isRenderedReportPayload(payload: Record<string, unknown>): boolean {
+  /** 只有真正携带 sections 的载荷才进入报告渲染器；实时终态事件只有文字占位。 */
+
+  return Array.isArray(payload.sections);
 }
 
 function formatQueryCell(value: unknown) {
