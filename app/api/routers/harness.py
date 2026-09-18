@@ -246,13 +246,8 @@ def _build_controller(
     dw_session: Any,
     event_writer: HarnessEventWriter | None = None,
 ) -> LoopController:
-    """在请求作用域内组装完整 Harness；所有持久化实现均由此注入。
+    """组装 Harness 运行的完整对象图。"""
 
-    run / run/stream / resume / resume/stream 四个端点共用本装配车间，每次请求
-    都重建整棵对象图（resume 同样如此，身份来自服务端回放的 run_ref，见
-    _run_ref_from_state）。event_writer 仅流式端点传入；非流式 /run 传 None，
-    控制器内部回退 NullHarnessEventWriter，事件直接丢弃。
-    """
     # ① 工具契约：ToolSpec 声明规划器可调用的动作（名称/权限/入参 schema/超时），
     #    同时交给工具注册表与控制器（tool_specs）两侧使用
     query_spec = _query_tool_spec()
