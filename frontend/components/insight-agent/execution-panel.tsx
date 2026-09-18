@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import {
   AlertCircle,
   Braces,
@@ -144,14 +144,6 @@ export function runFailed(events: DebugEvent[]) {
     || event.type === "run.timeout"
     || event.type === "run.cancelled"
     || event.type === "stream.failed");
-}
-
-/** 服务端 timestamp 优先（历史 trace 的 receivedAt 均为补拉时刻），缺省退回本地接收时间。 */
-export function eventTimestampMs(event: DebugEvent) {
-  const server = typeof event.payload.timestamp === "string" ? Date.parse(event.payload.timestamp) : NaN;
-  if (Number.isFinite(server)) return server;
-  const local = Date.parse(event.receivedAt);
-  return Number.isFinite(local) ? local : NaN;
 }
 
 /** 毫秒时长转人类可读文案；无效或非正数返回空串。 */
@@ -498,21 +490,10 @@ export function progressKind(event: DebugEvent) {
   return "progress";
 }
 
-const ROUTE_MODE_LABELS: Record<string, string> = {
-  daily_chat: "日常聊天",
-  single_query: "单次查询",
-  analysis: "数据分析",
-  clarification: "需要澄清",
-};
-
 /** custom 事件在 harness 链路被归一化为 tool.progress + custom_type；旧 agent 链路保留原始 type。两种形态都要识别。 */
 export function customEventOf(event: DebugEvent, name: string) {
   return event.type === name
     || (event.type === "tool.progress" && event.payload.custom_type === name);
-}
-
-function formatTokens(count: number) {
-  return count >= 1000 ? `${(count / 1000).toFixed(1)}k tokens` : `${count} tokens`;
 }
 
 function compactAllEvents(events: DebugEvent[]): DebugEvent[] {
@@ -792,340 +773,6 @@ function RoundCard({ group }: { group: RoundGroup }) {
   return <details open={group.status === "running" || group.status === "failed"} className="group rounded-xl border border-slate-200 bg-slate-50/60"><summary className="flex cursor-pointer list-none items-start gap-2 px-3 py-3"><ChevronRight className="mt-0.5 size-3.5 shrink-0 text-slate-400 transition-transform group-open:rotate-90" /><StatusIcon status={group.status} /><span className="min-w-0 flex-1"><span className="block text-xs font-extrabold text-slate-700">{group.label}</span>{group.summary && <span className="mt-1 block text-[10px] text-slate-400">{group.summary}</span>}</span><span className="shrink-0 text-[10px] text-slate-400">{group.status}</span></summary><div className="space-y-2 border-t border-slate-100 px-2.5 pb-3 pt-2.5">{group.steps.map((step) => <StepCard key={step.step} group={step} />)}</div></details>;
 }
 
-interface ProgressPhase {
-  label: string;
-  status: RunStatus;
-  durationMs?: number;
-}
-
-interface ProgressMilestone {
-  key: string;
-  label: string;
-  status: RunStatus;
-  detail?: string;
-  durationMs?: number;
-  phases?: ProgressPhase[];
-}
-
-/** 进度里程碑：按时间拍平的叙事（理解 → 划分 → 任务/查询 → 报告）；轮次与生命周期样板在步骤返回 tab 查看。 */
-function deriveProgressMilestones(ordered: DebugEvent[], tasks: TaskSummary[]): ProgressMilestone[] {
-  const firstMs = (predicate: (event: DebugEvent) => boolean) => {
-    const event = ordered.find(predicate);
-    return event ? eventTimestampMs(event) : NaN;
-  };
-  const milestones: ProgressMilestone[] = [];
-
-  const contextStart = firstMs((event) => event.type.startsWith("context.") || customEventOf(event, "question_route"));
-  if (Number.isFinite(contextStart)) {
-    const boundary = ordered.find((event) => event.type === "context.completed" || event.type === "context.failed");
-    const routeEvent = ordered.find((event) => customEventOf(event, "question_route"));
-    const planEvent = ordered.find((event) => event.type === "context.plan");
-    const details: string[] = [];
-    if (routeEvent) {
-      const mode = typeof routeEvent.payload.execution_mode === "string" ? routeEvent.payload.execution_mode : "";
-      if (mode) details.push("路由：" + (ROUTE_MODE_LABELS[mode] ?? mode));
-    }
-    if (planEvent) {
-      const candidateCount = typeof planEvent.payload.candidate_count === "number" ? planEvent.payload.candidate_count : null;
-      const selectedCount = typeof planEvent.payload.selected_count === "number" ? planEvent.payload.selected_count : null;
-      const tokenCount = typeof planEvent.payload.token_count === "number" ? planEvent.payload.token_count : null;
-      if (candidateCount !== null && selectedCount !== null) details.push(`召回 ${selectedCount}/${candidateCount} 项`);
-      if (tokenCount !== null && tokenCount > 0) details.push(formatTokens(tokenCount));
-    }
-    milestones.push({
-      key: "understand",
-      label: "理解问题并召回上下文",
-      status: boundary?.type === "context.failed" ? "failed" : boundary ? "success" : "running",
-      detail: details.length ? details.join(" · ") : undefined,
-      durationMs: boundary ? eventTimestampMs(boundary) - contextStart : undefined,
-    });
-  }
-
-  const planStart = firstMs((event) => event.type.startsWith("planner.") || customEventOf(event, "analysis_plan"));
-  if (Number.isFinite(planStart)) {
-    const boundary = ordered.find((event) =>
-      event.type === "planner.completed"
-      || event.type === "planner.failed"
-      || (customEventOf(event, "analysis_plan") && (event.status === "success" || event.status === "failed")));
-    const planFailed = Boolean(boundary && (boundary.type === "planner.failed" || boundary.status === "failed"));
-    const planErrorDetail = planFailed && boundary
-      ? [boundary.payload.error_message, boundary.payload.error].find(
-          (value): value is string => typeof value === "string" && value !== "",
-        )
-      : undefined;
-    milestones.push({
-      key: "plan",
-      label: "划分分析任务",
-      status: planFailed ? "failed" : boundary ? "success" : "running",
-      detail: planFailed ? planErrorDetail : tasks.length ? `${tasks.length} 个任务` : undefined,
-      durationMs: boundary ? eventTimestampMs(boundary) - planStart : undefined,
-    });
-  }
-
-  if (tasks.length) {
-    tasks.forEach((task, index) => {
-      const taskEvents = task.events.slice().sort((left, right) => eventOrder(left) - eventOrder(right));
-      // phase 链：analysis_task_phase 依次推进，以下一个 phase / 依赖解析 / 任务结果作为当前段收口。
-      const phases: ProgressPhase[] = [];
-      taskEvents.forEach((event, eventIndex) => {
-        if (!customEventOf(event, "analysis_task_phase")) return;
-        const next = taskEvents.slice(eventIndex + 1).find((item) =>
-          customEventOf(item, "analysis_task_phase")
-          || customEventOf(item, "analysis_task_resolved")
-          || customEventOf(item, "analysis_task_result"));
-        phases.push({
-          label: typeof event.payload.phase === "string" ? event.payload.phase : "执行阶段",
-          status: "success",
-          durationMs: next ? eventTimestampMs(next) - eventTimestampMs(event) : undefined,
-        });
-      });
-      if (phases.length) {
-        const lastPhase = phases[phases.length - 1];
-        lastPhase.status = !terminal(task.status) ? "running" : task.status === "failed" ? "failed" : "success";
-      }
-      const result = taskEvents.find((event) => customEventOf(event, "analysis_task_result"));
-      const start = taskEvents.length ? eventTimestampMs(taskEvents[0]) : NaN;
-      milestones.push({
-        key: "task-" + task.task_id,
-        label: `任务 ${index + 1} · ${task.question || task.task_id}`,
-        status: task.status,
-        durationMs: result ? eventTimestampMs(result) - start : undefined,
-        phases,
-      });
-    });
-  } else if (ordered.some((event) => event.type === "action.committed" || event.type.startsWith("tool."))) {
-    // 无任务清单时按工具执行聚合；多轮循环以最后一次终态收口，后续新的 started 重新打开。
-    let status: RunStatus = "running";
-    let endMs = NaN;
-    for (const event of ordered) {
-      if (event.type === "tool.completed" || event.type === "tool.failed") {
-        endMs = eventTimestampMs(event);
-        status = event.type === "tool.failed" ? "failed" : "success";
-      } else if ((event.type === "tool.started" || event.type === "action.committed") && Number.isFinite(endMs)) {
-        status = "running";
-        endMs = NaN;
-      }
-    }
-    const start = firstMs((event) => event.type === "action.committed" || event.type.startsWith("tool."));
-    milestones.push({
-      key: "execute",
-      label: "执行数据查询",
-      status,
-      durationMs: Number.isFinite(endMs) ? endMs - start : undefined,
-    });
-  }
-
-  const runCompleted = ordered.some((event) => event.type === "run.completed");
-  const reportStart = firstMs((event) => customEventOf(event, "report_plan_result") || customEventOf(event, "rendered_report"));
-  if (Number.isFinite(reportStart)) {
-    const boundary = ordered.find((event) => customEventOf(event, "rendered_report") || event.type === "run.completed");
-    milestones.push({
-      key: "report",
-      label: "汇总生成报告",
-      status: boundary ? "success" : "running",
-      durationMs: boundary ? eventTimestampMs(boundary) - reportStart : undefined,
-    });
-  } else if (tasks.length && !runCompleted) {
-    // 任务已规划、报告阶段未开始：以待办里程碑回答「还剩什么」。
-    milestones.push({ key: "report", label: "汇总生成报告", status: "pending" });
-  }
-
-  if (runFailed(ordered)) {
-    for (let index = milestones.length - 1; index >= 0; index -= 1) {
-      if (milestones[index].status === "running") {
-        milestones[index].status = "failed";
-        break;
-      }
-    }
-  }
-  return milestones;
-}
-
-function deriveProgressHeadline(
-  ordered: DebugEvent[],
-  tasks: TaskSummary[],
-  milestones: ProgressMilestone[],
-): { text: string; tone: "running" | "success" | "failed" | "waiting" } {
-  if (ordered.some((event) => event.type === "confirmation.required")
-    && !ordered.some((event) => event.type === "confirmation.resolved")) {
-    return { text: "等待你确认", tone: "waiting" };
-  }
-  if (runFailed(ordered)) return { text: "执行失败", tone: "failed" };
-  if (ordered.some((event) => event.type === "run.completed")) return { text: "已完成", tone: "success" };
-  if (tasks.length) {
-    const runningIndex = tasks.findIndex((task) => task.status === "running");
-    const index = runningIndex >= 0 ? runningIndex : 0;
-    const phaseEvent = tasks[index].events.filter((event) => customEventOf(event, "analysis_task_phase")).at(-1);
-    const phaseLabel = runningIndex >= 0 && phaseEvent && typeof phaseEvent.payload.phase === "string"
-      ? ` · ${phaseEvent.payload.phase}`
-      : "";
-    return { text: `正在执行 任务 ${index + 1}/${tasks.length}${phaseLabel}`, tone: "running" };
-  }
-  const running = milestones.find((milestone) => milestone.status === "running");
-  if (running) {
-    const text = running.key === "understand" ? "正在理解问题"
-      : running.key === "plan" ? "正在划分分析任务"
-      : running.key === "execute" ? "正在执行数据查询"
-      : running.key === "report" ? "正在汇总生成报告"
-      : "正在执行";
-    return { text, tone: "running" };
-  }
-  return { text: "正在准备执行", tone: "running" };
-}
-
-function ProgressMilestoneRow({ milestone }: { milestone: ProgressMilestone }) {
-  return (
-    <div className="flex items-start gap-2.5">
-      <span className="mt-0.5 shrink-0"><StatusIcon status={milestone.status} /></span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline justify-between gap-2">
-          <span className={"truncate text-xs font-bold " + (milestone.status === "running" ? "text-blue-700" : "text-slate-700")}>
-            {milestone.label}
-          </span>
-          {typeof milestone.durationMs === "number" && milestone.durationMs > 0 && (
-            <span className="shrink-0 text-[10px] text-slate-400">{formatDuration(milestone.durationMs)}</span>
-          )}
-        </div>
-        {milestone.detail && (
-          <div className={"mt-1 break-words text-[10px] leading-4 " + (milestone.status === "failed" ? "text-rose-600" : "text-slate-400")}>
-            {milestone.detail}
-          </div>
-        )}
-        {milestone.phases && milestone.phases.length > 0 && (
-          <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] leading-4">
-            {milestone.phases.map((phase, index) => (
-              <span key={milestone.key + "-phase-" + index} className="flex items-center gap-1.5">
-                {index > 0 && <span className="text-slate-300">→</span>}
-                <span className={
-                  phase.status === "running" ? "font-bold text-blue-600"
-                    : phase.status === "failed" ? "text-rose-500"
-                    : "text-slate-400"
-                }>
-                  {phase.label}
-                  {typeof phase.durationMs === "number" && phase.durationMs > 0 ? ` ${formatDuration(phase.durationMs)}` : ""}
-                </span>
-              </span>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function ProgressView({ events, tasks }: { events: DebugEvent[]; tasks: TaskSummary[] }) {
-  const ordered = events.slice().sort((left, right) => eventOrder(left) - eventOrder(right));
-  const runCompleted = ordered.some((event) => event.type === "run.completed");
-  const interrupted = runFailed(ordered);
-  const waitingConfirmation = ordered.some((event) => event.type === "confirmation.required")
-    && !ordered.some((event) => event.type === "confirmation.resolved");
-  const live = !runCompleted && !interrupted && !waitingConfirmation;
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!live) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [live]);
-
-  const milestones = deriveProgressMilestones(ordered, tasks);
-  const headline = deriveProgressHeadline(ordered, tasks, milestones);
-  const startMs = ordered.length ? eventTimestampMs(ordered[0]) : NaN;
-  const terminalEvents = ordered.filter((event) =>
-    event.type === "run.completed"
-    || event.type === "run.failed"
-    || event.type === "run.timeout"
-    || event.type === "run.cancelled"
-    || event.type === "confirmation.required"
-    || event.type === "stream.failed");
-  const endMs = terminalEvents.length ? eventTimestampMs(terminalEvents[terminalEvents.length - 1]) : now;
-  const elapsedMs = Number.isFinite(startMs) ? Math.max(0, (live ? now : endMs) - startMs) : 0;
-  const barTone = interrupted ? "bg-rose-500" : waitingConfirmation ? "bg-amber-400" : "bg-blue-500";
-  const headlineIcon = headline.tone === "running"
-    ? <Loader2 className="size-4 shrink-0 animate-spin text-blue-600" />
-    : headline.tone === "failed"
-      ? <XCircle className="size-4 shrink-0 text-rose-500" />
-      : headline.tone === "waiting"
-        ? <AlertCircle className="size-4 shrink-0 text-amber-500" />
-        : <CheckCircle2 className="size-4 shrink-0 text-emerald-500" />;
-  const headlineColor = headline.tone === "running" ? "text-blue-700"
-    : headline.tone === "failed" ? "text-rose-600"
-    : headline.tone === "waiting" ? "text-amber-600"
-    : "text-emerald-600";
-  return (
-    <div>
-      <div className="flex items-center gap-2">
-        {headlineIcon}
-        <span className={"text-sm font-extrabold " + headlineColor}>{headline.text}</span>
-        <span className="ml-auto shrink-0 text-[10px] font-bold text-slate-400">已执行 {formatDuration(elapsedMs) || "0 秒"}</span>
-      </div>
-      {/* 分段进度条：一段对应一个里程碑，颜色即状态，替代看不出进展的整体百分比条。 */}
-      <div className="mt-2.5 flex h-1.5 gap-1">
-        {milestones.length
-          ? milestones.map((milestone) => (
-              <div key={milestone.key} className={"h-full flex-1 rounded-full transition-colors " + segmentColor(milestone.status)} />
-            ))
-          : <div className={"h-full flex-1 animate-pulse rounded-full " + barTone} />}
-      </div>
-      {milestones.length > 0 && (
-        <div className="mt-4 space-y-3 border-t border-slate-100 pt-3.5">
-          {milestones.map((milestone) => <ProgressMilestoneRow key={milestone.key} milestone={milestone} />)}
-        </div>
-      )}
-      {!milestones.length && <div className="py-10 text-center text-xs text-slate-400">提交问题后显示执行进度</div>}
-      <ProgressActivityFeed events={ordered} />
-      {tasks.length > 0 && <ProgressTaskList tasks={tasks} />}
-    </div>
-  );
-}
-
-function segmentColor(status: RunStatus) {
-  if (status === "failed") return "bg-rose-500";
-  if (status === "running") return "bg-blue-500 animate-pulse";
-  if (status === "success") return "bg-blue-400";
-  if (status === "partial") return "bg-amber-400";
-  return "bg-slate-200";
-}
-
-/** 活动流：压缩后的展示条目按时间倒序，每条一行、点击展开事件详情（Devin 式 activity feed）。 */
-function ProgressActivityFeed({ events }: { events: DebugEvent[] }) {
-  const items = displayEvents(compactAllEvents(events)).slice().reverse();
-  if (!items.length) return null;
-  return (
-    <div className="mt-4 border-t border-slate-100 pt-3.5">
-      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">执行明细</div>
-      <div className="mt-2 space-y-0.5">
-        {items.map((item) => <EventDetails key={item.key} event={item.event} status={item.status} />)}
-      </div>
-    </div>
-  );
-}
-
-/** 任务清单：整体进度的视觉锚点，数据与聊天气泡共用 buildTasks。 */
-function ProgressTaskList({ tasks }: { tasks: TaskSummary[] }) {
-  return (
-    <div className="mt-4 border-t border-slate-100 pt-3.5">
-      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">任务清单</div>
-      <div className="mt-2 space-y-1.5">
-        {tasks.map((task, index) => (
-          <div key={task.task_id} className="flex items-start gap-2">
-            <span className="mt-0.5 shrink-0"><StatusIcon status={task.status} /></span>
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-[11px] font-semibold text-slate-600">{task.question || `任务 ${index + 1}`}</div>
-              <div className="truncate text-[10px] text-slate-400">
-                {task.status === "running" ? task.phase || "执行中"
-                  : task.status === "success" ? "已完成"
-                  : task.status === "failed" ? task.error || "执行失败"
-                  : task.status === "partial" ? task.error || "部分完成"
-                  : "等待执行"}
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function AllEvents({ events }: { events: DebugEvent[] }) {
   if (!events.length) return <div className="py-10 text-center text-xs text-slate-400">收到 SSE 事件后，这里会显示全部 JSON</div>;
   return <div className="space-y-2">{events.map((event) => <EventDetails key={event.key} event={event} status={itemStatus(event, events)} />)}</div>;
@@ -1145,20 +792,17 @@ export function ExecutionPanel({
   const rawEvents = debugEvents
     .slice()
     .sort((left, right) => eventOrder(left) - eventOrder(right));
-  const orderedEvents = rawEvents
-    .slice()
-    .sort((left, right) => orderOf(left.step) - orderOf(right.step) || eventOrder(left) - eventOrder(right));
   const tasks = buildTasks(rawEvents);
   const rounds = buildRoundGroups(rawEvents, tasks);
   const stepCount = rounds.reduce((sum, round) => sum + round.steps.length, 0);
   const compactedEvents = compactAllEvents(rawEvents);
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const [tab, setTab] = useState("progress");
+  const [tab, setTab] = useState("returns");
   const handleTab = (value: string | null) => {
     if (!value) return;
     setTab(value);
     scrollRef.current?.scrollTo({ top: 0, behavior: "auto" });
     requestAnimationFrame(() => scrollRef.current?.scrollTo({ top: 0, behavior: "auto" }));
   };
-  return <aside className="flex min-h-0 min-w-0 basis-[430px] shrink-0 flex-[0_0_430px] flex-col border-l border-slate-200 bg-white 2xl:basis-[500px] 2xl:flex-[0_0_500px]"><div className="border-b border-slate-200 px-5 py-4"><div className="flex items-center gap-2 text-sm font-extrabold text-slate-800"><ClipboardList className="size-4 text-blue-600" />执行过程</div><p className="mt-1 text-[11px] text-slate-400">实时展示本次运行的总体进度、任务返回和节点事件</p></div><Tabs value={tab} onValueChange={handleTab} className="min-h-0 flex-1 gap-0"><TabsList variant="line" className="sticky top-0 z-20 grid h-12 w-full shrink-0 grid-cols-3 justify-stretch overflow-x-auto rounded-none border-b border-slate-200 bg-white px-5 py-0 shadow-[0_4px_10px_-8px_rgba(15,23,42,0.35)]"><TabsTrigger value="progress" className="gap-1 text-[11px]"><ClipboardList className="size-3.5" />进度</TabsTrigger><TabsTrigger value="returns" className="gap-1 text-[11px]"><Braces className="size-3.5" />步骤返回{stepCount ? " " + stepCount : ""}</TabsTrigger><TabsTrigger value="events" className="gap-1 text-[11px]"><Braces className="size-3.5" />工具与事件{compactedEvents.length ? " " + compactedEvents.length : ""}</TabsTrigger></TabsList>{loading && <div className="flex items-center gap-2 border-b border-blue-100 bg-blue-50 px-5 py-2.5 text-[11px] font-semibold text-blue-700"><Loader2 className="size-3.5 animate-spin" />正在加载该轮次的执行过程...</div>}{error && <div className="border-b border-amber-100 bg-amber-50 px-5 py-2.5 text-[11px] leading-5 text-amber-800">{error}</div>}<div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain"><TabsContent value="progress" className="mt-4 px-5 pb-5"><ProgressView events={orderedEvents} tasks={tasks} /></TabsContent><TabsContent value="returns" className="mt-4 space-y-2 px-5 pb-5">{rounds.length ? rounds.length > 1 ? rounds.map((round) => <RoundCard key={round.round} group={round} />) : rounds[0].steps.map((group) => <StepCard key={group.step} group={group} />) : <div className="py-10 text-center text-xs text-slate-400">收到节点返回后，这里会显示主步骤摘要</div>}</TabsContent><TabsContent value="events" className="mt-4 px-5 pb-5"><AllEvents events={compactedEvents} /></TabsContent></div></Tabs><div className="border-t border-slate-200 px-5 py-3"><div className="flex items-center gap-2 text-[11px] font-semibold text-slate-400"><Timer className="size-3.5" />{loading ? "正在加载执行过程" : running ? "正在执行" : rawEvents.length ? "本次执行已结束" : "等待提问"}</div></div></aside>;
+  return <aside className="flex min-h-0 min-w-0 basis-[430px] shrink-0 flex-[0_0_430px] flex-col border-l border-slate-200 bg-white 2xl:basis-[500px] 2xl:flex-[0_0_500px]"><div className="border-b border-slate-200 px-5 py-4"><div className="flex items-center gap-2 text-sm font-extrabold text-slate-800"><ClipboardList className="size-4 text-blue-600" />执行过程</div><p className="mt-1 text-[11px] text-slate-400">按轮次回看任务返回与节点事件，实时进度在聊天区展示</p></div><Tabs value={tab} onValueChange={handleTab} className="min-h-0 flex-1 gap-0"><TabsList variant="line" className="sticky top-0 z-20 grid h-12 w-full shrink-0 grid-cols-2 justify-stretch overflow-x-auto rounded-none border-b border-slate-200 bg-white px-5 py-0 shadow-[0_4px_10px_-8px_rgba(15,23,42,0.35)]"><TabsTrigger value="returns" className="gap-1 text-[11px]"><Braces className="size-3.5" />步骤返回{stepCount ? " " + stepCount : ""}</TabsTrigger><TabsTrigger value="events" className="gap-1 text-[11px]"><Braces className="size-3.5" />工具与事件{compactedEvents.length ? " " + compactedEvents.length : ""}</TabsTrigger></TabsList>{loading && <div className="flex items-center gap-2 border-b border-blue-100 bg-blue-50 px-5 py-2.5 text-[11px] font-semibold text-blue-700"><Loader2 className="size-3.5 animate-spin" />正在加载该轮次的执行过程...</div>}{error && <div className="border-b border-amber-100 bg-amber-50 px-5 py-2.5 text-[11px] leading-5 text-amber-800">{error}</div>}<div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain"><TabsContent value="returns" className="mt-4 space-y-2 px-5 pb-5">{rounds.length ? rounds.length > 1 ? rounds.map((round) => <RoundCard key={round.round} group={round} />) : rounds[0].steps.map((group) => <StepCard key={group.step} group={group} />) : <div className="py-10 text-center text-xs text-slate-400">收到节点返回后，这里会显示主步骤摘要</div>}</TabsContent><TabsContent value="events" className="mt-4 px-5 pb-5"><AllEvents events={compactedEvents} /></TabsContent></div></Tabs><div className="border-t border-slate-200 px-5 py-3"><div className="flex items-center gap-2 text-[11px] font-semibold text-slate-400"><Timer className="size-3.5" />{loading ? "正在加载执行过程" : running ? "正在执行" : rawEvents.length ? "本次执行已结束" : "等待提问"}</div></div></aside>;
 }
