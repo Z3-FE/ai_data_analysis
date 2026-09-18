@@ -111,7 +111,8 @@ Current local service defaults are defined in `config.yaml`:
 - Qdrant URL: `http://127.0.0.1:6333`
 - Embedding: 硅基流动 OpenAI 兼容接口，模型 `Qwen/Qwen3-Embedding-4B`（1024 维），
   API Key 从 `.env` 的 `SILICONFLOW_API_KEY` 读取；仅 `provider: local` 时才使用
-  `http://127.0.0.1:8081`
+  `http://127.0.0.1:8081`。docker-compose 中保留了 `embedding`（TEI）服务定义，
+  就是给这条本地推理退路用的——云端模式下无需启动，请勿删除。
 - Table vector collection: `meta_tables_semantic`
 - Column vector collection: `meta_columns_semantic`
 - Metric vector collection: `meta_metrics_semantic`
