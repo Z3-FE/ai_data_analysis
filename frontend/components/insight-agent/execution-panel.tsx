@@ -1039,8 +1039,6 @@ function ProgressView({ events, tasks }: { events: DebugEvent[]; tasks: TaskSumm
     || event.type === "stream.failed");
   const endMs = terminalEvents.length ? eventTimestampMs(terminalEvents[terminalEvents.length - 1]) : now;
   const elapsedMs = Number.isFinite(startMs) ? Math.max(0, (live ? now : endMs) - startMs) : 0;
-  const done = tasks.filter((task) => terminal(task.status)).length;
-  const percent = tasks.length ? Math.round((done / tasks.length) * 100) : runCompleted ? 100 : null;
   const barTone = interrupted ? "bg-rose-500" : waitingConfirmation ? "bg-amber-400" : "bg-blue-500";
   const headlineIcon = headline.tone === "running"
     ? <Loader2 className="size-4 shrink-0 animate-spin text-blue-600" />
@@ -1058,21 +1056,72 @@ function ProgressView({ events, tasks }: { events: DebugEvent[]; tasks: TaskSumm
       <div className="flex items-center gap-2">
         {headlineIcon}
         <span className={"text-sm font-extrabold " + headlineColor}>{headline.text}</span>
+        <span className="ml-auto shrink-0 text-[10px] font-bold text-slate-400">已执行 {formatDuration(elapsedMs) || "0 秒"}</span>
       </div>
-      <div className="mt-2.5 flex items-center gap-2.5">
-        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
-          {percent === null
-            ? <div className={"h-full w-full animate-pulse rounded-full opacity-40 " + barTone} />
-            : <div className={"h-full rounded-full transition-all " + barTone} style={{ width: percent + "%" }} />}
+      {/* 分段进度条：一段对应一个里程碑，颜色即状态，替代看不出进展的整体百分比条。 */}
+      <div className="mt-2.5 flex h-1.5 gap-1">
+        {milestones.length
+          ? milestones.map((milestone) => (
+              <div key={milestone.key} className={"h-full flex-1 rounded-full transition-colors " + segmentColor(milestone.status)} />
+            ))
+          : <div className={"h-full flex-1 animate-pulse rounded-full " + barTone} />}
+      </div>
+      {milestones.length > 0 && (
+        <div className="mt-4 space-y-3 border-t border-slate-100 pt-3.5">
+          {milestones.map((milestone) => <ProgressMilestoneRow key={milestone.key} milestone={milestone} />)}
         </div>
-        <span className="shrink-0 text-[10px] font-bold text-slate-400">
-          {percent === null ? "执行中" : `${percent}%`} · 已执行 {formatDuration(elapsedMs) || "0 秒"}
-        </span>
-      </div>
-      <div className="mt-4 space-y-3 border-t border-slate-100 pt-3.5">
-        {milestones.map((milestone) => <ProgressMilestoneRow key={milestone.key} milestone={milestone} />)}
-      </div>
+      )}
       {!milestones.length && <div className="py-10 text-center text-xs text-slate-400">提交问题后显示执行进度</div>}
+      <ProgressActivityFeed events={ordered} />
+      {tasks.length > 0 && <ProgressTaskList tasks={tasks} />}
+    </div>
+  );
+}
+
+function segmentColor(status: RunStatus) {
+  if (status === "failed") return "bg-rose-500";
+  if (status === "running") return "bg-blue-500 animate-pulse";
+  if (status === "success") return "bg-blue-400";
+  if (status === "partial") return "bg-amber-400";
+  return "bg-slate-200";
+}
+
+/** 活动流：压缩后的展示条目按时间倒序，每条一行、点击展开事件详情（Devin 式 activity feed）。 */
+function ProgressActivityFeed({ events }: { events: DebugEvent[] }) {
+  const items = displayEvents(compactAllEvents(events)).slice().reverse();
+  if (!items.length) return null;
+  return (
+    <div className="mt-4 border-t border-slate-100 pt-3.5">
+      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">执行明细</div>
+      <div className="mt-2 space-y-0.5">
+        {items.map((item) => <EventDetails key={item.key} event={item.event} status={item.status} />)}
+      </div>
+    </div>
+  );
+}
+
+/** 任务清单：整体进度的视觉锚点，数据与聊天气泡共用 buildTasks。 */
+function ProgressTaskList({ tasks }: { tasks: TaskSummary[] }) {
+  return (
+    <div className="mt-4 border-t border-slate-100 pt-3.5">
+      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">任务清单</div>
+      <div className="mt-2 space-y-1.5">
+        {tasks.map((task, index) => (
+          <div key={task.task_id} className="flex items-start gap-2">
+            <span className="mt-0.5 shrink-0"><StatusIcon status={task.status} /></span>
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-[11px] font-semibold text-slate-600">{task.question || `任务 ${index + 1}`}</div>
+              <div className="truncate text-[10px] text-slate-400">
+                {task.status === "running" ? task.phase || "执行中"
+                  : task.status === "success" ? "已完成"
+                  : task.status === "failed" ? task.error || "执行失败"
+                  : task.status === "partial" ? task.error || "部分完成"
+                  : "等待执行"}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
