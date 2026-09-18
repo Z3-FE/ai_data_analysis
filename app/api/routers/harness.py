@@ -152,6 +152,9 @@ def _agent_context(*, meta_session: Any, dw_session: Any, llm_client: Any) -> Ag
         meta_catalog_repository=MetaCatalogRepository(session=meta_session),
         dw_repository=DwRepository(session=dw_session),
         llm_timeout_seconds=settings.llm.timeout_seconds,
+        # 元数据召回并发闸门：一次问题会展开成多个召回词，四个召回节点（表/列/指标/维度值）
+        # 按词并发请求 Embedding/Qdrant/ES；此信号量限定本 run 内同时在飞的外部请求数，
+        # 防止"一个问题放大成几十个外部调用"打爆检索端（配置见 config.metadata_recall）
         metadata_recall_semaphore=asyncio.Semaphore(
             settings.metadata_recall.max_concurrent_terms
         ),
@@ -246,16 +249,17 @@ def _build_controller(
     dw_session: Any,
     event_writer: HarnessEventWriter | None = None,
 ) -> LoopController:
-    """组装 Harness 运行的完整对象图。"""
+    """组装 Harness 运行的完整对象"""
 
     # ① 工具契约：ToolSpec 声明规划器可调用的动作（名称/权限/入参 schema/超时），
-    #    同时交给工具注册表与控制器（tool_specs）两侧使用
     query_spec = _query_tool_spec()
     analyze_spec = _analyze_tool_spec()
     report_spec = _report_tool_spec()
+
     # ② 工具结果落库位置：query/analyze 结果与渲染报告都作为 Artifact 存 PG；
     #    报告工具靠它读取前置 result_refs，收口服务靠它导出产物
     artifact_store = PostgresResultArtifactStore(session_factory)
+
     # ③ 业务依赖包：现有问数图运行所需的 LLM/Embedding/ES/Qdrant/MySQL 依赖，
     #    明细见 _agent_context；meta/dw 会话是请求作用域，请求结束即释放
     agent_context = _agent_context(
