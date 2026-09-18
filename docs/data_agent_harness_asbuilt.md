@@ -151,7 +151,7 @@ stateDiagram-v2
 
 | 术语 | 含义 | 定义位置 |
 |---|---|---|
-| | | |
+| Artifact | 工具完整结果的受控持久化记录（harness_artifacts 表，内容寻址 + 不透明引用 result_ref）；链路只传引用，读取须凭完整运行身份经 ArtifactStore | models/harness.py:178 |
 
 ## 2. 路径一：正常完成（主干详版）
 
