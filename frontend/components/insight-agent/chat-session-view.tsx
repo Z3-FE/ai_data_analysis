@@ -34,6 +34,7 @@ import {
   type StreamEvent,
 } from "./execution-panel";
 import { ChatRunSummaryChip, ChatRunTimeline } from "./chat-run-progress";
+import { MarkdownContent } from "./markdown-content";
 
 interface ChatSessionViewProps {
   conversationId: string;
@@ -678,30 +679,20 @@ function AssistantMessageBubble() {
 
   return (
     <MessagePrimitive.Root className={`w-full flex gap-3 ${isUser ? "justify-end" : "justify-start"}`}>
-      {!isUser && (
-        <div className="w-8 h-8 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0">
-          <Bot className="w-4 h-4" />
-        </div>
-      )}
-
-      <div className={`${isUser ? "max-w-[70%]" : "w-full min-w-0"} ${isUser ? "items-end" : "items-start"} flex flex-col`}>
-        <div
-          className={`rounded-2xl px-4 py-3 text-sm leading-6 whitespace-pre-wrap ${!isUser ? "max-w-[70%]" : ""} ${isUser
-              ? "bg-blue-600 text-white shadow-sm"
-              : "bg-white text-slate-700 border border-slate-200 shadow-sm"
-            }`}
-        >
-          {isLivePlaceholder ? (
+      <div className={`${isUser ? "max-w-[70%] items-end" : "w-full min-w-0 items-start"} flex flex-col`}>
+        {isUser ? (
+          <div className="rounded-2xl px-4 py-3 text-sm leading-6 whitespace-pre-wrap bg-blue-600 text-white shadow-sm">
+            {displayText}
+          </div>
+        ) : isLivePlaceholder ? (
+          <div className="w-full min-w-0">
             <ChatRunTimeline events={liveEvents} />
-          ) : (
-            <>
-              {displayText}
-              {showStreamingCursor && (
-                <span className="ml-1 inline-block w-1.5 h-4 bg-blue-500 animate-pulse align-middle" />
-              )}
-            </>
-          )}
-        </div>
+          </div>
+        ) : (
+          <div className="w-full min-w-0">
+            <MarkdownContent text={displayText + (showStreamingCursor ? " ▍" : "")} />
+          </div>
+        )}
         <span className="text-[10px] text-slate-400 mt-1 px-1">
           {formatTime(message.createdAt)}
         </span>
@@ -718,11 +709,11 @@ function AssistantMessageBubble() {
             <button
               type="button"
               onClick={() => executionProcess.toggle(traceTurnId)}
-              className="mt-4 inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition-colors hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
+              className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-semibold text-slate-400 transition-colors hover:text-blue-600"
             >
               <ListTree className="size-3.5" />
               {executionLabel}
-              <ChevronRight className={"size-3.5 transition-transform " + (traceActive ? "rotate-180" : "")} />
+              <ChevronRight className={"size-3 transition-transform " + (traceActive ? "rotate-180" : "")} />
             </button>
           )
         )}

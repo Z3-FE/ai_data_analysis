@@ -284,7 +284,7 @@ export function ChatRunTimeline({ events }: { events: DebugEvent[] }) {
   );
 }
 
-/** 终态摘要 chip：completed/失败/等待确认三态，可带「查看执行过程」入口。 */
+/** 终态摘要行：弱化文字链接（非胶囊），completed/失败/等待确认三态，可带「查看执行过程」入口。 */
 export function ChatRunSummaryChip({
   status,
   elapsedSeconds,
@@ -299,10 +299,10 @@ export function ChatRunSummaryChip({
   const waiting = status === "waiting_confirmation";
   const failed = status === "failed" || status === "timeout" || status === "cancelled" || status === "stream_failed";
   const tone = waiting
-    ? "border-amber-200 bg-amber-50 text-amber-700"
+    ? "text-amber-600"
     : failed
-      ? "border-rose-100 bg-rose-50 text-rose-600"
-      : "border-slate-200 bg-white text-slate-500";
+      ? "text-rose-600"
+      : "text-slate-400";
   const icon = waiting
     ? <AlertCircle className="size-3.5 shrink-0" />
     : failed
@@ -316,7 +316,7 @@ export function ChatRunSummaryChip({
   const elapsed = typeof elapsedSeconds === "number" && elapsedSeconds > 0
     ? ` · 用时 ${formatDuration(elapsedSeconds * 1000)}`
     : "";
-  const className = `mt-2 inline-flex max-w-full items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[11px] font-semibold ${tone} ${onOpenTrace ? "cursor-pointer transition-colors hover:border-blue-300 hover:text-blue-700" : ""}`;
+  const className = `mt-1.5 inline-flex max-w-full items-center gap-1 text-[11px] font-semibold ${tone} ${onOpenTrace ? "cursor-pointer transition-colors hover:text-blue-600" : ""}`;
   const content = (
     <>
       {icon}
