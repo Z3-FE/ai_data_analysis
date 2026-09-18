@@ -1,4 +1,12 @@
-"""Harness 工具结果 Artifact 的 PostgreSQL 持久化。"""
+"""Harness 工具结果 Artifact 的 PostgreSQL 持久化实现。
+
+实现 ``ResultArtifactStore`` 接口（契约见 app/agent/tool_runtime/artifacts.py）。
+关键机制：
+- 内容寻址：artifact_id = SHA-256(run_id:action_id:payload_hash)，重放同请求得同一引用
+- 身份边界：写入校验 run 存在且身份一致；读取按完整五元组过滤，裸 result_ref 不能越权
+- 幂等写：同 (run_id, action_id) 已存在时，内容一致幂等返回，不一致报冲突
+- 生命周期：写入时打 expires_at（默认 30 天），读取时校验过期
+"""
 
 from __future__ import annotations
 
@@ -21,10 +29,12 @@ from app.models.harness import HarnessArtifactModel, HarnessRunModel
 
 
 def _utcnow() -> datetime:
+    """统一取 UTC naive 当前时间，对齐数据库无时区列。"""
     return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _payload_bytes(payload: dict) -> bytes:
+    """规范 JSON 序列化（键排序 + 紧凑分隔符），保证同一内容的哈希逐字节一致。"""
     try:
         return json.dumps(
             payload,
@@ -47,8 +57,8 @@ class PostgresResultArtifactStore(ResultArtifactStore):
         self,
         session_factory: async_sessionmaker[AsyncSession],
         *,
-        max_payload_bytes: int = 16 * 1024 * 1024,
-        retention_days: int = 30,
+        max_payload_bytes: int = 16 * 1024 * 1024,  # 单个 Artifact 的字节上限
+        retention_days: int = 30,  # 保留天数：写入时算 expires_at，读取时校验
     ) -> None:
         if max_payload_bytes <= 0:
             raise ValueError("max_payload_bytes 必须大于 0")
@@ -60,6 +70,7 @@ class PostgresResultArtifactStore(ResultArtifactStore):
 
     @staticmethod
     def _assert_run(run: HarnessRunModel | None, request: ArtifactWriteRequest) -> None:
+        """写入前身份校验：run 必须存在，且会话/线程/轮次与请求 run_ref 完全一致。"""
         if run is None:
             raise ArtifactStoreError(
                 "artifact_run_not_found", "Harness run 不存在", retryable=False
@@ -74,6 +85,7 @@ class PostgresResultArtifactStore(ResultArtifactStore):
 
     @staticmethod
     def _record(model: HarnessArtifactModel) -> ArtifactRecord:
+        """ORM 行转领域记录；时间列补回 UTC 时区。"""
         return ArtifactRecord(
             artifact_id=model.artifact_id,
             result_ref=model.result_ref,
@@ -95,6 +107,7 @@ class PostgresResultArtifactStore(ResultArtifactStore):
         )
 
     async def save(self, request: ArtifactWriteRequest) -> ArtifactRecord:
+        """保存工具结果；同一动作内容一致则幂等返回，不一致则拒绝覆盖。"""
         payload_bytes = _payload_bytes(request.payload)
         if len(payload_bytes) > self.max_payload_bytes:
             raise ArtifactStoreError(
@@ -103,6 +116,7 @@ class PostgresResultArtifactStore(ResultArtifactStore):
                 retryable=False,
             )
         payload_hash = hashlib.sha256(payload_bytes).hexdigest()
+        # 内容寻址 + 动作绑定：同 run 同动作同内容必得同一 artifact_id/result_ref
         artifact_id = hashlib.sha256(
             f"{request.run_ref.run_id}:{request.action_id}:{payload_hash}".encode("utf-8")
         ).hexdigest()
@@ -114,9 +128,10 @@ class PostgresResultArtifactStore(ResultArtifactStore):
                 run = await session.scalar(
                     select(HarnessRunModel)
                     .where(HarnessRunModel.run_id == request.run_ref.run_id)
-                    .with_for_update()
+                    .with_for_update()  # 行锁：串行化同 run 的并发写入与幂等判断
                 )
                 self._assert_run(run, request)
+                # 幂等分支：同 (run_id, action_id) 已存在 → 内容一致原样返回，不一致报冲突
                 existing = await session.scalar(
                     select(HarnessArtifactModel).where(
                         HarnessArtifactModel.run_id == request.run_ref.run_id,
@@ -159,6 +174,7 @@ class PostgresResultArtifactStore(ResultArtifactStore):
         except ArtifactStoreError:
             raise
         except IntegrityError as exc:
+            # 唯一键并发冲突：标记可重试，由工具重试预算兜底
             raise ArtifactStoreError(
                 "artifact_conflict",
                 "Artifact 并发写入冲突",
@@ -172,10 +188,12 @@ class PostgresResultArtifactStore(ResultArtifactStore):
             ) from exc
 
     async def read(self, request: ArtifactReadRequest) -> ArtifactRecord:
+        """按完整运行身份读取；result_ref 只是定位符，不是授权凭证。"""
         try:
             async with self.session_factory() as session:
                 model = await session.scalar(
                     select(HarnessArtifactModel).where(
+                        # 五元组全部入 WHERE：拿到别的运行留下的 result_ref 也读不到
                         HarnessArtifactModel.result_ref == request.result_ref,
                         HarnessArtifactModel.run_id == request.run_ref.run_id,
                         HarnessArtifactModel.user_id == request.run_ref.user_id,
