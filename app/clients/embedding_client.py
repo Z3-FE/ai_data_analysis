@@ -42,7 +42,7 @@ class EmbeddingClientManager:
 
     def _build_client(self) -> Embeddings:
         """按 provider 构建对应的 Embedding 客户端。"""
-        if self.config.provider == "dashscope":
+        if self.config.provider == "openai-compatible":
             # check_embedding_ctx_length=False 避免按 OpenAI 词表切分中文文本。
             return OpenAIEmbeddings(
                 model=self.config.model_name,

@@ -159,7 +159,7 @@ class EmbeddingConfig:
     @property
     def active_model(self) -> str:
         """当前生效的模型标识，用于记忆编码器命名等场景。"""
-        return self.model_name if self.provider == "dashscope" else self.model
+        return self.model_name if self.provider == "openai-compatible" else self.model
 
 
 @dataclass(frozen=True)
