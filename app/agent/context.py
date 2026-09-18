@@ -30,6 +30,8 @@ from app.core.config import settings
 class AgentContext(TypedDict):
     """LangGraph Runtime 中传递的外部依赖。"""
 
+    # 生产实例是 AutoLLMAdapter（app/clients/auto_llm_client.py，由 llm_client_manager 启动时创建）；
+    # 节点用 getattr 探测其扩展能力：有 ainvoke_auto/astream_auto 走 AutoLLM 流，否则退回普通 Runnable。
     llm_client: Any
     embedding_client: Any
     dimension_value_search: DimensionValueSearch
