@@ -131,6 +131,8 @@ class RunObservation(ContractModel):
     tool_name: str = Field(min_length=1)
     status: ResultStatus
     summary: str = Field(min_length=1, max_length=4_000)
+    # 完整结果的 Artifact 引用（形如 artifact:xxx）：内容整体落 PG 的 harness_artifacts 表，
+    # 链路里只传这个引用；读取需凭完整运行身份经 ArtifactStore，Planner 只看 summary。
     result_ref: str | None = Field(default=None, min_length=1)
     evidence_refs: list[str] = Field(default_factory=list, max_length=32)
     limitations: list[str] = Field(default_factory=list, max_length=32)
@@ -376,6 +378,8 @@ class ToolResult(ContractModel):
     tool_name: str = Field(min_length=1)
     status: ResultStatus
     summary: str = Field(min_length=1, max_length=4_000)
+    # 完整结果的 Artifact 引用（形如 artifact:xxx）：内容整体落 PG 的 harness_artifacts 表，
+    # 链路里只传这个引用；读取需凭完整运行身份经 ArtifactStore，Planner 只看 summary。
     result_ref: str | None = Field(default=None, min_length=1)
     evidence_refs: list[str] = Field(default_factory=list, max_length=32)
     limitations: list[str] = Field(default_factory=list, max_length=32)
