@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import {
   buildTasks,
+  customEventOf,
   formatDuration,
   progressKind,
   runFailed,
@@ -54,7 +55,7 @@ function deriveRunStages(events: DebugEvent[], tasks: TaskSummary[]): RunStage[]
   const has = (predicate: (event: DebugEvent) => boolean) => events.some(predicate);
   const stages: RunStage[] = [];
 
-  if (has((event) => event.type.startsWith("context.") || event.type === "question_route")) {
+  if (has((event) => event.type.startsWith("context.") || customEventOf(event, "question_route"))) {
     const status: RunStatus = has((event) => event.type === "context.failed")
       ? "failed"
       : has((event) => event.type === "context.completed")
@@ -63,12 +64,12 @@ function deriveRunStages(events: DebugEvent[], tasks: TaskSummary[]): RunStage[]
     stages.push({ key: "understand", label: "理解问题并召回上下文", status });
   }
 
-  if (has((event) => event.type.startsWith("planner.") || event.type === "analysis_plan")) {
-    const planFailed = has((event) => event.type === "analysis_plan" && event.status === "failed");
+  if (has((event) => event.type.startsWith("planner.") || customEventOf(event, "analysis_plan"))) {
+    const planFailed = has((event) => customEventOf(event, "analysis_plan") && event.status === "failed");
     const status: RunStatus = planFailed || has((event) => event.type === "planner.failed")
       ? "failed"
       : has((event) => event.type === "planner.completed")
-        || has((event) => event.type === "analysis_plan" && event.status === "success")
+        || has((event) => customEventOf(event, "analysis_plan") && event.status === "success")
         ? "success"
         : "running";
     stages.push({
@@ -101,8 +102,8 @@ function deriveRunStages(events: DebugEvent[], tasks: TaskSummary[]): RunStage[]
     }
   }
 
-  if (has((event) => event.type === "report_plan_result" || event.type === "rendered_report")) {
-    const status: RunStatus = has((event) => event.type === "rendered_report" || event.type === "run.completed")
+  if (has((event) => customEventOf(event, "report_plan_result") || customEventOf(event, "rendered_report"))) {
+    const status: RunStatus = has((event) => customEventOf(event, "rendered_report") || event.type === "run.completed")
       ? "success"
       : "running";
     stages.push({ key: "report", label: "汇总生成报告", status });

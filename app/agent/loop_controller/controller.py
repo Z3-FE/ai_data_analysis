@@ -927,6 +927,22 @@ class LoopController:
             },
         )
         snapshot = self._context_snapshot(compiled_context)
+        plan = compiled_context.trace.retrieval_plan
+        self._emit(
+            run_ref,
+            "context.plan",
+            phase=phase,
+            iteration=int(state["harness"]["iteration"]),
+            payload={
+                "include_working": plan.include_working,
+                "memory_types": [item.value for item in plan.memory_types],
+                "use_rag": plan.use_rag,
+                "reason": plan.reason,
+                "candidate_count": compiled_context.trace.candidate_count,
+                "selected_count": compiled_context.trace.selected_count,
+                "token_count": compiled_context.token_count,
+            },
+        )
         self._emit(
             run_ref,
             "context.context_compiled",

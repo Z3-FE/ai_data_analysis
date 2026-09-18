@@ -339,7 +339,7 @@ function statusForEvents(events: DebugEvent[], fallback?: RunStatus, runComplete
 }
 
 function taskStatus(events: DebugEvent[]): RunStatus {
-  const result = events.filter((event) => event.type === "analysis_task_result").at(-1);
+  const result = events.filter((event) => customEventOf(event, "analysis_task_result")).at(-1);
   if (result && result.status === "failed") return "failed";
   if (result && result.status === "partial") return "partial";
   if (result) return "success";
@@ -350,7 +350,7 @@ function taskStatus(events: DebugEvent[]): RunStatus {
 function eventScope(event: DebugEvent) {
   const phase = typeof event.payload.phase === "string"
     ? event.payload.phase
-    : event.type === "analysis_task_resolved"
+    : customEventOf(event, "analysis_task_resolved")
       ? "解析依赖结果"
       : "";
   return eventBaseScope(event) + "::" + phase;
@@ -368,7 +368,7 @@ function currentEvents(events: DebugEvent[]) {
   // 分析任务的最终结果没有 phase，必须覆盖同一任务下此前各阶段的 running。
   const terminalTaskScopes = new Set(
     events
-      .filter((event) => event.type === "analysis_task_result")
+      .filter((event) => customEventOf(event, "analysis_task_result"))
       .map(eventBaseScope),
   );
   const terminalScopes = new Set(
@@ -376,7 +376,7 @@ function currentEvents(events: DebugEvent[]) {
       .filter((event) =>
         event.type === "error" ||
         terminal(event.status) ||
-        event.type === "analysis_task_resolved",
+        customEventOf(event, "analysis_task_resolved"),
       )
       .map(eventScope),
   );
@@ -384,7 +384,7 @@ function currentEvents(events: DebugEvent[]) {
   for (const event of events) {
     if (event.status === "running" && !terminalTaskScopes.has(eventBaseScope(event)) && !terminalScopes.has(eventScope(event))) {
       // 同一分析任务的不同 phase 是一条执行链，只保留最新的运行阶段。
-      const runningKey = event.type === "analysis_task_phase" ? eventBaseScope(event) : eventScope(event);
+      const runningKey = customEventOf(event, "analysis_task_phase") ? eventBaseScope(event) : eventScope(event);
       latestRunning.set(runningKey, event);
     }
   }
@@ -392,7 +392,7 @@ function currentEvents(events: DebugEvent[]) {
     if (event.status !== "running") return true;
     const baseScope = eventBaseScope(event);
     const scope = eventScope(event);
-    const runningKey = event.type === "analysis_task_phase" ? baseScope : scope;
+    const runningKey = customEventOf(event, "analysis_task_phase") ? baseScope : scope;
     return !terminalTaskScopes.has(baseScope) && !terminalScopes.has(scope) && latestRunning.get(runningKey) === event;
   });
 }
@@ -410,6 +410,7 @@ function displayLabel(event: DebugEvent) {
   if (event.type === "context.memory_retrieved") return "读取记忆";
   if (event.type === "context.knowledge_retrieved") return "召回语义知识";
   if (event.type === "context.context_compiled") return "上下文已组装";
+  if (event.type === "context.plan") return "上下文召回规划";
   if (event.type === "context.completed") return "上下文构建完成";
   if (event.type === "planner.started") return "开始任务划分";
   if (event.type === "planner.completed") return "任务划分完成";
@@ -422,6 +423,14 @@ function displayLabel(event: DebugEvent) {
     const kind = progressKind(event);
     if (kind === "reasoning") return "思考过程";
     if (kind === "llm") return "模型输出";
+    const customType = event.payload.custom_type;
+    if (customType === "question_route") return "判断问题路由";
+    if (customType === "analysis_plan") return "分析计划";
+    if (customType === "analysis_task_phase") return "分析阶段" + phase;
+    if (customType === "analysis_task_resolved") return "依赖结果解析";
+    if (customType === "analysis_task_result") return "分析任务结果";
+    if (customType === "report_plan_result") return "报告规划结果";
+    if (customType === "rendered_report") return "最终报告";
     const count = typeof event.payload.compacted_count === "number"
       ? event.payload.compacted_count
       : 1;
@@ -489,6 +498,23 @@ export function progressKind(event: DebugEvent) {
   return "progress";
 }
 
+const ROUTE_MODE_LABELS: Record<string, string> = {
+  daily_chat: "日常聊天",
+  single_query: "单次查询",
+  analysis: "数据分析",
+  clarification: "需要澄清",
+};
+
+/** custom 事件在 harness 链路被归一化为 tool.progress + custom_type；旧 agent 链路保留原始 type。两种形态都要识别。 */
+export function customEventOf(event: DebugEvent, name: string) {
+  return event.type === name
+    || (event.type === "tool.progress" && event.payload.custom_type === name);
+}
+
+function formatTokens(count: number) {
+  return count >= 1000 ? `${(count / 1000).toFixed(1)}k tokens` : `${count} tokens`;
+}
+
 function compactAllEvents(events: DebugEvent[]): DebugEvent[] {
   const compacted: DebugEvent[] = [];
   const compactIndexes = new Map<string, number>();
@@ -541,6 +567,12 @@ function compactAllEvents(events: DebugEvent[]): DebugEvent[] {
     const compactedCount = typeof current.payload.compacted_count === "number"
       ? current.payload.compacted_count
       : 1;
+    // 普通进度桶先收到裸 progress、后收到同名业务事件时，用业务事件的 custom_type 命名合并项。
+    const currentCustomType = String(current.payload.custom_type || "progress");
+    const incomingCustomType = String(event.payload.custom_type || "progress");
+    const mergedCustomType = currentCustomType === "progress" && incomingCustomType !== "progress"
+      ? incomingCustomType
+      : currentCustomType;
     compacted[existingIndex] = {
       ...current,
       sequence: event.sequence,
@@ -552,6 +584,7 @@ function compactAllEvents(events: DebugEvent[]): DebugEvent[] {
         combined_text: currentText + chunk,
         chunk_count: chunkCount + 1,
         ...(isToolProgress ? { compacted_count: compactedCount + 1 } : {}),
+        ...(mergedCustomType !== currentCustomType ? { custom_type: mergedCustomType } : {}),
         last_sequence: event.sequence,
       },
     };
@@ -580,7 +613,7 @@ function nodeGroups(events: DebugEvent[], fallback?: RunStatus, runCompleted = f
 export function buildTasks(events: DebugEvent[]): TaskSummary[] {
   const summaries = new Map<string, TaskSummary>();
   for (const event of events) {
-    if (event.type !== "analysis_plan" || !Array.isArray(event.payload.tasks)) continue;
+    if (!customEventOf(event, "analysis_plan") || !Array.isArray(event.payload.tasks)) continue;
     for (const item of event.payload.tasks) {
       const task = record(item);
       const taskId = typeof task.task_id === "string" || typeof task.task_id === "number" ? String(task.task_id) : "";
@@ -636,11 +669,11 @@ function buildTaskGroups(tasks: TaskSummary[], runCompleted = false): TaskGroup[
 }
 
 function taskStepLabel(event: DebugEvent) {
-  if (event.type === "analysis_task_phase" && typeof event.payload.phase === "string") {
+  if (customEventOf(event, "analysis_task_phase") && typeof event.payload.phase === "string") {
     return event.payload.phase;
   }
-  if (event.type === "analysis_task_result") return "分析任务结果";
-  if (event.type === "analysis_task_resolved") return "依赖结果解析";
+  if (customEventOf(event, "analysis_task_result")) return "分析任务结果";
+  if (customEventOf(event, "analysis_task_resolved")) return "依赖结果解析";
   return event.step;
 }
 
@@ -782,23 +815,38 @@ function deriveProgressMilestones(ordered: DebugEvent[], tasks: TaskSummary[]): 
   };
   const milestones: ProgressMilestone[] = [];
 
-  const contextStart = firstMs((event) => event.type.startsWith("context.") || event.type === "question_route");
+  const contextStart = firstMs((event) => event.type.startsWith("context.") || customEventOf(event, "question_route"));
   if (Number.isFinite(contextStart)) {
     const boundary = ordered.find((event) => event.type === "context.completed" || event.type === "context.failed");
+    const routeEvent = ordered.find((event) => customEventOf(event, "question_route"));
+    const planEvent = ordered.find((event) => event.type === "context.plan");
+    const details: string[] = [];
+    if (routeEvent) {
+      const mode = typeof routeEvent.payload.execution_mode === "string" ? routeEvent.payload.execution_mode : "";
+      if (mode) details.push("路由：" + (ROUTE_MODE_LABELS[mode] ?? mode));
+    }
+    if (planEvent) {
+      const candidateCount = typeof planEvent.payload.candidate_count === "number" ? planEvent.payload.candidate_count : null;
+      const selectedCount = typeof planEvent.payload.selected_count === "number" ? planEvent.payload.selected_count : null;
+      const tokenCount = typeof planEvent.payload.token_count === "number" ? planEvent.payload.token_count : null;
+      if (candidateCount !== null && selectedCount !== null) details.push(`召回 ${selectedCount}/${candidateCount} 项`);
+      if (tokenCount !== null && tokenCount > 0) details.push(formatTokens(tokenCount));
+    }
     milestones.push({
       key: "understand",
       label: "理解问题并召回上下文",
       status: boundary?.type === "context.failed" ? "failed" : boundary ? "success" : "running",
+      detail: details.length ? details.join(" · ") : undefined,
       durationMs: boundary ? eventTimestampMs(boundary) - contextStart : undefined,
     });
   }
 
-  const planStart = firstMs((event) => event.type.startsWith("planner.") || event.type === "analysis_plan");
+  const planStart = firstMs((event) => event.type.startsWith("planner.") || customEventOf(event, "analysis_plan"));
   if (Number.isFinite(planStart)) {
     const boundary = ordered.find((event) =>
       event.type === "planner.completed"
       || event.type === "planner.failed"
-      || (event.type === "analysis_plan" && (event.status === "success" || event.status === "failed")));
+      || (customEventOf(event, "analysis_plan") && (event.status === "success" || event.status === "failed")));
     const planFailed = Boolean(boundary && (boundary.type === "planner.failed" || boundary.status === "failed"));
     const planErrorDetail = planFailed && boundary
       ? [boundary.payload.error_message, boundary.payload.error].find(
@@ -820,11 +868,11 @@ function deriveProgressMilestones(ordered: DebugEvent[], tasks: TaskSummary[]): 
       // phase 链：analysis_task_phase 依次推进，以下一个 phase / 依赖解析 / 任务结果作为当前段收口。
       const phases: ProgressPhase[] = [];
       taskEvents.forEach((event, eventIndex) => {
-        if (event.type !== "analysis_task_phase") return;
+        if (!customEventOf(event, "analysis_task_phase")) return;
         const next = taskEvents.slice(eventIndex + 1).find((item) =>
-          item.type === "analysis_task_phase"
-          || item.type === "analysis_task_resolved"
-          || item.type === "analysis_task_result");
+          customEventOf(item, "analysis_task_phase")
+          || customEventOf(item, "analysis_task_resolved")
+          || customEventOf(item, "analysis_task_result"));
         phases.push({
           label: typeof event.payload.phase === "string" ? event.payload.phase : "执行阶段",
           status: "success",
@@ -835,7 +883,7 @@ function deriveProgressMilestones(ordered: DebugEvent[], tasks: TaskSummary[]): 
         const lastPhase = phases[phases.length - 1];
         lastPhase.status = !terminal(task.status) ? "running" : task.status === "failed" ? "failed" : "success";
       }
-      const result = taskEvents.find((event) => event.type === "analysis_task_result");
+      const result = taskEvents.find((event) => customEventOf(event, "analysis_task_result"));
       const start = taskEvents.length ? eventTimestampMs(taskEvents[0]) : NaN;
       milestones.push({
         key: "task-" + task.task_id,
@@ -868,9 +916,9 @@ function deriveProgressMilestones(ordered: DebugEvent[], tasks: TaskSummary[]): 
   }
 
   const runCompleted = ordered.some((event) => event.type === "run.completed");
-  const reportStart = firstMs((event) => event.type === "report_plan_result" || event.type === "rendered_report");
+  const reportStart = firstMs((event) => customEventOf(event, "report_plan_result") || customEventOf(event, "rendered_report"));
   if (Number.isFinite(reportStart)) {
-    const boundary = ordered.find((event) => event.type === "rendered_report" || event.type === "run.completed");
+    const boundary = ordered.find((event) => customEventOf(event, "rendered_report") || event.type === "run.completed");
     milestones.push({
       key: "report",
       label: "汇总生成报告",
@@ -907,7 +955,7 @@ function deriveProgressHeadline(
   if (tasks.length) {
     const runningIndex = tasks.findIndex((task) => task.status === "running");
     const index = runningIndex >= 0 ? runningIndex : 0;
-    const phaseEvent = tasks[index].events.filter((event) => event.type === "analysis_task_phase").at(-1);
+    const phaseEvent = tasks[index].events.filter((event) => customEventOf(event, "analysis_task_phase")).at(-1);
     const phaseLabel = runningIndex >= 0 && phaseEvent && typeof phaseEvent.payload.phase === "string"
       ? ` · ${phaseEvent.payload.phase}`
       : "";
