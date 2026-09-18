@@ -1,4 +1,9 @@
-"""基于现有报告节点的 Harness build_report 工具。"""
+"""build_report 工具 —— 上游结果到可视化报告的适配器。
+
+凭完整运行身份从 ArtifactStore 读取 result_refs 指向的上游产物，归一化为报告任务，
+再复用旧图 generate_report_plan + render_report 渲染；本次报告由 ToolRuntime
+落成 rendered_report Artifact，收口时作为 final_output_ref。
+"""
 
 from __future__ import annotations
 
@@ -44,7 +49,7 @@ class BuildReportTool:
     async def execute(self, value: BuildReportInput) -> BuildReportOutput:
         """把上游结果归一化为分析证据，再复用报告规划和渲染节点。"""
         tasks: list[dict[str, Any]] = []
-        taken: set[str] = set()
+        taken: set[str] = set()  # 跨上游结果去重 task_id，报告组件按它引用数据
         for result_ref in dict.fromkeys(value.result_refs):
             record = await self.artifact_store.read(
                 ArtifactReadRequest(run_ref=self.run_ref, result_ref=result_ref)
@@ -69,6 +74,7 @@ class BuildReportTool:
         taken: set[str],
     ) -> list[dict[str, Any]]:
         """把一个上游结果 Artifact 转换为报告可引用的任务列表。"""
+        # 只有分析结果（多任务）与查询结果（映射为单任务）可进报告，其余拒绝
         if record.artifact_kind == "analysis_result":
             source_tasks = list(record.payload.get("analysis_task_results") or [])
         elif record.artifact_kind == "query_result":

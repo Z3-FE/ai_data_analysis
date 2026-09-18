@@ -1,4 +1,9 @@
-"""基于现有分析节点的 Harness analyze_data 工具。"""
+"""analyze_data 工具 —— 复用旧图分析节点的一次性深度分析适配器。
+
+直调 plan_analysis + execute_analysis 两个节点（非图编排）：一次工具调用内完成
+"分析计划 → 逐任务查询与计算 → 证据汇总"；节点进度经 stream_writer 桥接为
+tool.progress；完整任务结果由 ToolRuntime 落成 analysis_result Artifact。
+"""
 
 from __future__ import annotations
 
@@ -53,10 +58,12 @@ class AnalyzeDataTool:
             "analysis_goals": list(value.analysis_goals),
             "query_max_rows": self.max_rows,
         }
+        # 旧图节点的依赖入口：context 取依赖，stream_writer 发进度（桥接为 tool.progress）
         runtime = SimpleNamespace(
             context=self.context,
             stream_writer=self.event_writer.custom,
         )
+        # 两节点直调：先产出分析计划，再逐任务执行查询与计算
         planned = await plan_analysis(state, runtime)
         state.update(planned)
         executed = await execute_analysis(state, runtime)
@@ -111,6 +118,7 @@ class AnalyzeDataTool:
         analysis_summary = str(evidence.get("analysis_summary") or "").strip()
         if analysis_summary:
             lines.append(f"分析目标：{analysis_summary}")
+        # 摘要总量受控：任务行最多 9 行、单条计算事实截 1200 字符、整体 7800 字符
         for task in task_results:
             if len(lines) >= 9:
                 break
