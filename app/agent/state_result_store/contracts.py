@@ -78,11 +78,13 @@ class ContractModel(BaseModel):
 
 
 class HarnessRunRef(ContractModel):
-    user_id: str = Field(min_length=1)
-    conversation_id: str = Field(min_length=1)
-    thread_id: str = Field(min_length=1)
-    turn_id: str = Field(min_length=1)
-    run_id: str = Field(min_length=1)
+    """一次 Harness 运行的完整身份五元组；所有状态存取、事件归属、确认恢复、收口对账都凭它定位。"""
+
+    user_id: str = Field(min_length=1)  # 运行归属用户（当前未接登录，默认 default_user_id）
+    conversation_id: str = Field(min_length=1)  # 会话 —— 前端聊天列表里的一个会话
+    thread_id: str = Field(min_length=1)  # 线程 —— 当前实现恒等于 conversation_id（run/resume 入口处），为一会话多线程预留
+    turn_id: str = Field(min_length=1)  # 轮次 —— 会话中一次问答，start_turn 时创建
+    run_id: str = Field(min_length=1)  # 运行 —— 一次 Harness 控制器执行；暂停后 resume 仍是同一个 run
 
 
 class HarnessRequest(ContractModel):
