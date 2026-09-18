@@ -74,16 +74,27 @@ SQL files are executed in this order:
 | `scripts/mysql/06_validate_import.sql` | Prints row counts and key validation metrics after import. |
 ## FastAPI Backend
 
-The backend is currently a minimal FastAPI skeleton with a first MySQL-backed API call.
+The backend is a FastAPI + LangGraph Agent harness: conversations with SSE
+streaming, semantic retrieval over metadata vectors, and agent memory. The
+routes live in `app/api/routers/` (`meta`, `agent`, `conversations`, `harness`).
 
 - `GET /health` returns `{"status": "ok"}`
 - `GET /api/ping` returns `{"message": "pong"}`
 - `GET /api/meta/tables` returns table metadata from the `meta.tables` table
+- `POST /api/agent/run/stream` runs a streaming agent analysis
+- `POST /api/harness/run/resume/stream` resumes a paused run after confirmation
 
 Run the server:
 
 ```bash
 uv run uvicorn app.main:app --reload
+```
+
+Dependency services: MySQL、Qdrant、Elasticsearch、Neo4j run in Docker, and
+Postgres runs as a local service (conversations and the LangGraph checkpointer):
+
+```bash
+docker compose -f docker/docker-compose.yml up -d mysql qdrant elasticsearch neo4j
 ```
 
 Current local service defaults are defined in `config.yaml`:
@@ -94,11 +105,17 @@ Current local service defaults are defined in `config.yaml`:
 - MySQL password: `123456`
 - DW database: `dw`
 - Meta database: `meta`
+- Postgres: `127.0.0.1:5432`, database `agent_app`
+- Neo4j: `bolt://127.0.0.1:7687`（Semantic Memory 实体关系投影）
+- Elasticsearch: `http://127.0.0.1:9200`（维度值全文检索）
 - Qdrant URL: `http://127.0.0.1:6333`
-- Embedding URL: `http://127.0.0.1:8081`
+- Embedding: 硅基流动 OpenAI 兼容接口，模型 `Qwen/Qwen3-Embedding-4B`（1024 维），
+  API Key 从 `.env` 的 `SILICONFLOW_API_KEY` 读取；仅 `provider: local` 时才使用
+  `http://127.0.0.1:8081`
 - Table vector collection: `meta_tables_semantic`
 - Column vector collection: `meta_columns_semantic`
 - Metric vector collection: `meta_metrics_semantic`
+- Dimension value vector collection: `meta_dimension_values_semantic`
 
 Logging defaults are also defined in `config.yaml`:
 
@@ -119,7 +136,7 @@ logging:
 | Collection | 向量来源 | 预期 points |
 | --- | --- | ---: |
 | `meta_tables_semantic` | `business_name`、`table_name`、`description`、`grain`、`aliases` | 60 |
-| `meta_columns_semantic` | `column_name`、`business_name`、`description`、`aliases` | 56 |
+| `meta_columns_semantic` | `column_name`、`business_name`、`description`、`aliases` | 188 |
 | `meta_metrics_semantic` | `metric_name`、`business_name`、`description`、`aliases` | 40 |
 
 指标计算口径 `expression_sql`、基础表 `base_table_id`、聚合方式和单位只保留在
@@ -128,7 +145,7 @@ payload 中，不单独生成向量。
 先启动依赖服务：
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d mysql qdrant embedding
+docker compose -f docker/docker-compose.yml up -d mysql qdrant
 ```
 
 执行统一构建：
@@ -137,6 +154,19 @@ docker compose -f docker/docker-compose.yml up -d mysql qdrant embedding
 uv run python -m app.scripts.build_meta_vectors
 ```
 
-脚本按 tables、columns、metrics 的顺序重建 collection，成功时总计应为 156 个
-points。当前 macOS Docker 环境使用 TEI CPU 后端，批次大小设为 1，以规避
-cpu-1.8 内部队列阻塞。批次大小和重试参数统一配置在 `config.yaml` 中。
+脚本按 tables、columns、metrics 的顺序重建 collection，成功时总计应为 288 个
+points。Embedding 当前使用硅基流动云端接口（`Qwen/Qwen3-Embedding-4B`，1024 维），
+需在 `.env` 中配置 `SILICONFLOW_API_KEY`；批次大小等参数统一配置在 `config.yaml`
+中。切换 embedding 模型意味着向量空间整体变化，必须重建所有向量集合。
+
+## Build Dimension Value Indexes
+
+维度值同时构建 Elasticsearch 全文索引和 Qdrant 语义索引（当前共 655 个 points）：
+
+```bash
+uv run python -m app.scripts.build_dimension_value_indexes
+```
+
+脚本重建 ES 物理索引并原子切换 alias；Qdrant 侧按 `point_id` 断点续建。注意：
+更换 embedding 模型后重跑前需先删除 `meta_dimension_values_semantic` collection，
+否则已存在的旧向量会被跳过，导致新旧向量空间混用。
