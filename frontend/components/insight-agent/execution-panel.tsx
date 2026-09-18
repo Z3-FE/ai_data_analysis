@@ -137,6 +137,34 @@ function terminal(status: RunStatus | undefined) {
   return status === "success" || status === "partial" || status === "failed";
 }
 
+/** 运行级中断事件：失败/超时/取消/流断连。 */
+export function runFailed(events: DebugEvent[]) {
+  return events.some((event) =>
+    event.type === "run.failed"
+    || event.type === "run.timeout"
+    || event.type === "run.cancelled"
+    || event.type === "stream.failed");
+}
+
+/** 服务端 timestamp 优先（历史 trace 的 receivedAt 均为补拉时刻），缺省退回本地接收时间。 */
+export function eventTimestampMs(event: DebugEvent) {
+  const server = typeof event.payload.timestamp === "string" ? Date.parse(event.payload.timestamp) : NaN;
+  if (Number.isFinite(server)) return server;
+  const local = Date.parse(event.receivedAt);
+  return Number.isFinite(local) ? local : NaN;
+}
+
+/** 毫秒时长转人类可读文案；无效或非正数返回空串。 */
+export function formatDuration(ms: number) {
+  if (!Number.isFinite(ms) || ms <= 0) return "";
+  const seconds = ms / 1000;
+  if (seconds < 1) return "<1 秒";
+  if (seconds < 60) return `${Math.round(seconds)} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = Math.round(seconds % 60);
+  return rest ? `${minutes} 分 ${rest} 秒` : `${minutes} 分钟`;
+}
+
 function mainStep(sourceStep: string, type: string) {
   if (type === "run.started") return "开始执行";
   if (type === "run.completed" || type === "run.failed" || type === "run.timeout" || type === "run.cancelled" || type === "run.result" || type === "stream.failed") return "运行结果";
@@ -731,24 +759,263 @@ function RoundCard({ group }: { group: RoundGroup }) {
   return <details open={group.status === "running" || group.status === "failed"} className="group rounded-xl border border-slate-200 bg-slate-50/60"><summary className="flex cursor-pointer list-none items-start gap-2 px-3 py-3"><ChevronRight className="mt-0.5 size-3.5 shrink-0 text-slate-400 transition-transform group-open:rotate-90" /><StatusIcon status={group.status} /><span className="min-w-0 flex-1"><span className="block text-xs font-extrabold text-slate-700">{group.label}</span>{group.summary && <span className="mt-1 block text-[10px] text-slate-400">{group.summary}</span>}</span><span className="shrink-0 text-[10px] text-slate-400">{group.status}</span></summary><div className="space-y-2 border-t border-slate-100 px-2.5 pb-3 pt-2.5">{group.steps.map((step) => <StepCard key={step.step} group={step} />)}</div></details>;
 }
 
-function ProgressView({ events, tasks }: { events: DebugEvent[]; tasks: TaskSummary[] }) {
-  const runCompleted = events.some((event) => event.type === "run.completed");
-  const groups = new Map<string, DebugEvent[]>();
-  for (const event of events.filter((item) => !STREAM_EVENT_TYPES.has(item.type) && !item.taskId)) {
-    const label = event.step;
-    groups.set(label, [...(groups.get(label) || []), event]);
+interface ProgressPhase {
+  label: string;
+  status: RunStatus;
+  durationMs?: number;
+}
+
+interface ProgressMilestone {
+  key: string;
+  label: string;
+  status: RunStatus;
+  detail?: string;
+  durationMs?: number;
+  phases?: ProgressPhase[];
+}
+
+/** 进度里程碑：按时间拍平的叙事（理解 → 划分 → 任务/查询 → 报告）；轮次与生命周期样板在步骤返回 tab 查看。 */
+function deriveProgressMilestones(ordered: DebugEvent[], tasks: TaskSummary[]): ProgressMilestone[] {
+  const firstMs = (predicate: (event: DebugEvent) => boolean) => {
+    const event = ordered.find(predicate);
+    return event ? eventTimestampMs(event) : NaN;
+  };
+  const milestones: ProgressMilestone[] = [];
+
+  const contextStart = firstMs((event) => event.type.startsWith("context.") || event.type === "question_route");
+  if (Number.isFinite(contextStart)) {
+    const boundary = ordered.find((event) => event.type === "context.completed" || event.type === "context.failed");
+    milestones.push({
+      key: "understand",
+      label: "理解问题并召回上下文",
+      status: boundary?.type === "context.failed" ? "failed" : boundary ? "success" : "running",
+      durationMs: boundary ? eventTimestampMs(boundary) - contextStart : undefined,
+    });
   }
-  if (tasks.length) groups.set("执行分析任务", [taskOverview(tasks)]);
-  const steps = Array.from(groups.entries())
-    .map(([step, values]) => ({
-      step,
-      status: step === "执行分析任务" ? aggregateTaskStatus(tasks) : statusForEvents(currentEvents(values), undefined, runCompleted),
-      latest: values[values.length - 1],
-    }))
-    .sort((left, right) => orderOf(left.step) - orderOf(right.step));
-  const completed = tasks.filter((task) => terminal(task.status)).length;
-  const currentRound = events.reduce((max, event) => Math.max(max, event.iteration), -1);
-  return <>{currentRound >= 0 && <div className="mb-3 text-[11px] font-bold text-slate-500">第 {currentRound + 1} 轮</div>}<div className="space-y-3">{steps.map((step, index) => <div key={step.step} className="relative flex gap-3">{index < steps.length - 1 && <span className="absolute left-[7px] top-5 h-[calc(100%+12px)] w-px bg-slate-200" />}<StatusIcon status={step.status} /><div className="min-w-0 pb-1"><div className="text-xs font-bold text-slate-700">{step.step}</div>{step.step === "执行分析任务" && tasks.length ? <div className="mt-1 text-[11px] text-slate-400">已完成 {completed} / {tasks.length} 个分析任务</div> : typeof step.latest.payload.message === "string" ? <div className="mt-1 break-words text-[11px] leading-5 text-slate-400">{step.latest.payload.message}</div> : null}</div></div>)}{!steps.length && <div className="py-10 text-center text-xs text-slate-400">提交问题后显示执行步骤</div>}</div>{tasks.length ? <div className="mt-4 border-t border-slate-100 pt-4"><div className="mb-2 flex items-center justify-between text-[11px] font-bold text-slate-400"><span>分析任务总进度</span><span>{completed} / {tasks.length}</span></div><div className="h-1.5 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-blue-500 transition-all" style={{ width: (completed / tasks.length * 100) + "%" }} /></div></div> : null}</>;
+
+  const planStart = firstMs((event) => event.type.startsWith("planner.") || event.type === "analysis_plan");
+  if (Number.isFinite(planStart)) {
+    const boundary = ordered.find((event) =>
+      event.type === "planner.completed"
+      || event.type === "planner.failed"
+      || (event.type === "analysis_plan" && (event.status === "success" || event.status === "failed")));
+    milestones.push({
+      key: "plan",
+      label: "划分分析任务",
+      status: boundary && (boundary.type === "planner.failed" || boundary.status === "failed") ? "failed" : boundary ? "success" : "running",
+      detail: tasks.length ? `${tasks.length} 个任务` : undefined,
+      durationMs: boundary ? eventTimestampMs(boundary) - planStart : undefined,
+    });
+  }
+
+  if (tasks.length) {
+    tasks.forEach((task, index) => {
+      const taskEvents = task.events.slice().sort((left, right) => eventOrder(left) - eventOrder(right));
+      // phase 链：analysis_task_phase 依次推进，以下一个 phase / 依赖解析 / 任务结果作为当前段收口。
+      const phases: ProgressPhase[] = [];
+      taskEvents.forEach((event, eventIndex) => {
+        if (event.type !== "analysis_task_phase") return;
+        const next = taskEvents.slice(eventIndex + 1).find((item) =>
+          item.type === "analysis_task_phase"
+          || item.type === "analysis_task_resolved"
+          || item.type === "analysis_task_result");
+        phases.push({
+          label: typeof event.payload.phase === "string" ? event.payload.phase : "执行阶段",
+          status: "success",
+          durationMs: next ? eventTimestampMs(next) - eventTimestampMs(event) : undefined,
+        });
+      });
+      if (phases.length) {
+        const lastPhase = phases[phases.length - 1];
+        lastPhase.status = !terminal(task.status) ? "running" : task.status === "failed" ? "failed" : "success";
+      }
+      const result = taskEvents.find((event) => event.type === "analysis_task_result");
+      const start = taskEvents.length ? eventTimestampMs(taskEvents[0]) : NaN;
+      milestones.push({
+        key: "task-" + task.task_id,
+        label: `任务 ${index + 1} · ${task.question || task.task_id}`,
+        status: task.status,
+        durationMs: result ? eventTimestampMs(result) - start : undefined,
+        phases,
+      });
+    });
+  } else if (ordered.some((event) => event.type === "action.committed" || event.type.startsWith("tool."))) {
+    // 无任务清单时按工具执行聚合；多轮循环以最后一次终态收口，后续新的 started 重新打开。
+    let status: RunStatus = "running";
+    let endMs = NaN;
+    for (const event of ordered) {
+      if (event.type === "tool.completed" || event.type === "tool.failed") {
+        endMs = eventTimestampMs(event);
+        status = event.type === "tool.failed" ? "failed" : "success";
+      } else if ((event.type === "tool.started" || event.type === "action.committed") && Number.isFinite(endMs)) {
+        status = "running";
+        endMs = NaN;
+      }
+    }
+    const start = firstMs((event) => event.type === "action.committed" || event.type.startsWith("tool."));
+    milestones.push({
+      key: "execute",
+      label: "执行数据查询",
+      status,
+      durationMs: Number.isFinite(endMs) ? endMs - start : undefined,
+    });
+  }
+
+  const runCompleted = ordered.some((event) => event.type === "run.completed");
+  const reportStart = firstMs((event) => event.type === "report_plan_result" || event.type === "rendered_report");
+  if (Number.isFinite(reportStart)) {
+    const boundary = ordered.find((event) => event.type === "rendered_report" || event.type === "run.completed");
+    milestones.push({
+      key: "report",
+      label: "汇总生成报告",
+      status: boundary ? "success" : "running",
+      durationMs: boundary ? eventTimestampMs(boundary) - reportStart : undefined,
+    });
+  } else if (tasks.length && !runCompleted) {
+    // 任务已规划、报告阶段未开始：以待办里程碑回答「还剩什么」。
+    milestones.push({ key: "report", label: "汇总生成报告", status: "pending" });
+  }
+
+  if (runFailed(ordered)) {
+    for (let index = milestones.length - 1; index >= 0; index -= 1) {
+      if (milestones[index].status === "running") {
+        milestones[index].status = "failed";
+        break;
+      }
+    }
+  }
+  return milestones;
+}
+
+function deriveProgressHeadline(
+  ordered: DebugEvent[],
+  tasks: TaskSummary[],
+  milestones: ProgressMilestone[],
+): { text: string; tone: "running" | "success" | "failed" | "waiting" } {
+  if (ordered.some((event) => event.type === "confirmation.required")
+    && !ordered.some((event) => event.type === "confirmation.resolved")) {
+    return { text: "等待你确认", tone: "waiting" };
+  }
+  if (runFailed(ordered)) return { text: "执行失败", tone: "failed" };
+  if (ordered.some((event) => event.type === "run.completed")) return { text: "已完成", tone: "success" };
+  if (tasks.length) {
+    const runningIndex = tasks.findIndex((task) => task.status === "running");
+    const index = runningIndex >= 0 ? runningIndex : 0;
+    const phaseEvent = tasks[index].events.filter((event) => event.type === "analysis_task_phase").at(-1);
+    const phaseLabel = runningIndex >= 0 && phaseEvent && typeof phaseEvent.payload.phase === "string"
+      ? ` · ${phaseEvent.payload.phase}`
+      : "";
+    return { text: `正在执行 任务 ${index + 1}/${tasks.length}${phaseLabel}`, tone: "running" };
+  }
+  const running = milestones.find((milestone) => milestone.status === "running");
+  if (running) {
+    const text = running.key === "understand" ? "正在理解问题"
+      : running.key === "plan" ? "正在划分分析任务"
+      : running.key === "execute" ? "正在执行数据查询"
+      : running.key === "report" ? "正在汇总生成报告"
+      : "正在执行";
+    return { text, tone: "running" };
+  }
+  return { text: "正在准备执行", tone: "running" };
+}
+
+function ProgressMilestoneRow({ milestone }: { milestone: ProgressMilestone }) {
+  return (
+    <div className="flex items-start gap-2.5">
+      <span className="mt-0.5 shrink-0"><StatusIcon status={milestone.status} /></span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className={"truncate text-xs font-bold " + (milestone.status === "running" ? "text-blue-700" : "text-slate-700")}>
+            {milestone.label}
+          </span>
+          {typeof milestone.durationMs === "number" && milestone.durationMs > 0 && (
+            <span className="shrink-0 text-[10px] text-slate-400">{formatDuration(milestone.durationMs)}</span>
+          )}
+        </div>
+        {milestone.phases && milestone.phases.length > 0 && (
+          <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] leading-4">
+            {milestone.phases.map((phase, index) => (
+              <span key={milestone.key + "-phase-" + index} className="flex items-center gap-1.5">
+                {index > 0 && <span className="text-slate-300">→</span>}
+                <span className={
+                  phase.status === "running" ? "font-bold text-blue-600"
+                    : phase.status === "failed" ? "text-rose-500"
+                    : "text-slate-400"
+                }>
+                  {phase.label}
+                  {typeof phase.durationMs === "number" && phase.durationMs > 0 ? ` ${formatDuration(phase.durationMs)}` : ""}
+                </span>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProgressView({ events, tasks }: { events: DebugEvent[]; tasks: TaskSummary[] }) {
+  const ordered = events.slice().sort((left, right) => eventOrder(left) - eventOrder(right));
+  const runCompleted = ordered.some((event) => event.type === "run.completed");
+  const interrupted = runFailed(ordered);
+  const waitingConfirmation = ordered.some((event) => event.type === "confirmation.required")
+    && !ordered.some((event) => event.type === "confirmation.resolved");
+  const live = !runCompleted && !interrupted && !waitingConfirmation;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!live) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [live]);
+
+  const milestones = deriveProgressMilestones(ordered, tasks);
+  const headline = deriveProgressHeadline(ordered, tasks, milestones);
+  const startMs = ordered.length ? eventTimestampMs(ordered[0]) : NaN;
+  const terminalEvents = ordered.filter((event) =>
+    event.type === "run.completed"
+    || event.type === "run.failed"
+    || event.type === "run.timeout"
+    || event.type === "run.cancelled"
+    || event.type === "confirmation.required"
+    || event.type === "stream.failed");
+  const endMs = terminalEvents.length ? eventTimestampMs(terminalEvents[terminalEvents.length - 1]) : now;
+  const elapsedMs = Number.isFinite(startMs) ? Math.max(0, (live ? now : endMs) - startMs) : 0;
+  const done = tasks.filter((task) => terminal(task.status)).length;
+  const percent = tasks.length ? Math.round((done / tasks.length) * 100) : runCompleted ? 100 : null;
+  const barTone = interrupted ? "bg-rose-500" : waitingConfirmation ? "bg-amber-400" : "bg-blue-500";
+  const headlineIcon = headline.tone === "running"
+    ? <Loader2 className="size-4 shrink-0 animate-spin text-blue-600" />
+    : headline.tone === "failed"
+      ? <XCircle className="size-4 shrink-0 text-rose-500" />
+      : headline.tone === "waiting"
+        ? <AlertCircle className="size-4 shrink-0 text-amber-500" />
+        : <CheckCircle2 className="size-4 shrink-0 text-emerald-500" />;
+  const headlineColor = headline.tone === "running" ? "text-blue-700"
+    : headline.tone === "failed" ? "text-rose-600"
+    : headline.tone === "waiting" ? "text-amber-600"
+    : "text-emerald-600";
+  return (
+    <div>
+      <div className="flex items-center gap-2">
+        {headlineIcon}
+        <span className={"text-sm font-extrabold " + headlineColor}>{headline.text}</span>
+      </div>
+      <div className="mt-2.5 flex items-center gap-2.5">
+        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
+          {percent === null
+            ? <div className={"h-full w-full animate-pulse rounded-full opacity-40 " + barTone} />
+            : <div className={"h-full rounded-full transition-all " + barTone} style={{ width: percent + "%" }} />}
+        </div>
+        <span className="shrink-0 text-[10px] font-bold text-slate-400">
+          {percent === null ? "执行中" : `${percent}%`} · 已执行 {formatDuration(elapsedMs) || "0 秒"}
+        </span>
+      </div>
+      <div className="mt-4 space-y-3 border-t border-slate-100 pt-3.5">
+        {milestones.map((milestone) => <ProgressMilestoneRow key={milestone.key} milestone={milestone} />)}
+      </div>
+      {!milestones.length && <div className="py-10 text-center text-xs text-slate-400">提交问题后显示执行进度</div>}
+    </div>
+  );
 }
 
 function AllEvents({ events }: { events: DebugEvent[] }) {

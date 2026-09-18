@@ -11,7 +11,9 @@ import {
 } from "lucide-react";
 import {
   buildTasks,
+  formatDuration,
   progressKind,
+  runFailed,
   StatusIcon,
   type DebugEvent,
   type RunStatus,
@@ -45,14 +47,6 @@ function taskStatusText(task: TaskSummary) {
   if (task.status === "failed") return task.error || "执行失败";
   if (task.status === "partial") return task.error || "部分完成";
   return "等待执行";
-}
-
-function runFailed(events: DebugEvent[]) {
-  return events.some((event) =>
-    event.type === "run.failed"
-    || event.type === "run.timeout"
-    || event.type === "run.cancelled"
-    || event.type === "stream.failed");
 }
 
 /** 从事件序列推导阶段时间线；只展示已开始的阶段，运行失败时把最后一个进行中的阶段标为失败。 */
@@ -268,13 +262,6 @@ export function ChatRunTimeline({ events }: { events: DebugEvent[] }) {
   );
 }
 
-function formatElapsed(seconds: number) {
-  if (seconds < 60) return `${Math.round(seconds)} 秒`;
-  const minutes = Math.floor(seconds / 60);
-  const rest = Math.round(seconds % 60);
-  return rest ? `${minutes} 分 ${rest} 秒` : `${minutes} 分钟`;
-}
-
 /** 终态摘要 chip：completed/失败/等待确认三态，可带「查看执行过程」入口。 */
 export function ChatRunSummaryChip({
   status,
@@ -305,7 +292,7 @@ export function ChatRunSummaryChip({
       ? "执行失败"
       : "已完成";
   const elapsed = typeof elapsedSeconds === "number" && elapsedSeconds > 0
-    ? ` · 用时 ${formatElapsed(elapsedSeconds)}`
+    ? ` · 用时 ${formatDuration(elapsedSeconds * 1000)}`
     : "";
   const className = `mt-2 inline-flex max-w-full items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[11px] font-semibold ${tone} ${onOpenTrace ? "cursor-pointer transition-colors hover:border-blue-300 hover:text-blue-700" : ""}`;
   const content = (
