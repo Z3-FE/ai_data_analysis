@@ -45,7 +45,7 @@ class AnalyzeDataTool:
         self.event_writer = event_writer or NullHarnessEventWriter(run_ref=run_ref)
 
     async def execute(self, value: AnalyzeDataInput) -> AnalyzeDataOutput:
-        """执行已有分析节点，并把完整结果交给 ToolRuntime 的 ArtifactStore。"""
+        """执行: 已有分析节点，并把完整结果交给 ToolRuntime 的 ArtifactStore。"""
         state: AgentState = {
             "input_text": value.query,
             "original_question": value.query,
@@ -58,7 +58,11 @@ class AnalyzeDataTool:
             "analysis_goals": list(value.analysis_goals),
             "query_max_rows": self.max_rows,
         }
-        # 旧图节点的依赖入口：context 取依赖，stream_writer 发进度（桥接为 tool.progress）
+        # 直调节点时没有 LangGraph 图运行时，用 SimpleNamespace 伪造一个兼容 Runtime 的
+        # 轻量对象（节点只摸 runtime.context 和 runtime.stream_writer 两个属性）：
+        #   context —— 节点取依赖的入口（等价图内 runtime.context）；
+        #   stream_writer —— 节点发进度的同步回调（等价图内 runtime.stream_writer），
+        #     这里直连 writer.custom，节点"流"出的每个事件即刻归一化为 tool.progress
         runtime = SimpleNamespace(
             context=self.context,
             stream_writer=self.event_writer.custom,
