@@ -50,6 +50,19 @@ function taskStatusText(task: TaskSummary) {
   return "等待执行";
 }
 
+/** 任务划分失败时的原因：planner.failed / analysis_plan 事件里的 error_message 优先。 */
+function planFailureMessage(events: DebugEvent[]): string | undefined {
+  for (const event of events) {
+    if (event.type === "planner.failed" || (customEventOf(event, "analysis_plan") && event.status === "failed")) {
+      const message = [event.payload.error_message, event.payload.error].find(
+        (value): value is string => typeof value === "string" && value !== "",
+      );
+      if (message) return message;
+    }
+  }
+  return undefined;
+}
+
 /** 从事件序列推导阶段时间线；只展示已开始的阶段，运行失败时把最后一个进行中的阶段标为失败。 */
 function deriveRunStages(events: DebugEvent[], tasks: TaskSummary[]): RunStage[] {
   const has = (predicate: (event: DebugEvent) => boolean) => events.some(predicate);
@@ -76,7 +89,9 @@ function deriveRunStages(events: DebugEvent[], tasks: TaskSummary[]): RunStage[]
       key: "plan",
       label: "划分分析任务",
       status,
-      detail: tasks.length ? `${tasks.length} 个任务` : undefined,
+      detail: status === "failed"
+        ? planFailureMessage(events)
+        : tasks.length ? `${tasks.length} 个任务` : undefined,
     });
   }
 
@@ -148,11 +163,16 @@ function ThinkingBody({ text, live }: { text: string; live: boolean }) {
     if (live && ref.current) ref.current.scrollTop = ref.current.scrollHeight;
   }, [text, live]);
   return (
-    <div
-      ref={ref}
-      className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600"
-    >
-      {text || "…"}
+    <div className="relative mt-1">
+      <div
+        ref={ref}
+        className="max-h-24 overflow-y-auto whitespace-pre-wrap rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600"
+      >
+        {text || "…"}
+      </div>
+      {live && (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-6 rounded-b-lg bg-gradient-to-t from-slate-50 via-slate-50/70 to-transparent" />
+      )}
     </div>
   );
 }
@@ -175,7 +195,7 @@ function ThinkingSections({ sections }: { sections: ThinkingSection[] }) {
                 ? <Loader2 className="size-3.5 shrink-0 animate-spin text-blue-500" />
                 : <CheckCircle2 className="size-3.5 shrink-0 text-emerald-500" />}
               <span className="min-w-0 truncate text-[11px] font-bold text-slate-600">{section.label}</span>
-              <span className="ml-auto shrink-0 text-[10px] text-slate-400">{live ? "思考中" : "已完成"}</span>
+              <span className="ml-auto shrink-0 text-[10px] text-slate-400">{live ? "思考中" : "已思考"}</span>
             </summary>
             <div className="px-3 pb-2">
               <ThinkingBody text={section.text} live={live} />
@@ -250,12 +270,13 @@ export function ChatRunTimeline({ events }: { events: DebugEvent[] }) {
         <Loader2 className="size-3.5 animate-spin" />
         正在执行 · {elapsedSeconds}s
       </div>
-      {sections.length > 0 && <ThinkingSections sections={sections} />}
+      {/* 阶段时间线（含任务清单）在上：一眼看到执行到哪了；思考流是二级信息，折叠放在下面。 */}
       {stages.length > 0 && (
         <div className="space-y-2">
           {stages.map((stage) => <StageRow key={stage.key} stage={stage} />)}
         </div>
       )}
+      {sections.length > 0 && <ThinkingSections sections={sections} />}
       {sections.length === 0 && stages.length === 0 && (
         <div className="text-xs text-slate-400">正在思考…</div>
       )}
