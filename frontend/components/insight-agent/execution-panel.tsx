@@ -799,11 +799,17 @@ function deriveProgressMilestones(ordered: DebugEvent[], tasks: TaskSummary[]): 
       event.type === "planner.completed"
       || event.type === "planner.failed"
       || (event.type === "analysis_plan" && (event.status === "success" || event.status === "failed")));
+    const planFailed = Boolean(boundary && (boundary.type === "planner.failed" || boundary.status === "failed"));
+    const planErrorDetail = planFailed && boundary
+      ? [boundary.payload.error_message, boundary.payload.error].find(
+          (value): value is string => typeof value === "string" && value !== "",
+        )
+      : undefined;
     milestones.push({
       key: "plan",
       label: "划分分析任务",
-      status: boundary && (boundary.type === "planner.failed" || boundary.status === "failed") ? "failed" : boundary ? "success" : "running",
-      detail: tasks.length ? `${tasks.length} 个任务` : undefined,
+      status: planFailed ? "failed" : boundary ? "success" : "running",
+      detail: planFailed ? planErrorDetail : tasks.length ? `${tasks.length} 个任务` : undefined,
       durationMs: boundary ? eventTimestampMs(boundary) - planStart : undefined,
     });
   }
@@ -932,6 +938,11 @@ function ProgressMilestoneRow({ milestone }: { milestone: ProgressMilestone }) {
             <span className="shrink-0 text-[10px] text-slate-400">{formatDuration(milestone.durationMs)}</span>
           )}
         </div>
+        {milestone.detail && (
+          <div className={"mt-1 break-words text-[10px] leading-4 " + (milestone.status === "failed" ? "text-rose-600" : "text-slate-400")}>
+            {milestone.detail}
+          </div>
+        )}
         {milestone.phases && milestone.phases.length > 0 && (
           <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px] leading-4">
             {milestone.phases.map((phase, index) => (

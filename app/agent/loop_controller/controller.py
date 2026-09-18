@@ -759,6 +759,14 @@ class LoopController:
                 ),
             )
         except PlannerFailure as exc:
+            logger.error(
+                "Planner 失败：run_id=%s iteration=%s action_seq=%s code=%s message=%s",
+                command.run_ref.run_id,
+                iteration,
+                action_seq,
+                exc.error.code,
+                exc.error.message,
+            )
             self._emit(
                 command.run_ref,
                 "planner.failed",
@@ -767,11 +775,18 @@ class LoopController:
                 payload={
                     "action_seq": action_seq,
                     "error_code": exc.error.code,
+                    "error_message": exc.error.message,
                     "retryable": exc.error.retryable,
                 },
             )
             raise
         except Exception as exc:
+            logger.exception(
+                "Planner 异常：run_id=%s iteration=%s action_seq=%s",
+                command.run_ref.run_id,
+                iteration,
+                action_seq,
+            )
             self._emit(
                 command.run_ref,
                 "planner.failed",
@@ -780,6 +795,7 @@ class LoopController:
                 payload={
                     "action_seq": action_seq,
                     "error_code": "planner_unexpected_error",
+                    "error_message": str(exc)[:500],
                 },
             )
             raise
@@ -1131,6 +1147,11 @@ class LoopController:
                     None
                     if finalization.last_error is None
                     else finalization.last_error.code
+                ),
+                "error_message": (
+                    None
+                    if finalization.last_error is None
+                    else finalization.last_error.message
                 ),
             },
         )

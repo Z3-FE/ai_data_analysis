@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from app.agent.planning_agent.contracts import (
@@ -16,6 +17,8 @@ from app.agent.planning_agent.normalizer import normalize_action
 from app.agent.planning_agent.validator import validate_draft
 from app.agent.prompts.prompt_loader import load_prompt
 from app.agent.state_result_store.contracts import PlannerCapabilities, PlannerInput, NextAction
+
+logger = logging.getLogger(__name__)
 
 
 class PlanningAgent(PlanningPort):
@@ -41,6 +44,7 @@ class PlanningAgent(PlanningPort):
         prompt = load_prompt("plan_next_action").format(
             planner_input=json.dumps(value.model_dump(mode="json"), ensure_ascii=False)
         )
+        raw: str | None = None
         try:
             raw = await self.llm_client.complete(prompt)
             draft = PlannerActionDraft.model_validate_json(self._extract_json(raw))
@@ -53,6 +57,11 @@ class PlanningAgent(PlanningPort):
         except Exception as exc:
             if isinstance(exc, PlannerFailure):
                 raise
+            # 原始输出是定位 invalid_output 的唯一线索，必须在源头留下。
+            logger.warning(
+                "Planner 输出无效，原始输出：%s",
+                (raw or "<empty>")[:2000],
+            )
             raise planner_error("invalid_output", f"Planner 输出无效: {exc}", retryable=True) from exc
 
     @staticmethod
