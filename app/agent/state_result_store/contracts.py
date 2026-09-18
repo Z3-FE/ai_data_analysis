@@ -82,7 +82,7 @@ class HarnessRunRef(ContractModel):
 
     user_id: str = Field(min_length=1)  # 运行归属用户（当前未接登录，默认 default_user_id）
     conversation_id: str = Field(min_length=1)  # 会话 —— 前端聊天列表里的一个会话
-    thread_id: str = Field(min_length=1)  # 线程 —— 当前实现恒等于 conversation_id（run/resume 入口处），为一会话多线程预留
+    thread_id: str = Field(min_length=1)  # 线程 —— 当前实现恒等于 conversation_id（run/resume 入口处），为一会话多线程预留；同一会话内连续提问 thread_id 不变（LangGraph 按它累积检查点），每轮新生成的只是 turn_id/run_id
     turn_id: str = Field(min_length=1)  # 轮次 —— 会话中一次问答，start_turn 时创建
     run_id: str = Field(min_length=1)  # 运行 —— 一次 Harness 控制器执行；暂停后 resume 仍是同一个 run
 
