@@ -246,16 +246,30 @@ def _build_controller(
     dw_session: Any,
     event_writer: HarnessEventWriter | None = None,
 ) -> LoopController:
-    """在请求作用域内组装完整 Harness；所有持久化实现均由此注入。"""
+    """在请求作用域内组装完整 Harness；所有持久化实现均由此注入。
+
+    run / run/stream / resume / resume/stream 四个端点共用本装配车间，每次请求
+    都重建整棵对象图（resume 同样如此，身份来自服务端回放的 run_ref，见
+    _run_ref_from_state）。event_writer 仅流式端点传入；非流式 /run 传 None，
+    控制器内部回退 NullHarnessEventWriter，事件直接丢弃。
+    """
+    # ① 工具契约：ToolSpec 声明规划器可调用的动作（名称/权限/入参 schema/超时），
+    #    同时交给工具注册表与控制器（tool_specs）两侧使用
     query_spec = _query_tool_spec()
     analyze_spec = _analyze_tool_spec()
     report_spec = _report_tool_spec()
+    # ② 工具结果落库位置：query/analyze 结果与渲染报告都作为 Artifact 存 PG；
+    #    报告工具靠它读取前置 result_refs，收口服务靠它导出产物
     artifact_store = PostgresResultArtifactStore(session_factory)
+    # ③ 业务依赖包：现有问数图运行所需的 LLM/Embedding/ES/Qdrant/MySQL 依赖，
+    #    明细见 _agent_context；meta/dw 会话是请求作用域，请求结束即释放
     agent_context = _agent_context(
         meta_session=meta_session,
         dw_session=dw_session,
         llm_client=llm_client,
     )
+    # ④ 三个业务工具：包装既有问数/分析链路；report 额外持有 artifact_store，
+    #    用于读取前置工具的 result_refs 并把渲染报告写回
     query_tool = QueryDataTool(
         context=agent_context,
         run_ref=run_ref,
@@ -274,6 +288,8 @@ def _build_controller(
         artifact_store=artifact_store,
         event_writer=event_writer,
     )
+    # ⑤ 工具运行时：注册表（工具名 → 契约+实现）+ 统一执行入口；
+    #    权限/超时/重试由 ToolSpec 声明，执行结果落 Artifact，事件经 writer 发出
     tool_runtime = ToolRuntime(
         ToolRegistry(
             {
@@ -285,12 +301,16 @@ def _build_controller(
         artifact_store=artifact_store,
         event_writer=event_writer,
     )
+    # ⑥ 上下文引擎：每轮迭代执行前重建上下文（记忆读取 + 元数据召回）
     context_engine = build_context_engine(
         memory_reader=runtime.manager,
         session_factory=session_factory,
         llm_client=llm_client,
         model_name=settings.llm.model_name,
     )
+    # ⑦ 运行现场与收口：run_store 负责快照持久化/回放（状态存取唯一通道）；
+    #    finalization 在运行到达终态后按固定顺序收口（会话消息/记忆形成/账本锁定），
+    #    reconcile 端点复用同一服务
     run_store = PostgresHarnessRunStore(session_factory)
     finalization = PostgresFinalizationService(
         conversation_repository=ConversationRepository(session_factory),
@@ -300,6 +320,9 @@ def _build_controller(
         artifact_store=artifact_store,
     )
 
+    # ⑧ 控制器总装：规划-执行-收口循环的调度中心；action_committer 在工具执行前
+    #    先把动作落库（含 action_seq，供恢复与对账）；context_request_factory 负责
+    #    把当前状态包装成上下文构建请求
     return LoopController(
         context_builder=context_engine,
         planning_agent=PlanningAgent(
@@ -674,14 +697,13 @@ async def run_harness_stream(payload: HarnessRunRequest) -> StreamingResponse:
             raise RuntimeError("Meta/DW Session 工厂尚未初始化")
 
         # 事件通道三件套：本次运行 SSE 的生产者-消费者桥
-        #   queue —— 内存事件队列；控制器在后台任务里产出事件，SSE 生成器从这里消费并格式化成帧
-        #   event_sink —— 入队适配器（put_nowait 非阻塞，不拖慢工具执行），同时留存全量事件，
+
         #     运行结束后整体落库为执行轨迹（save_execution_trace）
-        #   writer —— Harness 内部统一事件出口：补 run_ref/event_id/时间戳与 source/phase/iteration
         #     上下文，清洗 payload 后交给 sink；控制器与工具只认它
-        queue: asyncio.Queue[Any] = asyncio.Queue()
-        event_sink = QueueEventSink(queue)
-        writer = HarnessEventWriter(run_ref=run_ref, sink=event_sink)
+        queue: asyncio.Queue[Any] = asyncio.Queue()  #   queue —— 内存事件队列；控制器在后台任务里产出事件，SSE 生成器从这里消费并格式化成帧
+        event_sink = QueueEventSink(queue)         #   event_sink —— 入队适配器（put_nowait 非阻塞，不拖慢工具执行），同时留存全量事件，
+        writer = HarnessEventWriter(run_ref=run_ref, sink=event_sink)   #   writer —— Harness 内部统一事件出口：补 run_ref/event_id/时间戳与 source/phase/iteration
+
 
         async def operation() -> LoopResult:
             async with meta_factory() as meta_session, dw_factory() as dw_session:
@@ -800,7 +822,6 @@ async def resume_harness_stream(
         if meta_factory is None or dw_factory is None:
             raise RuntimeError("Meta/DW Session 工厂尚未初始化")
 
-        # 事件通道与 run/stream 相同，但队列只承载 resume 之后的事件
         queue: asyncio.Queue[Any] = asyncio.Queue()
         event_sink = QueueEventSink(queue)
         writer = HarnessEventWriter(run_ref=run_ref, sink=event_sink)
