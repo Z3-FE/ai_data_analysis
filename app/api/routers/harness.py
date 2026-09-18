@@ -653,9 +653,12 @@ async def run_harness(payload: HarnessRunRequest) -> dict[str, Any]:
 async def run_harness_stream(payload: HarnessRunRequest) -> StreamingResponse:
     """创建 Harness 运行并以 SSE 推送生命周期、工具和最终结果事件。"""
     conversation_id = payload.conversation_id or str(uuid4())
-    asset_ids = tuple(dict.fromkeys(payload.asset_ids))
+
+    asset_ids = tuple(dict.fromkeys(payload.asset_ids)) # 待定??
     try:
-        runtime, session_factory, llm_client = _require_runtime()
+        runtime, session_factory, llm_client = _require_runtime()  # 预检：记忆运行时/PG 工厂/LLM，缺一直接拒绝
+
+        # Harness 运行状态
         run_ref = HarnessRunRef(
             user_id=payload.user_id,
             conversation_id=conversation_id,
@@ -663,11 +666,19 @@ async def run_harness_stream(payload: HarnessRunRequest) -> StreamingResponse:
             turn_id=str(uuid4()),
             run_id=str(uuid4()),
         )
+
+        # 实例化session_factory
         meta_factory = meta_mysql_client_manager.session_factory
         dw_factory = dw_mysql_client_manager.session_factory
         if meta_factory is None or dw_factory is None:
             raise RuntimeError("Meta/DW Session 工厂尚未初始化")
 
+        # 事件通道三件套：本次运行 SSE 的生产者-消费者桥
+        #   queue —— 内存事件队列；控制器在后台任务里产出事件，SSE 生成器从这里消费并格式化成帧
+        #   event_sink —— 入队适配器（put_nowait 非阻塞，不拖慢工具执行），同时留存全量事件，
+        #     运行结束后整体落库为执行轨迹（save_execution_trace）
+        #   writer —— Harness 内部统一事件出口：补 run_ref/event_id/时间戳与 source/phase/iteration
+        #     上下文，清洗 payload 后交给 sink；控制器与工具只认它
         queue: asyncio.Queue[Any] = asyncio.Queue()
         event_sink = QueueEventSink(queue)
         writer = HarnessEventWriter(run_ref=run_ref, sink=event_sink)
@@ -789,6 +800,7 @@ async def resume_harness_stream(
         if meta_factory is None or dw_factory is None:
             raise RuntimeError("Meta/DW Session 工厂尚未初始化")
 
+        # 事件通道与 run/stream 相同，但队列只承载 resume 之后的事件
         queue: asyncio.Queue[Any] = asyncio.Queue()
         event_sink = QueueEventSink(queue)
         writer = HarnessEventWriter(run_ref=run_ref, sink=event_sink)
