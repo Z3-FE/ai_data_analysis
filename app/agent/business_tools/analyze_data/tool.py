@@ -58,8 +58,9 @@ class AnalyzeDataTool:
             "analysis_goals": list(value.analysis_goals),
             "query_max_rows": self.max_rows,
         }
-        # 直调节点时没有 LangGraph 图运行时，用 SimpleNamespace 伪造一个兼容 Runtime 的
-        # 轻量对象（节点只摸 runtime.context 和 runtime.stream_writer 两个属性）：
+        # SimpleNamespace：标准库"属性袋"——关键字参数直接变成对象属性（runtime.context 可点出）。
+        # 这里用它伪造 LangGraph Runtime：直调节点时没有图运行时，而节点只摸下面两个属性，
+        # 属性袋即可鸭子类型兼容：
         #   context —— 节点取依赖的入口（等价图内 runtime.context）；
         #   stream_writer —— 节点发进度的同步回调（等价图内 runtime.stream_writer），
         #     这里直连 writer.custom，节点"流"出的每个事件即刻归一化为 tool.progress
@@ -68,7 +69,7 @@ class AnalyzeDataTool:
             stream_writer=self.event_writer.custom,
         )
         # 两节点直调：先产出分析计划，再逐任务执行查询与计算
-        planned = await plan_analysis(state, runtime)
+        planned = await plan_analysis(state, runtime) # 任务分析调用
         state.update(planned)
         executed = await execute_analysis(state, runtime)
         evidence = dict(executed.get("analysis_evidence") or {})

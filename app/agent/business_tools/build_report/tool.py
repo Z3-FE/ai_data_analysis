@@ -58,6 +58,8 @@ class BuildReportTool:
                 self._tasks_from_artifact(record, goal=value.goal, taken=taken)
             )
         state = self._state(value, tasks)
+        # SimpleNamespace 属性袋伪造 LangGraph Runtime（直调节点无图运行时，节点只摸两个属性）：
+        # context 供节点取依赖；stream_writer 直连 writer.custom，节点进度即刻变 tool.progress
         runtime = SimpleNamespace(
             context=self.context,
             stream_writer=self.event_writer.custom,
