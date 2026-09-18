@@ -3,14 +3,23 @@
 import { useRef, useState, type ReactNode } from "react";
 import {
   AlertCircle,
+  Brain,
   Braces,
   CheckCircle2,
   ChevronRight,
   Circle,
   ClipboardList,
+  Compass,
+  Database,
+  FileText,
+  Hand,
+  Flag,
+  Layers,
+  ListTree,
   Loader2,
   Timer,
   XCircle,
+  type LucideIcon,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
@@ -496,6 +505,73 @@ export function customEventOf(event: DebugEvent, name: string) {
     || (event.type === "tool.progress" && event.payload.custom_type === name);
 }
 
+type EventCategory = "thinking" | "planning" | "route" | "context" | "data" | "report" | "confirm" | "run";
+
+const CATEGORY_ICONS: Record<EventCategory, LucideIcon> = {
+  thinking: Brain,
+  planning: ListTree,
+  route: Compass,
+  context: Layers,
+  data: Database,
+  report: FileText,
+  confirm: Hand,
+  run: Flag,
+};
+
+// 思考流是唯一带彩色的能力图标（用户重点，要一眼跳出）；其余保持中性色，避免与状态色互相打架。
+const CATEGORY_TONES: Record<EventCategory, string> = {
+  thinking: "text-violet-500",
+  planning: "text-slate-400",
+  route: "text-slate-400",
+  context: "text-slate-400",
+  data: "text-slate-400",
+  report: "text-slate-400",
+  confirm: "text-slate-400",
+  run: "text-slate-400",
+};
+
+// 数据执行类步骤（老 agent 链路经 mainStep 归一后的名称；harness 的 tool 事件保留原始 sourceStep）。
+const DATA_STEP_PREFIXES = [
+  "生成 SQL", "执行 SQL", "整理 SQL 上下文", "补全过滤后的上下文", "补充 SQL 生成上下文",
+  "召回", "过滤指标", "过滤表", "增强查询结果", "执行分析任务",
+];
+
+/** 能力类别：这行/这个模块产出什么，与 StatusIcon 表达的「跑得怎么样」正交；识别不出返回 null，不加图标。 */
+function eventCategory(event: DebugEvent): EventCategory | null {
+  const kind = progressKind(event);
+  if (kind === "reasoning" || kind === "llm") return "thinking";
+  // harness 链路的 custom_type 就是归一化前的原始事件名；旧 agent 链路直接用 type。统一后一处判定覆盖两条链路。
+  const rawType = typeof event.payload.custom_type === "string" ? event.payload.custom_type : event.type;
+  if (rawType === "question_route") return "route";
+  if (rawType === "analysis_plan" || rawType === "report_plan_result" || rawType.startsWith("planner.")) return "planning";
+  if (rawType === "analysis_task_phase" || rawType === "analysis_task_resolved" || rawType === "analysis_task_result") return "data";
+  if (rawType === "rendered_report") return "report";
+  if (rawType.startsWith("context.")) return "context";
+  if (rawType.startsWith("confirmation.")) return "confirm";
+  if (rawType.startsWith("run.") || rawType === "stream.failed") return "run";
+  if (event.type === "action.committed" || event.type === "progress" || event.type.startsWith("tool.")) {
+    if (event.step === "生成报告规划") return "planning";
+    if (event.step === "渲染最终报告") return "report";
+    if (DATA_STEP_PREFIXES.some((prefix) => event.sourceStep.startsWith(prefix) || event.step.startsWith(prefix))) return "data";
+  }
+  return null;
+}
+
+/** 模块分组行的能力类别：取组内首个可识别事件的类别；思考流是模块的子产物，不参与组级判定。 */
+function groupCategory(events: DebugEvent[]): EventCategory | null {
+  const found = events.find((event) => {
+    const category = eventCategory(event);
+    return category !== null && category !== "thinking";
+  });
+  return found ? eventCategory(found) : null;
+}
+
+function CapabilityIcon({ category, className }: { category: EventCategory | null; className: string }) {
+  if (!category) return null;
+  const Icon = CATEGORY_ICONS[category];
+  return <Icon className={(CATEGORY_TONES[category] + " " + className).trim()} />;
+}
+
 function compactAllEvents(events: DebugEvent[]): DebugEvent[] {
   const compacted: DebugEvent[] = [];
   const compactIndexes = new Map<string, number>();
@@ -746,7 +822,7 @@ export function StatusIcon({ status }: { status: RunStatus | undefined }) {
 }
 
 function EventDetails({ event, title, status }: { event: DebugEvent; title?: string; status?: RunStatus }) {
-  return <details className="group rounded-md border border-slate-200 bg-white"><summary className="flex cursor-pointer list-none items-start gap-2 px-3 py-2.5"><ChevronRight className="mt-0.5 size-3.5 shrink-0 text-slate-400 transition-transform group-open:rotate-90" /><StatusIcon status={status ?? event.status ?? (event.type === "error" ? "failed" : undefined)} /><span className="min-w-0 flex-1"><span className="block break-words text-[11px] font-bold text-slate-700">{title || event.step}</span><span className="mt-0.5 block break-words text-[10px] text-slate-400">{displayLabel(event)} · 节点：{event.node}{event.taskId ? " · 任务：" + event.taskId : ""}</span></span><span className="shrink-0 text-[9px] text-slate-400">{new Date(event.receivedAt).toLocaleTimeString("zh-CN")}</span></summary><div className="border-t border-slate-100 px-3 pb-3 pt-2">{event.truncatedFields?.length ? <div className="mb-2 rounded bg-amber-50 px-2 py-1.5 text-[10px] leading-4 text-amber-800">调试预览已截断：{event.truncatedFields.join("；")}</div> : null}<pre className="max-h-[360px] overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 p-3 text-[10px] leading-5 text-slate-100">{json(event.payload)}</pre></div></details>;
+  return <details className="group rounded-md border border-slate-200 bg-white"><summary className="flex cursor-pointer list-none items-start gap-2 px-3 py-2.5"><ChevronRight className="mt-0.5 size-3.5 shrink-0 text-slate-400 transition-transform group-open:rotate-90" /><StatusIcon status={status ?? event.status ?? (event.type === "error" ? "failed" : undefined)} /><span className="min-w-0 flex-1"><span className="block break-words text-[11px] font-bold text-slate-700">{title || event.step}<CapabilityIcon category={eventCategory(event)} className="ml-1 inline-block size-3.5 shrink-0 align-[-2px]" /></span><span className="mt-0.5 block break-words text-[10px] text-slate-400">{displayLabel(event)} · 节点：{event.node}{event.taskId ? " · 任务：" + event.taskId : ""}</span></span><span className="shrink-0 text-[9px] text-slate-400">{new Date(event.receivedAt).toLocaleTimeString("zh-CN")}</span></summary><div className="border-t border-slate-100 px-3 pb-3 pt-2">{event.truncatedFields?.length ? <div className="mb-2 rounded bg-amber-50 px-2 py-1.5 text-[10px] leading-4 text-amber-800">调试预览已截断：{event.truncatedFields.join("；")}</div> : null}<pre className="max-h-[360px] overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 p-3 text-[10px] leading-5 text-slate-100">{json(event.payload)}</pre></div></details>;
 }
 
 function Drawer({ title, subtitle, status, children, trigger }: { title: string; subtitle?: string; status: RunStatus; children: ReactNode; trigger: (open: () => void) => ReactNode }) {
@@ -757,7 +833,7 @@ function Drawer({ title, subtitle, status, children, trigger }: { title: string;
 function TaskCard({ group }: { group: TaskGroup }) {
   const task = group.task;
   const phase = task.node ? "当前节点：" + task.node : task.phase || (group.status === "pending" ? "等待执行" : group.status === "running" ? "执行中" : "已完成");
-  return <Drawer title={group.taskId} subtitle={group.steps.length + " 个任务步骤 · " + phase} status={group.status} trigger={(open) => <button type="button" onClick={open} className="group w-full rounded-md border border-slate-200 bg-white px-3 py-3 text-left transition-colors hover:border-blue-300 hover:bg-blue-50"><span className="flex items-start gap-2"><ChevronRight className="mt-0.5 size-3.5 shrink-0 text-slate-400" /><StatusIcon status={group.status} /><span className="min-w-0 flex-1"><span className="block break-all text-[11px] font-extrabold text-slate-700">{group.taskId}</span><span className="mt-1 block truncate text-[10px] text-slate-400">{phase} · {group.steps.length} 个步骤</span></span><span className="shrink-0 text-[10px] text-slate-400">查看详情</span></span></button>}>{<TaskBody group={group} />}</Drawer>;
+  return <Drawer title={group.taskId} subtitle={group.steps.length + " 个任务步骤 · " + phase} status={group.status} trigger={(open) => <button type="button" onClick={open} className="group w-full rounded-md border border-slate-200 bg-white px-3 py-3 text-left transition-colors hover:border-blue-300 hover:bg-blue-50"><span className="flex items-start gap-2"><ChevronRight className="mt-0.5 size-3.5 shrink-0 text-slate-400" /><StatusIcon status={group.status} /><span className="min-w-0 flex-1"><span className="block break-all text-[11px] font-extrabold text-slate-700"><CapabilityIcon category={groupCategory(group.events)} className="mr-1 inline-block size-3.5 shrink-0 align-[-2px]" />{group.taskId}</span><span className="mt-1 block truncate text-[10px] text-slate-400">{phase} · {group.steps.length} 个步骤</span></span><span className="shrink-0 text-[10px] text-slate-400">查看详情</span></span></button>}>{<TaskBody group={group} />}</Drawer>;
 }
 
 function TaskBody({ group }: { group: TaskGroup }) {
@@ -766,7 +842,9 @@ function TaskBody({ group }: { group: TaskGroup }) {
 }
 
 function StepCard({ group }: { group: StepGroup }) {
-  return <details open={group.status === "failed"} className="group rounded-lg border border-slate-200 bg-white"><summary className="flex cursor-pointer list-none items-start gap-2 px-3 py-3"><ChevronRight className="mt-0.5 size-3.5 shrink-0 text-slate-400 transition-transform group-open:rotate-90" /><StatusIcon status={group.status} /><span className="min-w-0 flex-1"><span className="block text-xs font-bold text-slate-700">{group.step}</span><span className="mt-1 block text-[10px] text-slate-400">{group.tasks.length ? group.tasks.length + " 个分析任务" : group.nodes.length + " 个 Agent 节点"} · 最新：{displayLabel(group.latest)}</span></span><span className="shrink-0 text-[10px] text-slate-400">{group.status}</span></summary><div className="space-y-3 border-t border-slate-100 px-3 pb-3 pt-2">{group.tasks.length ? group.tasks.map((task) => <TaskCard key={task.taskId} group={task} />) : group.nodes.length ? group.nodes.map((node) => <Drawer key={node.node} title={"节点：" + node.node} subtitle={node.events.length + " 个返回项"} status={node.status} trigger={(open) => <button type="button" onClick={open} className="group w-full rounded-md border border-blue-100 bg-blue-50/30 px-3 py-2.5 text-left hover:border-blue-300"><span className="flex items-start gap-2"><ChevronRight className="mt-0.5 size-3.5 shrink-0 text-slate-400" /><StatusIcon status={node.status} /><span className="min-w-0 flex-1"><span className="block break-all text-[11px] font-bold text-slate-700">节点：{node.node}</span><span className="mt-0.5 block text-[10px] text-slate-400">{node.events.length} 个返回项 · 查看详情</span></span></span></button>}>{node.events.map((item) => <EventDetails key={item.key} event={item.event} title={item.label} status={item.status} />)}</Drawer>) : group.events.map((event) => <EventDetails key={event.key} event={event} status={itemStatus(event, group.events)} />)}</div></details>;
+  // 任务承载组固定是「执行分析任务」模块；其余从组内事件推导。
+  const stepCategory = groupCategory(group.events) ?? (group.tasks.length ? "data" : null);
+  return <details open={group.status === "failed"} className="group rounded-lg border border-slate-200 bg-white"><summary className="flex cursor-pointer list-none items-start gap-2 px-3 py-3"><ChevronRight className="mt-0.5 size-3.5 shrink-0 text-slate-400 transition-transform group-open:rotate-90" /><StatusIcon status={group.status} /><span className="min-w-0 flex-1"><span className="block text-xs font-bold text-slate-700"><CapabilityIcon category={stepCategory} className="mr-1 inline-block size-3.5 shrink-0 align-[-2px]" />{group.step}</span><span className="mt-1 block text-[10px] text-slate-400">{group.tasks.length ? group.tasks.length + " 个分析任务" : group.nodes.length + " 个 Agent 节点"} · 最新：{displayLabel(group.latest)}</span></span><span className="shrink-0 text-[10px] text-slate-400">{group.status}</span></summary><div className="space-y-3 border-t border-slate-100 px-3 pb-3 pt-2">{group.tasks.length ? group.tasks.map((task) => <TaskCard key={task.taskId} group={task} />) : group.nodes.length ? group.nodes.map((node) => <Drawer key={node.node} title={"节点：" + node.node} subtitle={node.events.length + " 个返回项"} status={node.status} trigger={(open) => <button type="button" onClick={open} className="group w-full rounded-md border border-blue-100 bg-blue-50/30 px-3 py-2.5 text-left hover:border-blue-300"><span className="flex items-start gap-2"><ChevronRight className="mt-0.5 size-3.5 shrink-0 text-slate-400" /><StatusIcon status={node.status} /><span className="min-w-0 flex-1"><span className="block break-all text-[11px] font-bold text-slate-700"><CapabilityIcon category={groupCategory(node.events.map((item) => item.event))} className="mr-1 inline-block size-3.5 shrink-0 align-[-2px]" />节点：{node.node}</span><span className="mt-0.5 block text-[10px] text-slate-400">{node.events.length} 个返回项 · 查看详情</span></span></span></button>}>{node.events.map((item) => <EventDetails key={item.key} event={item.event} title={item.label} status={item.status} />)}</Drawer>) : group.events.map((event) => <EventDetails key={event.key} event={event} status={itemStatus(event, group.events)} />)}</div></details>;
 }
 
 function RoundCard({ group }: { group: RoundGroup }) {
@@ -804,5 +882,5 @@ export function ExecutionPanel({
     scrollRef.current?.scrollTo({ top: 0, behavior: "auto" });
     requestAnimationFrame(() => scrollRef.current?.scrollTo({ top: 0, behavior: "auto" }));
   };
-  return <aside className="flex min-h-0 min-w-0 basis-[430px] shrink-0 flex-[0_0_430px] flex-col border-l border-slate-200 bg-white 2xl:basis-[500px] 2xl:flex-[0_0_500px]"><div className="border-b border-slate-200 px-5 py-4"><div className="flex items-center gap-2 text-sm font-extrabold text-slate-800"><ClipboardList className="size-4 text-blue-600" />执行过程</div><p className="mt-1 text-[11px] text-slate-400">按轮次回看任务返回与节点事件，实时进度在聊天区展示</p></div><Tabs value={tab} onValueChange={handleTab} className="min-h-0 flex-1 gap-0"><TabsList variant="line" className="sticky top-0 z-20 grid h-12 w-full shrink-0 grid-cols-2 justify-stretch overflow-x-auto rounded-none border-b border-slate-200 bg-white px-5 py-0 shadow-[0_4px_10px_-8px_rgba(15,23,42,0.35)]"><TabsTrigger value="returns" className="gap-1 text-[11px]"><Braces className="size-3.5" />步骤返回{stepCount ? " " + stepCount : ""}</TabsTrigger><TabsTrigger value="events" className="gap-1 text-[11px]"><Braces className="size-3.5" />工具与事件{compactedEvents.length ? " " + compactedEvents.length : ""}</TabsTrigger></TabsList>{loading && <div className="flex items-center gap-2 border-b border-blue-100 bg-blue-50 px-5 py-2.5 text-[11px] font-semibold text-blue-700"><Loader2 className="size-3.5 animate-spin" />正在加载该轮次的执行过程...</div>}{error && <div className="border-b border-amber-100 bg-amber-50 px-5 py-2.5 text-[11px] leading-5 text-amber-800">{error}</div>}<div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain"><TabsContent value="returns" className="mt-4 space-y-2 px-5 pb-5">{rounds.length ? rounds.length > 1 ? rounds.map((round) => <RoundCard key={round.round} group={round} />) : rounds[0].steps.map((group) => <StepCard key={group.step} group={group} />) : <div className="py-10 text-center text-xs text-slate-400">收到节点返回后，这里会显示主步骤摘要</div>}</TabsContent><TabsContent value="events" className="mt-4 px-5 pb-5"><AllEvents events={compactedEvents} /></TabsContent></div></Tabs><div className="border-t border-slate-200 px-5 py-3"><div className="flex items-center gap-2 text-[11px] font-semibold text-slate-400"><Timer className="size-3.5" />{loading ? "正在加载执行过程" : running ? "正在执行" : rawEvents.length ? "本次执行已结束" : "等待提问"}</div></div></aside>;
+  return <aside className="flex min-h-0 min-w-0 basis-[430px] shrink-0 flex-[0_0_430px] flex-col border-l border-slate-200 bg-white 2xl:basis-[500px] 2xl:flex-[0_0_500px]"><div className="border-b border-slate-200 px-5 py-4"><div className="flex items-center gap-2 text-sm font-extrabold text-slate-800"><ClipboardList className="size-4 text-blue-600" />执行过程</div><p className="mt-1 text-[11px] text-slate-400">按轮次回看任务返回与节点事件，实时进度在聊天区展示</p></div><Tabs value={tab} onValueChange={handleTab} className="min-h-0 flex-1 gap-0"><TabsList variant="line" className="sticky top-0 z-20 grid h-12 w-full shrink-0 grid-cols-2 justify-stretch overflow-x-auto rounded-none border-b border-slate-200 bg-white px-5 py-0 shadow-[0_4px_10px_-8px_rgba(15,23,42,0.35)]"><TabsTrigger value="returns" className="gap-1 text-[11px]"><Braces className="size-3.5" />步骤返回{stepCount ? " " + stepCount : ""}</TabsTrigger><TabsTrigger value="events" className="gap-1 text-[11px]"><Braces className="size-3.5" />全部事件{compactedEvents.length ? " " + compactedEvents.length : ""}</TabsTrigger></TabsList>{loading && <div className="flex items-center gap-2 border-b border-blue-100 bg-blue-50 px-5 py-2.5 text-[11px] font-semibold text-blue-700"><Loader2 className="size-3.5 animate-spin" />正在加载该轮次的执行过程...</div>}{error && <div className="border-b border-amber-100 bg-amber-50 px-5 py-2.5 text-[11px] leading-5 text-amber-800">{error}</div>}<div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain"><TabsContent value="returns" className="mt-4 space-y-2 px-5 pb-5">{rounds.length ? rounds.length > 1 ? rounds.map((round) => <RoundCard key={round.round} group={round} />) : rounds[0].steps.map((group) => <StepCard key={group.step} group={group} />) : <div className="py-10 text-center text-xs text-slate-400">收到节点返回后，这里会显示主步骤摘要</div>}</TabsContent><TabsContent value="events" className="mt-4 px-5 pb-5"><AllEvents events={compactedEvents} /></TabsContent></div></Tabs><div className="border-t border-slate-200 px-5 py-3"><div className="flex items-center gap-2 text-[11px] font-semibold text-slate-400"><Timer className="size-3.5" />{loading ? "正在加载执行过程" : running ? "正在执行" : rawEvents.length ? "本次执行已结束" : "等待提问"}</div></div></aside>;
 }
