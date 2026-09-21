@@ -74,6 +74,11 @@ class ConfirmationVisibility(StrEnum):
 
 
 class ContractModel(BaseModel):
+    """全部契约模型的基类。"""
+
+    # 禁止未声明字段（Pydantic 默认是 ignore 静默丢弃）：契约对象在 controller、
+    # 工具、仓储之间传递，拼错字段名或多传键必须在构造时立即报错（fail fast），
+    # 而不是被吞掉后让下游在某个 None 处神秘失败
     model_config = ConfigDict(extra="forbid")
 
 
