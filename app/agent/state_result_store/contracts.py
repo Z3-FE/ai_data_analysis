@@ -12,12 +12,18 @@ from app.agent.context_engine.contracts import CompiledContext
 
 
 class HarnessStatus(StrEnum):
-    RUNNING = "running"
-    WAITING_CONFIRMATION = "waiting_confirmation"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    TIMEOUT = "timeout"
+    """run 的宏观状态；与 LoopPhase（微观位置）正交——RUNNING 期间 phase 在循环各步间移动。
+
+    交叉约束见 HarnessStateSnapshot.validate_combination：WAITING_CONFIRMATION 必须停在
+    wait_confirmation 阶段；终态必须处于 finalization 阶段且与 terminal_intent 一致。
+    """
+
+    RUNNING = "running"  # 循环执行中（phase 可为 build_context/plan/execute_tool 等任一过程步）
+    WAITING_CONFIRMATION = "waiting_confirmation"  # 暂停等用户确认；resume 后回到 RUNNING
+    COMPLETED = "completed"  # 终态：正常完成
+    FAILED = "failed"  # 终态：不可恢复失败
+    CANCELLED = "cancelled"  # 终态：用户取消/断连收口
+    TIMEOUT = "timeout"  # 终态：超出运行级 deadline
 
 
 class LoopPhase(StrEnum):
