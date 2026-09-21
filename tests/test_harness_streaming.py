@@ -27,7 +27,8 @@ class HarnessStreamingTest(unittest.IsolatedAsyncioTestCase):
             run_id="run-1",
         )
         queue: asyncio.Queue[object] = asyncio.Queue()
-        writer = HarnessEventWriter(run_ref=run_ref, sink=QueueEventSink(queue))
+        sink = QueueEventSink(queue)
+        writer = HarnessEventWriter(run_ref=run_ref, sink=sink)
 
         async def operation() -> LoopRunResult:
             await asyncio.sleep(0.03)
@@ -48,6 +49,9 @@ class HarnessStreamingTest(unittest.IsolatedAsyncioTestCase):
             run_ref=run_ref,
             queue=queue,
             writer=writer,
+            event_sink=sink,
+            # 执行轨迹落库在 finally 里被 try/except 吞掉；测试传 None 跳过持久化
+            session_factory=None,
             heartbeat_seconds=0.01,
         )
         chunks = [chunk async for chunk in response.body_iterator]

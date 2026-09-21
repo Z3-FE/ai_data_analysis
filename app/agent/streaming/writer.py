@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -27,6 +28,8 @@ from uuid import uuid4
 from app.agent.state_result_store.contracts import HarnessRunRef
 
 from .contracts import HarnessEvent, HarnessEventSink
+
+logger = logging.getLogger(__name__)
 
 # 这些 payload 键携带原始行数据/SQL/提示词等大体量或敏感内容，对前端进度展示
 # 无用，清洗时直接剔除（防止数据泄漏与事件膨胀）。
@@ -124,36 +127,45 @@ class HarnessEventWriter:
         iteration: int | None = None,
         action_id: str | None = None,
         payload: Mapping[str, Any] | None = None,
-    ) -> HarnessEvent:
-        """发布一个受控 Harness 事件。
+    ) -> HarnessEvent | None:
+        """发布一个受控 Harness 事件；失败只记日志并返回 None，绝不反噬调用方。
 
-        显式参数优先；未传时回退到 bind() 绑定的上下文，再回退默认值
-        （source=harness、phase=start_run、iteration=0）。
+        事件是运行结果的旁路广播：显式参数优先，未传时回退到 bind() 绑定的
+        上下文，再回退默认值（source=harness、phase=start_run、iteration=0）。
+        清洗/构造/入队任何一步失败都在这里统一吞掉，调用方无需各自防御。
         """
-        context = self._context.get()
-        effective_source = str(source or context.get("source") or "harness")
-        effective_phase = str(phase or context.get("phase") or "start_run")
-        effective_iteration = int(
-            iteration if iteration is not None else context.get("iteration", 0)
-        )
-        effective_action_id = (
-            action_id if action_id is not None else context.get("action_id")
-        )
-        event = HarnessEvent(
-            event_id=str(uuid4()),
-            event_type=event_type,
-            run_ref=self.run_ref,
-            phase=effective_phase,
-            iteration=effective_iteration,
-            action_id=effective_action_id,
-            source=effective_source,
-            timestamp=datetime.now(UTC),
-            payload=_sanitize(dict(payload or {})),
-        )
-        self.sink.publish(event)
-        return event
+        try:
+            context = self._context.get()
+            effective_source = str(source or context.get("source") or "harness")
+            effective_phase = str(phase or context.get("phase") or "start_run")
+            effective_iteration = int(
+                iteration if iteration is not None else context.get("iteration", 0)
+            )
+            effective_action_id = (
+                action_id if action_id is not None else context.get("action_id")
+            )
+            event = HarnessEvent(
+                event_id=str(uuid4()),
+                event_type=event_type,
+                run_ref=self.run_ref,
+                phase=effective_phase,
+                iteration=effective_iteration,
+                action_id=effective_action_id,
+                source=effective_source,
+                timestamp=datetime.now(UTC),
+                payload=_sanitize(dict(payload or {})),
+            )
+            self.sink.publish(event)
+            return event
+        except Exception:
+            logger.exception(
+                "Harness event emission failed: run_id=%s event_type=%s",
+                self.run_ref.run_id,
+                event_type,
+            )
+            return None
 
-    def custom(self, payload: Mapping[str, Any]) -> HarnessEvent:
+    def custom(self, payload: Mapping[str, Any]) -> HarnessEvent | None:
         """把 LangGraph custom 事件归一化为前端稳定的 tool.progress。
 
         payload 里的 ``type`` 提升为 ``custom_type``（前端按它分类图标/文案），
@@ -207,7 +219,7 @@ class HarnessEventWriter:
 class NullHarnessEventWriter(HarnessEventWriter):
     """非流式接口使用的空事件写出器。
 
-    事件照常构造（emit 仍返回 HarnessEvent），但 _NullEventSink 直接丢弃，
+    事件照常构造（emit 返回 HarnessEvent | None），但 _NullEventSink 直接丢弃，
     不进队列也不留存轨迹。
     """
 

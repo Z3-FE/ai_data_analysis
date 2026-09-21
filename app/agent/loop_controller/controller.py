@@ -122,8 +122,7 @@ class LoopController:
         state = self._new_state(command)
 
         await self.run_store.create(command.run_ref, state)
-        self._emit(
-            command.run_ref,
+        self.event_writer.emit(
             "run.started",
             phase=LoopPhase.START_RUN,
             iteration=0,
@@ -144,8 +143,7 @@ class LoopController:
         state = resolution.state
         harness = state["harness"]
         if resolution.status == "idempotent":
-            self._emit(
-                command.run_ref,
+            self.event_writer.emit(
                 "confirmation.resolved",
                 phase=LoopPhase.RESTORE_RUN,
                 iteration=int(harness["iteration"]),
@@ -158,8 +156,7 @@ class LoopController:
                 phase=LoopPhase(harness["phase"]),
                 state_version=int(harness["state_version"]),
             )
-        self._emit(
-            command.run_ref,
+        self.event_writer.emit(
             "confirmation.resolved",
             phase=LoopPhase.RESTORE_RUN,
             iteration=int(harness["iteration"]),
@@ -580,8 +577,7 @@ class LoopController:
                 published_at=now,
             ),
         )
-        self._emit(
-            command.run_ref,
+        self.event_writer.emit(
             "confirmation.required",
             phase=LoopPhase.WAIT_CONFIRMATION,
             iteration=int(state["harness"]["iteration"]),
@@ -617,8 +613,7 @@ class LoopController:
                 state, status=HarnessStatus.RUNNING, phase=LoopPhase.PLAN
             )
             await self._save_running_state(command, state)
-            self._emit(
-                command.run_ref,
+            self.event_writer.emit(
                 "planner.retrying",
                 phase=LoopPhase.PLAN,
                 iteration=int(state["harness"]["iteration"]),
@@ -689,8 +684,7 @@ class LoopController:
                 state, status=HarnessStatus.RUNNING, phase=LoopPhase.EXECUTE_TOOL
             )
             await self._save_running_state(command, state)
-            self._emit(
-                command.run_ref,
+            self.event_writer.emit(
                 "tool.retrying",
                 phase=LoopPhase.EXECUTE_TOOL,
                 iteration=int(state["harness"]["iteration"]),
@@ -744,8 +738,7 @@ class LoopController:
     ):
         iteration = int(state["harness"]["iteration"])
         action_seq = int(state["harness"]["action_seq"]) + 1
-        self._emit(
-            command.run_ref,
+        self.event_writer.emit(
             "planner.started",
             phase=LoopPhase.PLAN,
             iteration=iteration,
@@ -769,8 +762,7 @@ class LoopController:
                 exc.error.code,
                 exc.error.message,
             )
-            self._emit(
-                command.run_ref,
+            self.event_writer.emit(
                 "planner.failed",
                 phase=LoopPhase.PLAN,
                 iteration=iteration,
@@ -789,8 +781,7 @@ class LoopController:
                 iteration,
                 action_seq,
             )
-            self._emit(
-                command.run_ref,
+            self.event_writer.emit(
                 "planner.failed",
                 phase=LoopPhase.PLAN,
                 iteration=iteration,
@@ -801,8 +792,7 @@ class LoopController:
                 },
             )
             raise
-        self._emit(
-            command.run_ref,
+        self.event_writer.emit(
             "planner.completed",
             phase=LoopPhase.PLAN,
             iteration=iteration,
@@ -841,8 +831,7 @@ class LoopController:
         if commit.action_seq != action.action_seq:
             raise ValueError("提交结果的 action_seq 与动作不一致")
         state["harness"]["action_seq"] = action.action_seq
-        self._emit(
-            command.run_ref,
+        self.event_writer.emit(
             "action.committed",
             phase=LoopPhase.VALIDATE_ACTION,
             iteration=int(state["harness"]["iteration"]),
@@ -862,8 +851,7 @@ class LoopController:
     async def _build_context(self, state):
         run_ref = self._run_ref_from_state(state)
         phase = LoopPhase(state["harness"]["phase"])
-        self._emit(
-            run_ref,
+        self.event_writer.emit(
             "context.started",
             phase=phase,
             iteration=int(state["harness"]["iteration"]),
@@ -877,8 +865,7 @@ class LoopController:
             compiled_context = await self.context_builder.build(request)
         except Exception:
             # context 是唯一可能 started 后没有终态的阶段；补发失败事件保证生命周期配对。
-            self._emit(
-                run_ref,
+            self.event_writer.emit(
                 "context.failed",
                 phase=phase,
                 iteration=int(state["harness"]["iteration"]),
@@ -901,8 +888,7 @@ class LoopController:
             )
         )
         knowledge_count = selected_by_kind.get(ContextSourceKind.RAG.value, 0)
-        self._emit(
-            run_ref,
+        self.event_writer.emit(
             "context.memory_retrieved",
             phase=phase,
             iteration=int(state["harness"]["iteration"]),
@@ -918,8 +904,7 @@ class LoopController:
                 },
             },
         )
-        self._emit(
-            run_ref,
+        self.event_writer.emit(
             "context.knowledge_retrieved",
             phase=phase,
             iteration=int(state["harness"]["iteration"]),
@@ -930,8 +915,7 @@ class LoopController:
         )
         snapshot = self._context_snapshot(compiled_context)
         plan = compiled_context.trace.retrieval_plan
-        self._emit(
-            run_ref,
+        self.event_writer.emit(
             "context.plan",
             phase=phase,
             iteration=int(state["harness"]["iteration"]),
@@ -945,15 +929,13 @@ class LoopController:
                 "token_count": compiled_context.token_count,
             },
         )
-        self._emit(
-            run_ref,
+        self.event_writer.emit(
             "context.context_compiled",
             phase=phase,
             iteration=int(state["harness"]["iteration"]),
             payload=snapshot,
         )
-        self._emit(
-            run_ref,
+        self.event_writer.emit(
             "context.completed",
             phase=phase,
             iteration=int(state["harness"]["iteration"]),
@@ -1080,7 +1062,7 @@ class LoopController:
                 final_output_ref=final_output_ref,
             )
         )
-        self._emit_terminal(command.run_ref, finalization)
+        self._emit_terminal(finalization)
         return LoopRunResult(
             run_ref=command.run_ref,
             status=finalization.status,
@@ -1141,7 +1123,6 @@ class LoopController:
 
     def _emit_terminal(
         self,
-        run_ref,
         finalization: FinalizationResult,
     ) -> None:
         """只在终态已成功持久化后发布一次本次控制器实例的终态事件。"""
@@ -1151,8 +1132,7 @@ class LoopController:
             HarnessStatus.TIMEOUT: "run.timeout",
             HarnessStatus.CANCELLED: "run.cancelled",
         }[finalization.status]
-        self._emit(
-            run_ref,
+        self.event_writer.emit(
             event_type,
             phase=LoopPhase.FINALIZATION,
             iteration=finalization.iteration,
@@ -1173,35 +1153,6 @@ class LoopController:
                 ),
             },
         )
-
-    def _emit(
-        self,
-        run_ref,
-        event_type: str,
-        *,
-        phase: LoopPhase,
-        iteration: int,
-        action_id: str | None = None,
-        payload: dict | None = None,
-    ) -> None:
-        """事件写出失败不反向改变已持久化的 Harness 运行结果。"""
-        # 装配层保证 writer 永不为 None（无流式需求时注入 NullHarnessEventWriter），
-        # 这里直接调用，不再判空。
-        writer = self.event_writer
-        try:
-            writer.emit(
-                event_type,
-                phase=phase.value,
-                iteration=iteration,
-                action_id=action_id,
-                payload=payload,
-            )
-        except Exception:
-            logger.exception(
-                "Harness event emission failed: run_id=%s event_type=%s",
-                run_ref.run_id,
-                event_type,
-            )
 
     @staticmethod
     def _run_ref_from_state(state: HarnessGraphState):
