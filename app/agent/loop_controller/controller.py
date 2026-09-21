@@ -338,11 +338,19 @@ class LoopController:
         # ① 入口：deadline 预检 → 迁移 BUILD_CONTEXT → 落库。
         #    后文固定节奏都是「_transition 推进阶段指针 → _save_running_state 落库」，
         #    保证现场每一步都可恢复。
-        self._check_deadline(state)
+        self._check_deadline(state) # 检查是否超时
         state = self._transition(
             state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.BUILD_CONTEXT
         )
         await self._save_running_state(command, state)
+        # 从现场读 phase 而不是写字面量：迁移目标改了，日志自动跟着变，不会两处漂移
+        logger.info(
+            "Harness phase=%s: run_id=%s turn_id=%s",
+            state["harness"]["phase"],
+            command.run_ref.run_id,
+            command.run_ref.turn_id,
+            extra={"run_id": command.run_ref.run_id, "turn_id": command.run_ref.turn_id},
+        )
 
         # ② 构建首轮上下文（记忆读取 + 元数据召回），构建期间同样受 deadline 约束
         compiled_context = await self._await_with_deadline(
