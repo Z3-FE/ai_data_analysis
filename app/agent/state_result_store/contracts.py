@@ -21,16 +21,23 @@ class HarnessStatus(StrEnum):
 
 
 class LoopPhase(StrEnum):
-    START_RUN = "start_run"
-    RESTORE_RUN = "restore_run"
-    BUILD_CONTEXT = "build_context"
-    PLAN = "plan"
-    VALIDATE_ACTION = "validate_action"
-    EXECUTE_TOOL = "execute_tool"
-    HANDLE_TOOL_RESULT = "handle_tool_result"
-    RECORD_OBSERVATION = "record_observation"
-    WAIT_CONFIRMATION = "wait_confirmation"
-    FINALIZATION = "finalization"
+    """执行循环的阶段指针；phase 随现场落库，迁移合法性由 state.py _PHASE_TRANSITIONS 约束。"""
+
+    # —— 入口二选一 ——
+    START_RUN = "start_run"              # 新启动：创建初始现场后进 BUILD_CONTEXT
+    RESTORE_RUN = "restore_run"          # 恢复：从库回放现场后同样进 BUILD_CONTEXT（身份不可覆盖）
+
+    # —— 循环体：BUILD_CONTEXT → … → RECORD_OBSERVATION → 回 BUILD_CONTEXT 为一轮 ——
+    BUILD_CONTEXT = "build_context"      # ContextEngine 编译规划上下文（观察+召回证据+记忆线）
+    PLAN = "plan"                        # Planner 单步决策产出 NextAction
+    VALIDATE_ACTION = "validate_action"  # 校验动作：工具存在、参数合 ToolSpec；需确认则转 WAIT_CONFIRMATION
+    EXECUTE_TOOL = "execute_tool"        # ToolRuntime 执行工具，结果落 Artifact
+    HANDLE_TOOL_RESULT = "handle_tool_result"  # 消化 ToolResult：成败与错误分类、重试判定
+    RECORD_OBSERVATION = "record_observation"  # 观察摘要累积进现场，随后回 BUILD_CONTEXT 进下一轮
+
+    # —— 两个出口 ——
+    WAIT_CONFIRMATION = "wait_confirmation"  # 暂停等用户确认；resume 经 RESTORE_RUN 重回循环
+    FINALIZATION = "finalization"            # 终态收口：织最终答案；任一阶段失败也可直达（迁移表）
 
 
 class ActionType(StrEnum):
