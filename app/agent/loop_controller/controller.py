@@ -130,11 +130,16 @@ class LoopController:
             iteration=0,
         )
         logger.info(
-            "Harness status=%s: run_id=%s turn_id=%s",
+            "Harness step=%s event=%s: run_id=%s turn_id=%s",
+            "运行启动",
             EventType.RUN_STARTED,
             command.run_ref.run_id,
             command.run_ref.turn_id,
-            extra={"run_id": command.run_ref.run_id, "turn_id": command.run_ref.turn_id},
+            extra={
+                "step": "运行启动",
+                "run_id": command.run_ref.run_id,
+                "turn_id": command.run_ref.turn_id,
+            },
         )
         return await self._run_guarded(command, state)
 
