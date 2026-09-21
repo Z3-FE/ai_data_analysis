@@ -79,6 +79,8 @@ class ContractModel(BaseModel):
     # 禁止未声明字段（Pydantic 默认是 ignore 静默丢弃）：契约对象在 controller、
     # 工具、仓储之间传递，拼错字段名或多传键必须在构造时立即报错（fail fast），
     # 而不是被吞掉后让下游在某个 None 处神秘失败
+    # 调试器变量视图里 model_config/model_fields/model_fields_set/model_extra 等
+    # 是 Pydantic 基类自带的机制属性（字段定义表、本次显式传参集合等），非业务字段
     model_config = ConfigDict(extra="forbid")
 
 
