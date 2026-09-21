@@ -120,16 +120,18 @@ class LoopController:
     async def start(self, command: StartRunCommand) -> LoopResult:
         """创建新运行并执行，直到暂停或进入终态。"""
         # 1.新建状态： state
-        state = self._new_state(command)
+        # 状态类型：status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.START_RUN
+        state: HarnessGraphState = self._new_state(command)
 
-        await self.run_store.create(command.run_ref, state) #
+        await self.run_store.create(command.run_ref, state) #把run_store， 写入 PG数据库
         self.event_writer.emit(
             EventType.RUN_STARTED,
             phase=LoopPhaseStatusType.START_RUN,
             iteration=0,
         )
         logger.info(
-            "Harness run started: run_id=%s turn_id=%s",
+            "Harness status=%s: run_id=%s turn_id=%s",
+            EventType.RUN_STARTED,
             command.run_ref.run_id,
             command.run_ref.turn_id,
             extra={"run_id": command.run_ref.run_id, "turn_id": command.run_ref.turn_id},
@@ -332,21 +334,32 @@ class LoopController:
         state: HarnessGraphState,
     ) -> LoopResult:
         """从 start_run 或 restore_run 进入统一上下文、规划和工具循环。"""
+
+        # ① 入口：deadline 预检 → 迁移 BUILD_CONTEXT → 落库。
+        #    后文固定节奏都是「_transition 推进阶段指针 → _save_running_state 落库」，
+        #    保证现场每一步都可恢复。
         self._check_deadline(state)
         state = self._transition(
             state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.BUILD_CONTEXT
         )
         await self._save_running_state(command, state)
+
+        # ② 构建首轮上下文（记忆读取 + 元数据召回），构建期间同样受 deadline 约束
         compiled_context = await self._await_with_deadline(
             self._build_context(state), state
         )
+        # ③ 迁移 PLAN 并落库，组装 Planner 输入，进入"规划→执行"主循环
         state = self._transition(
             state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.PLAN
         )
         await self._save_running_state(command, state)
         planner_input = self._planner_input(state, compiled_context)
+
+        # 主循环：每轮 = 规划一个动作 → 提交前拦截 → 提交落库 → 按类型分派 → 记录观察 → 重建上下文
         while True:
             self._check_deadline(state)
+            # ④ 规划：调 Planner 产出下一个动作；PlannerFailure 可重试则重算输入重来，
+            #    重试额度耗尽则按 FAILED 收口
             try:
                 action = await self._await_with_deadline(
                     self._plan_action(command, state, planner_input), state
@@ -365,6 +378,7 @@ class LoopController:
                     terminal_status=HarnessStatusType.FAILED,
                 )
 
+            # ⑤ 拿到合法动作：清重试计数与 planner 类 last_error
             # 重试额度属于当前规划阶段；成功发行动作后，下一次规划重新计数。
             state["harness"]["planner_retry_count"] = 0
             last_error = state["harness"].get("last_error")
@@ -374,6 +388,7 @@ class LoopController:
                 state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.VALIDATE_ACTION
             )
             await self._save_running_state(command, state)
+            # ⑥ 退化路径：没有动作提交器时只允许直接作答；工具/确认没有审计与幂等保障，直接拒绝
             if self.action_committer is None:
                 if action.action_type is ActionType.FINAL_ANSWER:
                     return await self._finalize(
@@ -384,6 +399,8 @@ class LoopController:
                     )
                 raise ValueError("执行工具或用户确认必须注入 ActionCommitter")
 
+            # ⑦ 提交前拦截：失败请求的重复工具调用、重复确认都在动作落库前终止，
+            #    避免留下"已 committed 但不会执行"的动作
             request_hash = None
             if action.action_type is ActionType.TOOL_CALL:
                 if action.tool_call is None:
@@ -416,9 +433,11 @@ class LoopController:
                         final_answer="确认回复未能解决当前问题，任务已停止。",
                         terminal_status=HarnessStatusType.FAILED,
                     )
+            # ⑧ 提交动作落库：commit 先于执行，动作序列号是审计、幂等与恢复的依据
             await self._await_with_deadline(
                 self._commit_action(command, state, action), state
             )
+            # ⑨ 按动作类型分派：作答收口 / 要用户确认 / 执行工具
             if action.action_type is ActionType.FINAL_ANSWER:
                 return await self._finalize(
                     command=command,
@@ -448,6 +467,7 @@ class LoopController:
             if self.tool_runtime is None:
                 raise ValueError("TOOL_CALL 必须注入 ToolRuntime")
 
+            # ⑩ 执行工具：迁移 EXECUTE_TOOL 并落库后，真正调用工具运行时（受 deadline 约束）
             state = self._transition(
                 state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.EXECUTE_TOOL
             )
@@ -460,6 +480,8 @@ class LoopController:
                 ),
                 state,
             )
+            # ⑪ 处理结果：构造受控观察入档（Planner 下一轮只见观察摘要与引用，见不到完整结果），
+            #    并把工具错误写入 last_error
             state = self._transition(
                 state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.HANDLE_TOOL_RESULT
             )
@@ -484,6 +506,7 @@ class LoopController:
             state["harness"]["last_error"] = (
                 error.model_dump(mode="json") if error is not None else None
             )
+            # ⑫ 工具结果要求人工确认（needs_user）：同样先拦重复确认，再暂停等待
             if tool_result.status is ResultStatus.NEEDS_USER:
                 assert tool_result.confirmation_request is not None
                 if self._should_stop_for_repeated_confirmation(
@@ -504,6 +527,7 @@ class LoopController:
                     ),
                     state,
                 )
+            # ⑬ 记录观察：推进迭代计数并落库；达到上限则按 TIMEOUT 收口，不再继续规划
             state = self._transition(
                 state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.RECORD_OBSERVATION
             )
@@ -518,6 +542,7 @@ class LoopController:
                     terminal_status=HarnessStatusType.TIMEOUT,
                 )
 
+            # ⑭ 下一轮：带着刚记录的观察重建上下文 → 回到 PLAN，循环继续
             state = self._transition(
                 state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.BUILD_CONTEXT
             )
