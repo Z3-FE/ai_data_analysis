@@ -5,6 +5,7 @@ import unittest
 from app.agent.state_result_store.contracts import HarnessRunRef, HarnessStatus, LoopPhase
 from app.agent.loop_controller.contracts import StartRunCommand
 from app.agent.loop_controller.controller import LoopController
+from app.agent.streaming.writer import NullHarnessEventWriter
 from tests.fakes.slice_a.fake_finalization import FakeFinalizationService
 from tests.fakes.slice_a.fake_planning_agent import FakePlanningAgent
 from tests.fakes.slice_a.fake_run_store import FakeRunStore
@@ -29,6 +30,7 @@ class SliceAVerticalTest(unittest.IsolatedAsyncioTestCase):
             planning_agent=planning_agent,
             finalization_service=finalization_service,
             run_store=run_store,
+            event_writer=NullHarnessEventWriter(run_ref=run_ref),
         )
 
         result = await controller.start(

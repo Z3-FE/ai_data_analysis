@@ -19,6 +19,7 @@ from app.agent.state_result_store.contracts import (
     ToolCall,
     ToolSpec,
 )
+from app.agent.streaming.writer import NullHarnessEventWriter
 from app.agent.tool_runtime.artifacts import (
     ArtifactReadRequest,
     ArtifactRecord,
@@ -75,6 +76,7 @@ class PlannerRetryTest(unittest.IsolatedAsyncioTestCase):
             finalization_service=FakeFinalizationService(store),
             run_store=store,
             max_planner_retries=2,
+            event_writer=NullHarnessEventWriter(run_ref=_run_ref()),
         )
 
         result = await controller.start(

@@ -17,6 +17,7 @@ from app.agent.state_result_store.contracts import (
     HarnessRunRef,
     HarnessStatus,
 )
+from app.agent.streaming.writer import NullHarnessEventWriter
 from app.models.agent_history import ConversationMessageModel
 from app.models.memory import MemoryFormationRunModel
 from app.repositories.conversation_repository import ConversationRepository
@@ -164,6 +165,7 @@ class FinalizationRecoveryTest(unittest.IsolatedAsyncioTestCase):
             planning_agent=FakePlanningAgent(final_answer=FINAL_ANSWER),
             finalization_service=service,
             run_store=self.run_store,
+            event_writer=NullHarnessEventWriter(run_ref=self._run_ref()),
         )
 
     async def _start_run(self, service: PostgresFinalizationService) -> None:

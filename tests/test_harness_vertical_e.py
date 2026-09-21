@@ -13,6 +13,7 @@ from app.agent.finalization.service import PostgresFinalizationService
 from app.agent.loop_controller.contracts import StartRunCommand
 from app.agent.loop_controller.controller import LoopController
 from app.agent.state_result_store.contracts import HarnessStatus
+from app.agent.streaming.writer import NullHarnessEventWriter
 from app.models.memory import MemoryFormationRunModel
 from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.finalization_repository import PostgresFinalizationLedger
@@ -59,6 +60,7 @@ class SliceEVerticalTest(unittest.IsolatedAsyncioTestCase):
             planning_agent=FakePlanningAgent(final_answer=FINAL_ANSWER),
             finalization_service=finalization,
             run_store=run_store,
+            event_writer=NullHarnessEventWriter(run_ref=self._run_ref()),
         )
 
     async def _start_turn(self) -> None:

@@ -55,7 +55,7 @@ from app.agent.state_result_store.state import (
     new_harness_control_state,
     transition_harness_state,
 )
-from app.agent.streaming.writer import HarnessEventWriter, NullHarnessEventWriter
+from app.agent.streaming.writer import HarnessEventWriter
 from app.agent.tool_runtime.contracts import ToolExecutionRequest
 
 logger = logging.getLogger(__name__)
@@ -77,7 +77,7 @@ class LoopController:
         context_builder: ContextBuilder,
         planning_agent: PlanningPort,
         finalization_service: FinalizationPort,
-        run_store: HarnessRunStore,
+        run_store: HarnessRunStore, # HarnessRunStore的操作
         context_request_factory: HarnessContextRequestFactory | None = None,
         system_instructions: str = "你是一个数据分析助手。",
         action_committer: ActionCommitter | None = None,
@@ -88,7 +88,7 @@ class LoopController:
         max_tool_retries: int = 2,
         max_iterations: int = 8,
         run_timeout_seconds: int = 300,
-        event_writer: HarnessEventWriter | None = None,
+        event_writer: HarnessEventWriter,
     ) -> None:
         if max_planner_retries < 0:
             raise ValueError("max_planner_retries 不能小于 0")
@@ -117,8 +117,10 @@ class LoopController:
         self.event_writer = event_writer
 
     async def start(self, command: StartRunCommand) -> LoopResult:
-        """创建新运行并执行，直到暂停或进入终态。(运行状态组织吗)？"""
+        """创建新运行并执行，直到暂停或进入终态。"""
+        # 1.新建状态： state
         state = self._new_state(command)
+
         await self.run_store.create(command.run_ref, state)
         self._emit(
             command.run_ref,
@@ -1183,7 +1185,9 @@ class LoopController:
         payload: dict | None = None,
     ) -> None:
         """事件写出失败不反向改变已持久化的 Harness 运行结果。"""
-        writer = self.event_writer or NullHarnessEventWriter(run_ref=run_ref)
+        # 装配层保证 writer 永不为 None（无流式需求时注入 NullHarnessEventWriter），
+        # 这里直接调用，不再判空。
+        writer = self.event_writer
         try:
             writer.emit(
                 event_type,

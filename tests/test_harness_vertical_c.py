@@ -14,6 +14,7 @@ from app.agent.state_result_store.contracts import (
     PlannerCapabilities,
     ToolSpec,
 )
+from app.agent.streaming.writer import NullHarnessEventWriter
 from app.agent.tool_runtime.registry import ToolRegistry
 from app.agent.tool_runtime.runtime import ToolRuntime
 from tests.fakes.slice_a.fake_finalization import FakeFinalizationService
@@ -91,6 +92,7 @@ class SliceCVerticalTest(unittest.IsolatedAsyncioTestCase):
             action_committer=committer,
             tool_runtime=runtime,
             tool_specs=(spec,),
+            event_writer=NullHarnessEventWriter(run_ref=run_ref),
         )
 
         async def query_graph_stream(state, *, context, stream_mode):

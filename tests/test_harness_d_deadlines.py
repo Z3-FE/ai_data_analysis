@@ -22,6 +22,7 @@ from app.agent.state_result_store.contracts import (
     ToolResult,
     ToolSpec,
 )
+from app.agent.streaming.writer import NullHarnessEventWriter
 from app.agent.tool_runtime.contracts import ToolExecutionRequest
 from tests.fakes.slice_a.fake_finalization import FakeFinalizationService
 from tests.fakes.slice_a.fake_run_store import FakeRunStore
@@ -167,6 +168,8 @@ class HarnessDeadlineTest(unittest.IsolatedAsyncioTestCase):
             finalization_service=FakeFinalizationService(run_store=store),
             run_store=store,
             run_timeout_seconds=1,
+            # helper 在构造时还没有具体 run_ref，用占位身份；Null writer 丢弃事件，身份无实际用途
+            event_writer=NullHarnessEventWriter(run_ref=_run_ref("deadline")),
             **kwargs,
         )
 

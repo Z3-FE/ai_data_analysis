@@ -14,6 +14,7 @@ from app.agent.state_result_store.contracts import (
     PlannerCapabilities,
     ToolSpec,
 )
+from app.agent.streaming.writer import NullHarnessEventWriter
 from tests.fakes.slice_a.fake_finalization import FakeFinalizationService
 from tests.fakes.slice_a.fake_run_store import FakeRunStore
 from tests.fakes.slice_b.fake_action_committer import FakeActionCommitter
@@ -68,6 +69,7 @@ class SliceBVerticalTest(unittest.IsolatedAsyncioTestCase):
             tool_runtime=tool_runtime,
             confirmation_dispatcher=confirmation_dispatcher,
             tool_specs=tool_specs,
+            event_writer=NullHarnessEventWriter(run_ref=run_ref),
         )
         result = await controller.start(
             StartRunCommand(run_ref=run_ref, input_text="分析销售数据")

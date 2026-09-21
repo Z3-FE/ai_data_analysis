@@ -16,6 +16,7 @@ from app.agent.state_result_store.contracts import (
     PlannerCapabilities,
     ToolSpec,
 )
+from app.agent.streaming.writer import NullHarnessEventWriter
 from app.agent.tool_runtime.artifacts import (
     ArtifactReadRequest,
     ArtifactRecord,
@@ -221,6 +222,7 @@ class HarnessD8ReportTest(unittest.IsolatedAsyncioTestCase):
             action_committer=FakeActionCommitter(),
             tool_runtime=runtime,
             tool_specs=(spec,),
+            event_writer=NullHarnessEventWriter(run_ref=RUN_REF),
         )
 
         result = await controller.start(
