@@ -1197,6 +1197,12 @@ class LoopController:
         phase: LoopPhaseStatusType,
         terminal_intent: str | None = None,
     ) -> HarnessGraphState:
+        """harness 现场迁移一步并回写整个 state；迁移规则全在 store 层把关。"""
+
+        # 这里只做子字典搬运：transition_harness_state 只认识 harness 字典，
+        # "外层 state 挂着 harness"的布局知识收敛在这一处（13 个调用点不重复）。
+        # 原地更新 + 返回：赋值是实际效果，返回让调用点的
+        # `state = self._transition(...)` 显式表达"state 在此推进一步"。
         state["harness"] = transition_harness_state(
             state["harness"],
             status=status,
