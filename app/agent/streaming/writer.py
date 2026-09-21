@@ -120,19 +120,18 @@ class HarnessEventWriter:
 
     def emit(
         self,
+        # 唯一必填参数（位置传参）：事件名，前端按它分类消费，习惯"域.动作"（run.started / tool.progress / context.failed）
         event_type: str,
         *,
-        source: str | None = None,
-        phase: str | None = None,
-        iteration: int | None = None,
-        action_id: str | None = None,
-        payload: Mapping[str, Any] | None = None,
-    ) -> HarnessEvent | None:
+        source: str | None = None,  # 来源标识；不传走 bind() 上下文，再回退 "harness"
+        phase: str | None = None,  # 状态机阶段（LoopPhase 枚举直接传，它本身就是 str）；不传走 bind() 上下文，再回退 "start_run"
+        iteration: int | None = None,  # 循环轮数（前端"第 N 轮"）；不传走 bind() 上下文，再回退 0
+        action_id: str | None = None,  # 关联的动作（Planner 的 action_seq 体系）；不传走 bind() 上下文，再回退 None
+        payload: Mapping[str, Any] | None = None,  # 业务数据 dict；发送前经 _sanitize 清洗（截断、剔 rows/sql/code 等大字段）
+    ) -> HarnessEvent | None:  # 成功返回已发布事件；失败吞异常返回 None，调用方一般不用接
         """发布一个受控 Harness 事件；失败只记日志并返回 None，绝不反噬调用方。
 
-        事件是运行结果的旁路广播：显式参数优先，未传时回退到 bind() 绑定的
-        上下文，再回退默认值（source=harness、phase=start_run、iteration=0）。
-        清洗/构造/入队任何一步失败都在这里统一吞掉，调用方无需各自防御。
+        显式参数优先，未传时回退 bind() 上下文；构造与入队失败统一在此吞掉。
         """
         try:
             context = self._context.get()
