@@ -15,7 +15,7 @@ class EventType(StrEnum):
     """前后端事件协议的全部事件名；一处定义，调用点、前端与测试按值对齐。"""
 
     # —— run 域事件：启动 → 过程 → 终态四选一 → 结果载荷；这是时序上的事件流水，
-    #    不是状态也不是生命周期——run 的完整过程骨架由 LoopPhase 阶段序列描述 ——
+    #    不是状态也不是生命周期——run 的完整过程骨架由 LoopPhaseStatusType 阶段序列描述 ——
     RUN_STARTED = "run.started"  # start() 创建现场后发：运行开始
     RUN_RESULT = "run.result"  # API 层在 operation 返回后发：最终结果载荷（前端渲染最终答案用它）
     RUN_COMPLETED = "run.completed"  # 终态宣告：正常完成

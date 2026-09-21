@@ -11,12 +11,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.agent.context_engine.contracts import CompiledContext
 
 
-class HarnessStatus(StrEnum):
-    """run 的宏观状态；与 LoopPhase（微观位置）正交——RUNNING 期间 phase 在循环各步间移动。
-
-    交叉约束见 HarnessStateSnapshot.validate_combination：WAITING_CONFIRMATION 必须停在
-    wait_confirmation 阶段；终态必须处于 finalization 阶段且与 terminal_intent 一致。
-    """
+class HarnessStatusType(StrEnum):
+    """HarnessStatusType Harness状态"""
 
     RUNNING = "running"  # 循环执行中（phase 可为 build_context/plan/execute_tool 等任一过程步）
     WAITING_CONFIRMATION = "waiting_confirmation"  # 暂停等用户确认；resume 后回到 RUNNING
@@ -26,8 +22,8 @@ class HarnessStatus(StrEnum):
     TIMEOUT = "timeout"  # 终态：超出运行级 deadline
 
 
-class LoopPhase(StrEnum):
-    """执行循环的阶段指针；phase 随现场落库，迁移合法性由 state.py _PHASE_TRANSITIONS 约束。"""
+class LoopPhaseStatusType(StrEnum):
+    """LoopPhaseStatusType  循环阶段状态"""
 
     # —— 入口二选一 ——
     START_RUN = "start_run"              # 新启动：创建初始现场后进 BUILD_CONTEXT
@@ -276,8 +272,8 @@ class HarnessStateSnapshot(ContractModel):
     state_version: int = Field(default=0, ge=0)
     checkpoint_revision: int = Field(default=0, ge=0)
     fencing_token: int = Field(default=0, ge=0)
-    status: HarnessStatus = HarnessStatus.RUNNING
-    phase: LoopPhase = LoopPhase.START_RUN
+    status: HarnessStatusType = HarnessStatusType.RUNNING
+    phase: LoopPhaseStatusType = LoopPhaseStatusType.START_RUN
     iteration: int = Field(default=0, ge=0)
     action_seq: int = Field(default=0, ge=0)
     max_iterations: int = Field(default=8, gt=0)
@@ -309,30 +305,30 @@ class HarnessStateSnapshot(ContractModel):
     @model_validator(mode="after")
     def validate_combination(self) -> "HarnessStateSnapshot":
         terminal = {
-            HarnessStatus.COMPLETED,
-            HarnessStatus.FAILED,
-            HarnessStatus.CANCELLED,
-            HarnessStatus.TIMEOUT,
+            HarnessStatusType.COMPLETED,
+            HarnessStatusType.FAILED,
+            HarnessStatusType.CANCELLED,
+            HarnessStatusType.TIMEOUT,
         }
         if self.deadline_at and self.started_at and self.deadline_at < self.started_at:
             raise ValueError("deadline_at 不能早于 started_at")
-        if self.status is HarnessStatus.WAITING_CONFIRMATION:
+        if self.status is HarnessStatusType.WAITING_CONFIRMATION:
             if (
-                self.phase is not LoopPhase.WAIT_CONFIRMATION
+                self.phase is not LoopPhaseStatusType.WAIT_CONFIRMATION
                 or self.terminal_intent
                 or self.pending_confirmation is None
             ):
                 raise ValueError("waiting_confirmation 状态组合非法")
         elif self.status in terminal:
-            if self.phase is not LoopPhase.FINALIZATION:
+            if self.phase is not LoopPhaseStatusType.FINALIZATION:
                 raise ValueError("终态必须使用 finalization 阶段")
             if self.terminal_intent != self.status.value:
                 raise ValueError("终态必须与 terminal_intent 一致")
             if self.pending_confirmation is not None:
                 raise ValueError("终态不能保留 pending_confirmation")
-        elif self.phase is LoopPhase.WAIT_CONFIRMATION:
+        elif self.phase is LoopPhaseStatusType.WAIT_CONFIRMATION:
             raise ValueError("wait_confirmation 阶段必须处于等待确认状态")
-        elif self.phase is LoopPhase.FINALIZATION:
+        elif self.phase is LoopPhaseStatusType.FINALIZATION:
             if self.terminal_intent is None:
                 raise ValueError("finalization 阶段必须提供 terminal_intent")
         elif self.terminal_intent is not None:
@@ -454,8 +450,8 @@ __all__ = [
     "HarnessRequest",
     "HarnessRunRef",
     "HarnessStateSnapshot",
-    "HarnessStatus",
-    "LoopPhase",
+    "HarnessStatusType",
+    "LoopPhaseStatusType",
     "NextAction",
     "PlanProgress",
     "PlannerCapabilities",

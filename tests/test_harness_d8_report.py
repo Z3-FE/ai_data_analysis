@@ -12,7 +12,7 @@ from app.agent.loop_controller.controller import LoopController
 from app.agent.planning_agent.agent import PlanningAgent
 from app.agent.state_result_store.contracts import (
     HarnessRunRef,
-    HarnessStatus,
+    HarnessStatusType,
     PlannerCapabilities,
     ToolSpec,
 )
@@ -229,7 +229,7 @@ class HarnessD8ReportTest(unittest.IsolatedAsyncioTestCase):
             StartRunCommand(run_ref=RUN_REF, input_text="生成月度销售额报告")
         )
 
-        self.assertEqual(result.status, HarnessStatus.COMPLETED)
+        self.assertEqual(result.status, HarnessStatusType.COMPLETED)
         report_artifact = next(
             record
             for record in artifact_store.records.values()

@@ -40,9 +40,9 @@ from app.agent.state_result_store.contracts import (
     ConfirmationStatus,
     ConfirmationVisibility,
     ErrorCategory,
-    HarnessStatus,
+    HarnessStatusType,
     HarnessStateSnapshot,
-    LoopPhase,
+    LoopPhaseStatusType,
     PlannerInput,
     PlannerStateView,
     ResultStatus,
@@ -125,7 +125,7 @@ class LoopController:
         await self.run_store.create(command.run_ref, state)
         self.event_writer.emit(
             EventType.RUN_STARTED,
-            phase=LoopPhase.START_RUN,
+            phase=LoopPhaseStatusType.START_RUN,
             iteration=0,
         )
         logger.info(
@@ -146,20 +146,20 @@ class LoopController:
         if resolution.status == "idempotent":
             self.event_writer.emit(
                 EventType.CONFIRMATION_RESOLVED,
-                phase=LoopPhase.RESTORE_RUN,
+                phase=LoopPhaseStatusType.RESTORE_RUN,
                 iteration=int(harness["iteration"]),
                 payload={"status": "idempotent"},
             )
             return LoopResumeAcceptedResult(
                 run_ref=command.run_ref,
                 resume_status="idempotent",
-                status=HarnessStatus(harness["status"]),
-                phase=LoopPhase(harness["phase"]),
+                status=HarnessStatusType(harness["status"]),
+                phase=LoopPhaseStatusType(harness["phase"]),
                 state_version=int(harness["state_version"]),
             )
         self.event_writer.emit(
             EventType.CONFIRMATION_RESOLVED,
-            phase=LoopPhase.RESTORE_RUN,
+            phase=LoopPhaseStatusType.RESTORE_RUN,
             iteration=int(harness["iteration"]),
             payload={"status": resolution.status},
         )
@@ -176,7 +176,7 @@ class LoopController:
                 state=state,
                 compiled_context=None,
                 final_answer="用户拒绝了本次确认，任务已停止。",
-                terminal_status=HarnessStatus.CANCELLED,
+                terminal_status=HarnessStatusType.CANCELLED,
             )
         return await self._run_guarded(restored_command, state)
 
@@ -200,7 +200,7 @@ class LoopController:
                 state=state,
                 compiled_context=None,
                 final_answer="任务执行超过时间限制，已停止继续处理。",
-                terminal_status=HarnessStatus.TIMEOUT,
+                terminal_status=HarnessStatusType.TIMEOUT,
             )
         except asyncio.CancelledError:
             # 客户端断开时仍完成一次终态落库；shield 防止请求取消再次取消收口任务。
@@ -216,7 +216,7 @@ class LoopController:
                     state=state,
                     compiled_context=None,
                     final_answer="任务已取消，未继续执行后续分析。",
-                    terminal_status=HarnessStatus.CANCELLED,
+                    terminal_status=HarnessStatusType.CANCELLED,
                 )
             )
             try:
@@ -242,7 +242,7 @@ class LoopController:
                 state=state,
                 compiled_context=None,
                 final_answer="任务执行失败，已停止后续处理。",
-                terminal_status=HarnessStatus.FAILED,
+                terminal_status=HarnessStatusType.FAILED,
             )
 
     @staticmethod
@@ -317,11 +317,11 @@ class LoopController:
             # 持久化读取失败时保留内存现场，让 Finalization 的保存操作报告真实冲突。
             persisted_state = state
         state = persisted_state
-        if state["harness"]["status"] == HarnessStatus.WAITING_CONFIRMATION.value:
+        if state["harness"]["status"] == HarnessStatusType.WAITING_CONFIRMATION.value:
             state = self._transition(
                 state,
-                status=HarnessStatus.RUNNING,
-                phase=LoopPhase.RESTORE_RUN,
+                status=HarnessStatusType.RUNNING,
+                phase=LoopPhaseStatusType.RESTORE_RUN,
             )
         self._set_interruption_error(state, code=code, message=message)
         return state
@@ -334,14 +334,14 @@ class LoopController:
         """从 start_run 或 restore_run 进入统一上下文、规划和工具循环。"""
         self._check_deadline(state)
         state = self._transition(
-            state, status=HarnessStatus.RUNNING, phase=LoopPhase.BUILD_CONTEXT
+            state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.BUILD_CONTEXT
         )
         await self._save_running_state(command, state)
         compiled_context = await self._await_with_deadline(
             self._build_context(state), state
         )
         state = self._transition(
-            state, status=HarnessStatus.RUNNING, phase=LoopPhase.PLAN
+            state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.PLAN
         )
         await self._save_running_state(command, state)
         planner_input = self._planner_input(state, compiled_context)
@@ -362,7 +362,7 @@ class LoopController:
                     state=state,
                     compiled_context=compiled_context,
                     final_answer="任务规划多次失败，暂时无法完成本次分析。",
-                    terminal_status=HarnessStatus.FAILED,
+                    terminal_status=HarnessStatusType.FAILED,
                 )
 
             # 重试额度属于当前规划阶段；成功发行动作后，下一次规划重新计数。
@@ -371,7 +371,7 @@ class LoopController:
             if isinstance(last_error, dict) and last_error.get("category") == "planner":
                 state["harness"]["last_error"] = None
             state = self._transition(
-                state, status=HarnessStatus.RUNNING, phase=LoopPhase.VALIDATE_ACTION
+                state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.VALIDATE_ACTION
             )
             await self._save_running_state(command, state)
             if self.action_committer is None:
@@ -400,7 +400,7 @@ class LoopController:
                         state=state,
                         compiled_context=compiled_context,
                         final_answer="相同的数据工具请求已经失败，已停止重复执行。",
-                        terminal_status=HarnessStatus.FAILED,
+                        terminal_status=HarnessStatusType.FAILED,
                     )
 
             # 重复确认在动作提交前终止，避免产生没有对应 pending 记录的 committed 动作。
@@ -414,7 +414,7 @@ class LoopController:
                         state=state,
                         compiled_context=compiled_context,
                         final_answer="确认回复未能解决当前问题，任务已停止。",
-                        terminal_status=HarnessStatus.FAILED,
+                        terminal_status=HarnessStatusType.FAILED,
                     )
             await self._await_with_deadline(
                 self._commit_action(command, state, action), state
@@ -449,7 +449,7 @@ class LoopController:
                 raise ValueError("TOOL_CALL 必须注入 ToolRuntime")
 
             state = self._transition(
-                state, status=HarnessStatus.RUNNING, phase=LoopPhase.EXECUTE_TOOL
+                state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.EXECUTE_TOOL
             )
             await self._save_running_state(command, state)
             tool_result = await self._await_with_deadline(
@@ -461,7 +461,7 @@ class LoopController:
                 state,
             )
             state = self._transition(
-                state, status=HarnessStatus.RUNNING, phase=LoopPhase.HANDLE_TOOL_RESULT
+                state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.HANDLE_TOOL_RESULT
             )
             await self._save_running_state(command, state)
             observation = RunObservation(
@@ -494,7 +494,7 @@ class LoopController:
                         state=state,
                         compiled_context=compiled_context,
                         final_answer="确认回复未能解决当前问题，任务已停止。",
-                        terminal_status=HarnessStatus.FAILED,
+                        terminal_status=HarnessStatusType.FAILED,
                     )
                 return await self._await_with_deadline(
                     self._pause_for_confirmation(
@@ -505,7 +505,7 @@ class LoopController:
                     state,
                 )
             state = self._transition(
-                state, status=HarnessStatus.RUNNING, phase=LoopPhase.RECORD_OBSERVATION
+                state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.RECORD_OBSERVATION
             )
             state["harness"]["iteration"] += 1
             await self._save_running_state(command, state)
@@ -515,18 +515,18 @@ class LoopController:
                     state=state,
                     compiled_context=compiled_context,
                     final_answer="任务达到最大工具迭代次数，无法继续安全执行。",
-                    terminal_status=HarnessStatus.TIMEOUT,
+                    terminal_status=HarnessStatusType.TIMEOUT,
                 )
 
             state = self._transition(
-                state, status=HarnessStatus.RUNNING, phase=LoopPhase.BUILD_CONTEXT
+                state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.BUILD_CONTEXT
             )
             await self._save_running_state(command, state)
             compiled_context = await self._await_with_deadline(
                 self._build_context(state), state
             )
             state = self._transition(
-                state, status=HarnessStatus.RUNNING, phase=LoopPhase.PLAN
+                state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.PLAN
             )
             await self._save_running_state(command, state)
             planner_input = self._planner_input(state, compiled_context)
@@ -562,8 +562,8 @@ class LoopController:
         )
         state = self._transition(
             state,
-            status=HarnessStatus.WAITING_CONFIRMATION,
-            phase=LoopPhase.WAIT_CONFIRMATION,
+            status=HarnessStatusType.WAITING_CONFIRMATION,
+            phase=LoopPhaseStatusType.WAIT_CONFIRMATION,
         )
         await self.run_store.pause_for_confirmation(
             command.run_ref,
@@ -580,7 +580,7 @@ class LoopController:
         )
         self.event_writer.emit(
             EventType.CONFIRMATION_REQUIRED,
-            phase=LoopPhase.WAIT_CONFIRMATION,
+            phase=LoopPhaseStatusType.WAIT_CONFIRMATION,
             iteration=int(state["harness"]["iteration"]),
             payload={
                 "confirmation_id": confirmation.confirmation_id,
@@ -611,12 +611,12 @@ class LoopController:
         if failure.error.retryable and retry_count < self.max_planner_retries:
             harness["planner_retry_count"] = retry_count + 1
             state = self._transition(
-                state, status=HarnessStatus.RUNNING, phase=LoopPhase.PLAN
+                state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.PLAN
             )
             await self._save_running_state(command, state)
             self.event_writer.emit(
                 EventType.PLANNER_RETRYING,
-                phase=LoopPhase.PLAN,
+                phase=LoopPhaseStatusType.PLAN,
                 iteration=int(state["harness"]["iteration"]),
                 payload={
                     "retry_count": int(harness["planner_retry_count"]),
@@ -682,12 +682,12 @@ class LoopController:
                 error.model_dump(mode="json") if error is not None else None
             )
             state = self._transition(
-                state, status=HarnessStatus.RUNNING, phase=LoopPhase.EXECUTE_TOOL
+                state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.EXECUTE_TOOL
             )
             await self._save_running_state(command, state)
             self.event_writer.emit(
                 EventType.TOOL_RETRYING,
-                phase=LoopPhase.EXECUTE_TOOL,
+                phase=LoopPhaseStatusType.EXECUTE_TOOL,
                 iteration=int(state["harness"]["iteration"]),
                 action_id=action_id,
                 payload={
@@ -741,7 +741,7 @@ class LoopController:
         action_seq = int(state["harness"]["action_seq"]) + 1
         self.event_writer.emit(
             EventType.PLANNER_STARTED,
-            phase=LoopPhase.PLAN,
+            phase=LoopPhaseStatusType.PLAN,
             iteration=iteration,
             payload={"action_seq": action_seq},
         )
@@ -765,7 +765,7 @@ class LoopController:
             )
             self.event_writer.emit(
                 EventType.PLANNER_FAILED,
-                phase=LoopPhase.PLAN,
+                phase=LoopPhaseStatusType.PLAN,
                 iteration=iteration,
                 payload={
                     "action_seq": action_seq,
@@ -784,7 +784,7 @@ class LoopController:
             )
             self.event_writer.emit(
                 EventType.PLANNER_FAILED,
-                phase=LoopPhase.PLAN,
+                phase=LoopPhaseStatusType.PLAN,
                 iteration=iteration,
                 payload={
                     "action_seq": action_seq,
@@ -795,7 +795,7 @@ class LoopController:
             raise
         self.event_writer.emit(
             EventType.PLANNER_COMPLETED,
-            phase=LoopPhase.PLAN,
+            phase=LoopPhaseStatusType.PLAN,
             iteration=iteration,
             payload={
                 "action_seq": action.action_seq,
@@ -834,7 +834,7 @@ class LoopController:
         state["harness"]["action_seq"] = action.action_seq
         self.event_writer.emit(
             EventType.ACTION_COMMITTED,
-            phase=LoopPhase.VALIDATE_ACTION,
+            phase=LoopPhaseStatusType.VALIDATE_ACTION,
             iteration=int(state["harness"]["iteration"]),
             action_id=(
                 action.tool_call.action_id
@@ -851,7 +851,7 @@ class LoopController:
     # 构建上下文
     async def _build_context(self, state):
         run_ref = self._run_ref_from_state(state)
-        phase = LoopPhase(state["harness"]["phase"])
+        phase = LoopPhaseStatusType(state["harness"]["phase"])
         self.event_writer.emit(
             EventType.CONTEXT_STARTED,
             phase=phase,
@@ -1027,21 +1027,21 @@ class LoopController:
         state: HarnessGraphState,
         compiled_context,
         final_answer: str | None,
-        terminal_status: HarnessStatus = HarnessStatus.COMPLETED,
+        terminal_status: HarnessStatusType = HarnessStatusType.COMPLETED,
     ) -> LoopRunResult:
         if not final_answer:
             raise ValueError("收口答案不能为空")
         state["harness"]["final_answer"] = final_answer
         state = self._transition(
             state,
-            status=HarnessStatus.RUNNING,
-            phase=LoopPhase.FINALIZATION,
+            status=HarnessStatusType.RUNNING,
+            phase=LoopPhaseStatusType.FINALIZATION,
             terminal_intent=terminal_status.value,
         )
         await self.run_store.save(command.run_ref, state)
         final_output_type, final_output_ref = (
             self._final_output(state)
-            if terminal_status is HarnessStatus.COMPLETED
+            if terminal_status is HarnessStatusType.COMPLETED
             else ("text", None)
         )
         # 收口失败抛出 FinalizationFailure：运行现场保持 running/finalization，
@@ -1055,7 +1055,7 @@ class LoopController:
                 terminal_status=terminal_status,
                 error_message=(
                     str((state["harness"].get("last_error") or {}).get("message", ""))
-                    if terminal_status is not HarnessStatus.COMPLETED
+                    if terminal_status is not HarnessStatusType.COMPLETED
                     else ""
                 ),
                 asset_ids=list(command.asset_ids),
@@ -1065,14 +1065,14 @@ class LoopController:
         )
         # 终态已成功持久化，发布一次本次运行的终态事件
         event_type = {
-            HarnessStatus.COMPLETED: EventType.RUN_COMPLETED,
-            HarnessStatus.FAILED: EventType.RUN_FAILED,
-            HarnessStatus.TIMEOUT: EventType.RUN_TIMEOUT,
-            HarnessStatus.CANCELLED: EventType.RUN_CANCELLED,
+            HarnessStatusType.COMPLETED: EventType.RUN_COMPLETED,
+            HarnessStatusType.FAILED: EventType.RUN_FAILED,
+            HarnessStatusType.TIMEOUT: EventType.RUN_TIMEOUT,
+            HarnessStatusType.CANCELLED: EventType.RUN_CANCELLED,
         }[finalization.status]
         self.event_writer.emit(
             event_type,
-            phase=LoopPhase.FINALIZATION,
+            phase=LoopPhaseStatusType.FINALIZATION,
             iteration=finalization.iteration,
             payload={
                 "status": finalization.status.value,
@@ -1094,7 +1094,7 @@ class LoopController:
         return LoopRunResult(
             run_ref=command.run_ref,
             status=finalization.status,
-            phase=LoopPhase.FINALIZATION,
+            phase=LoopPhaseStatusType.FINALIZATION,
             iteration=finalization.iteration,
             finalization_result=finalization,
             last_error=finalization.last_error,
@@ -1166,8 +1166,8 @@ class LoopController:
     def _transition(
         state: HarnessGraphState,
         *,
-        status: HarnessStatus,
-        phase: LoopPhase,
+        status: HarnessStatusType,
+        phase: LoopPhaseStatusType,
         terminal_intent: str | None = None,
     ) -> HarnessGraphState:
         state["harness"] = transition_harness_state(

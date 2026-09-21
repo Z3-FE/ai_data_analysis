@@ -32,7 +32,7 @@
         CANCELLED = "cancelled"
         TIMEOUT = "timeout"
 
-    class LoopPhase(StrEnum):
+    class LoopPhaseStatusType(StrEnum):
         # Loop Controller 当前所在的控制阶段。
         START_RUN = "start_run"
         RESTORE_RUN = "restore_run"
@@ -126,7 +126,7 @@ HarnessRunState 是 Loop Controller 管理的一次完整运行现场，也是 L
         # 必填：运行生命周期状态。
         status: RunStatus
         # 必填：Loop Controller 当前阶段。
-        phase: LoopPhase
+        phase: LoopPhaseStatusType
 
         # 必填：当前内部循环次数；本文约定从 1 开始。
         iteration: int
@@ -191,7 +191,7 @@ HarnessRunState 是 Loop Controller 管理的一次完整运行现场，也是 L
 | turn_id | str | 是 | 当前用户轮次键 |
 | run_id | str | 是 | 本次运行键，重试和恢复时保持关联 |
 | status | RunStatus | 是 | 当前运行是否继续、等待、完成或失败 |
-| phase | LoopPhase | 是 | Loop Controller 当前节点阶段 |
+| phase | LoopPhaseStatusType | 是 | Loop Controller 当前节点阶段 |
 | iteration | int | 是 | 内部循环次数 |
 | planner_retry_count | int | 是 | Planner 失败或动作非法的累计重试次数 |
 | tool_retry_count | int | 是 | 当前 action_id 的工具重试次数 |
@@ -640,7 +640,7 @@ PlannerRetry、PlannerFailure、RetryGate 和 RetryTool 是 Loop Controller 的�
                 return await finalize(state)
 
             state.iteration += 1
-            state.phase = LoopPhase.BUILD_CONTEXT
+            state.phase = LoopPhaseStatusType.BUILD_CONTEXT
             await checkpoint(state)
 
             try:
@@ -661,7 +661,7 @@ PlannerRetry、PlannerFailure、RetryGate 和 RetryTool 是 Loop Controller 的�
             except Exception as exc:
                 return await finalize_with_error(state, "CONTEXT_BUILD_UNRECOVERABLE")
 
-            state.phase = LoopPhase.PLAN
+            state.phase = LoopPhaseStatusType.PLAN
             await checkpoint(state)
             try:
                 action = await planning_agent.plan(
@@ -682,7 +682,7 @@ PlannerRetry、PlannerFailure、RetryGate 和 RetryTool 是 Loop Controller 的�
                 return await finalize_with_error(state, "PLANNER_UNRECOVERABLE")
 
             state.next_action = action
-            state.phase = LoopPhase.VALIDATE_ACTION
+            state.phase = LoopPhaseStatusType.VALIDATE_ACTION
             validation = await planner_gate.validate(action, state)
             await checkpoint(state)
 
@@ -709,12 +709,12 @@ PlannerRetry、PlannerFailure、RetryGate 和 RetryTool 是 Loop Controller 的�
             # 已校验的 tool_call 开始新动作，工具重试计数归零。
             state.tool_retry_count = 0
             while True:
-                state.phase = LoopPhase.EXECUTE_TOOL
+                state.phase = LoopPhaseStatusType.EXECUTE_TOOL
                 await checkpoint(state)
                 result = await tool_runtime.invoke(action, state)
-                state.phase = LoopPhase.HANDLE_RESULT
+                state.phase = LoopPhaseStatusType.HANDLE_RESULT
                 state.tool_results.append(result)
-                state.phase = LoopPhase.RECORD_OBSERVATION
+                state.phase = LoopPhaseStatusType.RECORD_OBSERVATION
                 state.observations.append(observation_from(result))
                 await checkpoint(state)
 
@@ -760,7 +760,7 @@ PlannerRetry、PlannerFailure、RetryGate 和 RetryTool 是 Loop Controller 的�
         state.confirmation_question = None
         state.confirmation_reason = None
         state.status = RunStatus.RUNNING
-        state.phase = LoopPhase.BUILD_CONTEXT
+        state.phase = LoopPhaseStatusType.BUILD_CONTEXT
         state.errors.append({"code": "USER_CONFIRMATION_RECEIVED"})
         await checkpoint(state)
         return await run_harness(resume_request.to_harness_request(), state)

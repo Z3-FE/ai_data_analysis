@@ -20,8 +20,8 @@ from app.agent.state_result_store.contracts import (
     ConfirmationResolution,
     ContractModel,
     HarnessRunRef,
-    HarnessStatus,
-    LoopPhase,
+    HarnessStatusType,
+    LoopPhaseStatusType,
     NextAction,
     PlannerInput,
     RunError,
@@ -53,7 +53,7 @@ class FinalizationInput(ContractModel):
     # 正常完成来自最近一次 ContextEngine 构建；运行超时或取消时可能尚未构建。
     compiled_context: CompiledContext | None = None
     final_answer: str = Field(min_length=1, max_length=20_000)
-    terminal_status: HarnessStatus = HarnessStatus.COMPLETED
+    terminal_status: HarnessStatusType = HarnessStatusType.COMPLETED
     error_message: str = Field(default="", max_length=2_000)
     # 本轮关联附件；记忆形成需要它识别感知记忆候选。
     asset_ids: tuple[str, ...] = Field(default=(), max_length=32)
@@ -67,7 +67,7 @@ class FinalizationResult(ContractModel):
     """收口结果；携带 controller 发布终态事件所需的运行现场摘要。"""
 
     run_ref: HarnessRunRef
-    status: HarnessStatus
+    status: HarnessStatusType
     final_answer: str = Field(min_length=1, max_length=20_000)
     final_output_type: str = Field(default="text", min_length=1, max_length=64)
     final_output_ref: str | None = Field(default=None, min_length=1, max_length=256)
@@ -77,10 +77,10 @@ class FinalizationResult(ContractModel):
     @model_validator(mode="after")
     def validate_terminal_result(self) -> "FinalizationResult":
         if self.status not in {
-            HarnessStatus.COMPLETED,
-            HarnessStatus.FAILED,
-            HarnessStatus.CANCELLED,
-            HarnessStatus.TIMEOUT,
+            HarnessStatusType.COMPLETED,
+            HarnessStatusType.FAILED,
+            HarnessStatusType.CANCELLED,
+            HarnessStatusType.TIMEOUT,
         }:
             raise ValueError("FinalizationResult 必须表示 Harness 终态")
         return self
@@ -90,15 +90,15 @@ class LoopRunResult(ContractModel):
     """LoopController.start() 在 A 阶段返回的唯一结果。"""
 
     run_ref: HarnessRunRef
-    status: HarnessStatus
-    phase: LoopPhase
+    status: HarnessStatusType
+    phase: LoopPhaseStatusType
     iteration: int = Field(ge=0)
     finalization_result: FinalizationResult
     last_error: RunError | None = None
 
     @model_validator(mode="after")
     def validate_result(self) -> "LoopRunResult":
-        if self.phase is not LoopPhase.FINALIZATION:
+        if self.phase is not LoopPhaseStatusType.FINALIZATION:
             raise ValueError("终态结果的 phase 必须为 finalization")
         if self.finalization_result.run_ref != self.run_ref:
             raise ValueError("LoopRunResult 与 FinalizationResult 的 run_ref 必须一致")
@@ -111,17 +111,17 @@ class LoopPausedResult(ContractModel):
     """D 阶段返回给前端的持久化等待结果。"""
 
     run_ref: HarnessRunRef
-    status: HarnessStatus = HarnessStatus.WAITING_CONFIRMATION
-    phase: LoopPhase = LoopPhase.WAIT_CONFIRMATION
+    status: HarnessStatusType = HarnessStatusType.WAITING_CONFIRMATION
+    phase: LoopPhaseStatusType = LoopPhaseStatusType.WAIT_CONFIRMATION
     iteration: int = Field(ge=0)
     confirmation: ConfirmationRequest
     state_version: int = Field(ge=0)
 
     @model_validator(mode="after")
     def validate_paused_result(self) -> "LoopPausedResult":
-        if self.status is not HarnessStatus.WAITING_CONFIRMATION:
+        if self.status is not HarnessStatusType.WAITING_CONFIRMATION:
             raise ValueError("暂停结果的 status 必须为 waiting_confirmation")
-        if self.phase is not LoopPhase.WAIT_CONFIRMATION:
+        if self.phase is not LoopPhaseStatusType.WAIT_CONFIRMATION:
             raise ValueError("暂停结果的 phase 必须为 wait_confirmation")
         return self
 
@@ -131,8 +131,8 @@ class LoopResumeAcceptedResult(ContractModel):
 
     run_ref: HarnessRunRef
     resume_status: Literal["accepted", "idempotent"]
-    status: HarnessStatus = HarnessStatus.RUNNING
-    phase: LoopPhase = LoopPhase.RESTORE_RUN
+    status: HarnessStatusType = HarnessStatusType.RUNNING
+    phase: LoopPhaseStatusType = LoopPhaseStatusType.RESTORE_RUN
     state_version: int = Field(ge=0)
 
 

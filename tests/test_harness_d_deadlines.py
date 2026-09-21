@@ -14,8 +14,8 @@ from app.agent.state_result_store.contracts import (
     ActionType,
     AskUserRequest,
     HarnessRunRef,
-    HarnessStatus,
-    LoopPhase,
+    HarnessStatusType,
+    LoopPhaseStatusType,
     NextAction,
     ResultStatus,
     ToolCall,
@@ -121,8 +121,8 @@ class ConfirmationRunStore(DeadlineRunStore):
 
     async def resolve_confirmation(self, run_ref, reply) -> ConfirmationResolution:
         state = copy.deepcopy(self.states[run_ref.run_id])
-        state["harness"]["status"] = HarnessStatus.RUNNING.value
-        state["harness"]["phase"] = LoopPhase.RESTORE_RUN.value
+        state["harness"]["status"] = HarnessStatusType.RUNNING.value
+        state["harness"]["phase"] = LoopPhaseStatusType.RESTORE_RUN.value
         state["harness"]["pending_confirmation"] = None
         self.states[run_ref.run_id] = copy.deepcopy(state)
         return ConfirmationResolution(status="confirmed", state=state)
@@ -186,10 +186,10 @@ class HarnessDeadlineTest(unittest.IsolatedAsyncioTestCase):
             StartRunCommand(run_ref=_run_ref("context-timeout"), input_text="查询销售额")
         )
 
-        self.assertEqual(result.status, HarnessStatus.TIMEOUT)
+        self.assertEqual(result.status, HarnessStatusType.TIMEOUT)
         self.assertEqual(
             store.states["context-timeout"]["harness"]["status"],
-            HarnessStatus.TIMEOUT.value,
+            HarnessStatusType.TIMEOUT.value,
         )
         self.assertEqual(
             store.states["context-timeout"]["harness"]["last_error"]["code"],
@@ -208,10 +208,10 @@ class HarnessDeadlineTest(unittest.IsolatedAsyncioTestCase):
             StartRunCommand(run_ref=_run_ref("commit-timeout"), input_text="查询销售额")
         )
 
-        self.assertEqual(result.status, HarnessStatus.TIMEOUT)
+        self.assertEqual(result.status, HarnessStatusType.TIMEOUT)
         self.assertEqual(
             store.states["commit-timeout"]["harness"]["status"],
-            HarnessStatus.TIMEOUT.value,
+            HarnessStatusType.TIMEOUT.value,
         )
 
     async def test_tool_timeout_is_finalized_as_timeout(self) -> None:
@@ -233,10 +233,10 @@ class HarnessDeadlineTest(unittest.IsolatedAsyncioTestCase):
             StartRunCommand(run_ref=_run_ref("tool-timeout"), input_text="查询销售额")
         )
 
-        self.assertEqual(result.status, HarnessStatus.TIMEOUT)
+        self.assertEqual(result.status, HarnessStatusType.TIMEOUT)
         self.assertEqual(
             store.states["tool-timeout"]["harness"]["status"],
-            HarnessStatus.TIMEOUT.value,
+            HarnessStatusType.TIMEOUT.value,
         )
 
     async def test_cancelled_request_is_finalized_as_cancelled(self) -> None:
@@ -253,10 +253,10 @@ class HarnessDeadlineTest(unittest.IsolatedAsyncioTestCase):
 
         result = await task
 
-        self.assertEqual(result.status, HarnessStatus.CANCELLED)
+        self.assertEqual(result.status, HarnessStatusType.CANCELLED)
         self.assertEqual(
             store.states["cancelled"]["harness"]["status"],
-            HarnessStatus.CANCELLED.value,
+            HarnessStatusType.CANCELLED.value,
         )
         self.assertEqual(
             store.states["cancelled"]["harness"]["last_error"]["code"],
@@ -276,7 +276,7 @@ class HarnessDeadlineTest(unittest.IsolatedAsyncioTestCase):
         paused = await controller.start(
             StartRunCommand(run_ref=run_ref, input_text="查询销售额")
         )
-        self.assertEqual(paused.status, HarnessStatus.WAITING_CONFIRMATION)
+        self.assertEqual(paused.status, HarnessStatusType.WAITING_CONFIRMATION)
         started_at = datetime.now(UTC) - timedelta(seconds=2)
         store.states[run_ref.run_id]["harness"]["started_at"] = started_at.isoformat()
         store.states[run_ref.run_id]["harness"]["deadline_at"] = (
@@ -287,7 +287,7 @@ class HarnessDeadlineTest(unittest.IsolatedAsyncioTestCase):
             type("Resume", (), {"run_ref": run_ref, "reply": object()})()
         )
 
-        self.assertEqual(resumed.status, HarnessStatus.TIMEOUT)
+        self.assertEqual(resumed.status, HarnessStatusType.TIMEOUT)
         self.assertEqual(first_planner.calls, 1)
 
 

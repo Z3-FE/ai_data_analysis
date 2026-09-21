@@ -35,9 +35,9 @@ from app.agent.state_result_store.contracts import (
     ConfirmationReply,
     ErrorCategory,
     HarnessRunRef,
-    HarnessStatus,
+    HarnessStatusType,
     HarnessStateSnapshot,
-    LoopPhase,
+    LoopPhaseStatusType,
     PlannerCapabilities,
     RunError,
     ToolSpec,
@@ -419,14 +419,14 @@ async def _finish_unhandled_start_failure(
     try:
         run_store = PostgresHarnessRunStore(session_factory)
         state = await run_store.load(run_ref)
-        current_status = HarnessStatus(state["harness"]["status"])
+        current_status = HarnessStatusType(state["harness"]["status"])
         terminal_statuses = {
-            HarnessStatus.COMPLETED,
-            HarnessStatus.FAILED,
-            HarnessStatus.CANCELLED,
-            HarnessStatus.TIMEOUT,
+            HarnessStatusType.COMPLETED,
+            HarnessStatusType.FAILED,
+            HarnessStatusType.CANCELLED,
+            HarnessStatusType.TIMEOUT,
         }
-        if current_status is HarnessStatus.WAITING_CONFIRMATION:
+        if current_status is HarnessStatusType.WAITING_CONFIRMATION:
             # 恢复请求可能只是 confirmation_id 或条件字段校验失败，
             # 此时必须保留 waiting 状态，允许用户重新提交正确回复。
             should_finish_turn = False
@@ -450,14 +450,14 @@ async def _finish_unhandled_start_failure(
             ).model_dump(mode="json")
             state["harness"] = transition_harness_state(
                 state["harness"],
-                status=HarnessStatus.RUNNING,
-                phase=LoopPhase.FINALIZATION,
-                terminal_intent=HarnessStatus.FAILED.value,
+                status=HarnessStatusType.RUNNING,
+                phase=LoopPhaseStatusType.FINALIZATION,
+                terminal_intent=HarnessStatusType.FAILED.value,
             )
             state["harness"] = transition_harness_state(
                 state["harness"],
-                status=HarnessStatus.FAILED,
-                phase=LoopPhase.FINALIZATION,
+                status=HarnessStatusType.FAILED,
+                phase=LoopPhaseStatusType.FINALIZATION,
             )
             await run_store.save(run_ref, state)
     except HarnessPersistenceError:

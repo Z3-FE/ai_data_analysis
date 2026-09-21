@@ -19,8 +19,8 @@ from app.agent.state import HarnessGraphState
 from app.agent.state_result_store.contracts import (
     HarnessRunRef,
     HarnessStateSnapshot,
-    HarnessStatus,
-    LoopPhase,
+    HarnessStatusType,
+    LoopPhaseStatusType,
 )
 from app.agent.state_result_store.state import transition_harness_state
 from app.agent.tool_runtime.artifacts import ArtifactReadRequest, ResultArtifactStore
@@ -99,7 +99,7 @@ class PostgresFinalizationService(FinalizationPort):
                 state["harness"] = transition_harness_state(
                     state["harness"],
                     status=value.terminal_status,
-                    phase=LoopPhase.FINALIZATION,
+                    phase=LoopPhaseStatusType.FINALIZATION,
                     terminal_intent=value.terminal_status.value,
                 )
                 await self.run_store.save(value.run_ref, state)
@@ -185,7 +185,7 @@ class PostgresFinalizationService(FinalizationPort):
         """提交记忆形成并返回 formation_run_id；非完成终态没有形成任务。"""
         if (
             self.memory_formation_service is None
-            or value.terminal_status is not HarnessStatus.COMPLETED
+            or value.terminal_status is not HarnessStatusType.COMPLETED
         ):
             return None
         result = await self.memory_formation_service.submit(
@@ -207,15 +207,15 @@ class PostgresFinalizationService(FinalizationPort):
 
     @staticmethod
     def _require_finalizable(
-        state: HarnessGraphState, terminal_status: HarnessStatus
+        state: HarnessGraphState, terminal_status: HarnessStatusType
     ) -> None:
         """收口前校验现场：必须处于 finalization 阶段且终态意图一致。"""
         snapshot = HarnessStateSnapshot.model_validate(state["harness"])
-        if snapshot.phase is not LoopPhase.FINALIZATION:
+        if snapshot.phase is not LoopPhaseStatusType.FINALIZATION:
             raise ValueError(
                 f"现场不在 finalization 阶段，不能收口: {snapshot.phase.value}"
             )
-        if snapshot.status is HarnessStatus.RUNNING:
+        if snapshot.status is HarnessStatusType.RUNNING:
             if snapshot.terminal_intent != terminal_status.value:
                 raise ValueError("现场 terminal_intent 与收口终态不一致")
         elif snapshot.status is not terminal_status:

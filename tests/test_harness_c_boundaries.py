@@ -13,7 +13,7 @@ from app.agent.state_result_store.contracts import (
     ActionType,
     ContractModel,
     HarnessRunRef,
-    HarnessStatus,
+    HarnessStatusType,
     NextAction,
     ResultStatus,
     ToolCall,
@@ -83,7 +83,7 @@ class PlannerRetryTest(unittest.IsolatedAsyncioTestCase):
             StartRunCommand(run_ref=run_ref, input_text="分析销售额")
         )
 
-        self.assertEqual(result.status, HarnessStatus.COMPLETED)
+        self.assertEqual(result.status, HarnessStatusType.COMPLETED)
         self.assertEqual(planner.calls, 2)
         final_state = store.states[run_ref.run_id]["harness"]
         self.assertEqual(final_state["planner_retry_count"], 0)

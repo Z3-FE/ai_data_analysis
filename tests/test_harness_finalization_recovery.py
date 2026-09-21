@@ -15,7 +15,7 @@ from app.agent.loop_controller.contracts import FinalizationInput, StartRunComma
 from app.agent.loop_controller.controller import LoopController
 from app.agent.state_result_store.contracts import (
     HarnessRunRef,
-    HarnessStatus,
+    HarnessStatusType,
 )
 from app.agent.streaming.writer import NullHarnessEventWriter
 from app.models.agent_history import ConversationMessageModel
@@ -39,10 +39,10 @@ from tests.test_context_engine import FakeMemoryReader, _engine
 
 FINAL_ANSWER = "最终分析结论已经生成。"
 _TERMINAL_STATUSES = {
-    HarnessStatus.COMPLETED,
-    HarnessStatus.FAILED,
-    HarnessStatus.CANCELLED,
-    HarnessStatus.TIMEOUT,
+    HarnessStatusType.COMPLETED,
+    HarnessStatusType.FAILED,
+    HarnessStatusType.CANCELLED,
+    HarnessStatusType.TIMEOUT,
 }
 
 
@@ -79,7 +79,7 @@ class _TerminalSaveFailingRunStore:
         self._run_store = run_store
 
     async def save(self, run_ref: HarnessRunRef, state) -> None:
-        if HarnessStatus(state["harness"]["status"]) in _TERMINAL_STATUSES:
+        if HarnessStatusType(state["harness"]["status"]) in _TERMINAL_STATUSES:
             raise RuntimeError("模拟终态 checkpoint 崩溃")
         await self._run_store.save(run_ref, state)
 
@@ -250,7 +250,7 @@ class FinalizationRecoveryTest(unittest.IsolatedAsyncioTestCase):
 
         result = await self._reconcile()
 
-        self.assertEqual(result.status, HarnessStatus.COMPLETED)
+        self.assertEqual(result.status, HarnessStatusType.COMPLETED)
         self.assertEqual(result.final_answer, FINAL_ANSWER)
         self.assertEqual(len(await self._assistant_messages()), 1)
         self.assertIsNone(await self._active_run_id())
@@ -275,7 +275,7 @@ class FinalizationRecoveryTest(unittest.IsolatedAsyncioTestCase):
 
         result = await self._reconcile()
 
-        self.assertEqual(result.status, HarnessStatus.COMPLETED)
+        self.assertEqual(result.status, HarnessStatusType.COMPLETED)
         self.assertEqual(await self._harness_status(), "completed")
         self.assertEqual(len(await self._assistant_messages()), 1)
         self.assertIsNone(await self._active_run_id())
@@ -297,7 +297,7 @@ class FinalizationRecoveryTest(unittest.IsolatedAsyncioTestCase):
 
         result = await self._reconcile()
 
-        self.assertEqual(result.status, HarnessStatus.COMPLETED)
+        self.assertEqual(result.status, HarnessStatusType.COMPLETED)
         self.assertIsNone(await self._active_run_id())
         self.assertEqual(len(await self._assistant_messages()), 1)
         self.assertEqual((await self._ledger_row()).stage, "completed")
@@ -316,7 +316,7 @@ class FinalizationRecoveryTest(unittest.IsolatedAsyncioTestCase):
 
         result = await self._reconcile()
 
-        self.assertEqual(result.status, HarnessStatus.COMPLETED)
+        self.assertEqual(result.status, HarnessStatusType.COMPLETED)
         formation_runs = await self._formation_runs()
         self.assertEqual(len(formation_runs), 1)
         row = await self._ledger_row()
@@ -337,7 +337,7 @@ class FinalizationRecoveryTest(unittest.IsolatedAsyncioTestCase):
 
         result = await self._reconcile()
 
-        self.assertEqual(result.status, HarnessStatus.COMPLETED)
+        self.assertEqual(result.status, HarnessStatusType.COMPLETED)
         # 形成步骤已经完成，对账不允许再次提交形成任务。
         self.assertEqual(len(await self._formation_runs()), 1)
         self.assertEqual((await self._ledger_row()).stage, "completed")
@@ -353,7 +353,7 @@ class FinalizationRecoveryTest(unittest.IsolatedAsyncioTestCase):
             run_ref=self._run_ref(),
             user_query="分析上月销售趋势",
             final_answer="另一个版本的结果",
-            terminal_status=HarnessStatus.COMPLETED,
+            terminal_status=HarnessStatusType.COMPLETED,
         )
         with self.assertRaises(FinalizationDigestConflict):
             await service.finalize(conflicting)
@@ -363,8 +363,8 @@ class FinalizationRecoveryTest(unittest.IsolatedAsyncioTestCase):
         first = await self._reconcile()
         second = await self._reconcile()
 
-        self.assertEqual(first.status, HarnessStatus.COMPLETED)
-        self.assertEqual(second.status, HarnessStatus.COMPLETED)
+        self.assertEqual(first.status, HarnessStatusType.COMPLETED)
+        self.assertEqual(second.status, HarnessStatusType.COMPLETED)
         self.assertEqual(second.final_answer, FINAL_ANSWER)
         self.assertEqual(len(await self._assistant_messages()), 1)
         self.assertEqual(len(await self._formation_runs()), 1)

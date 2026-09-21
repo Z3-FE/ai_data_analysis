@@ -18,8 +18,8 @@ from app.agent.state_result_store.contracts import (
     ConfirmationStatus,
     HarnessRunRef,
     HarnessStateSnapshot,
-    HarnessStatus,
-    LoopPhase,
+    HarnessStatusType,
+    LoopPhaseStatusType,
 )
 from app.agent.state_result_store.state import transition_harness_state
 from app.agent.tool_runtime.artifacts import (
@@ -101,7 +101,7 @@ class FakeFinalizationService:
         state["harness"] = transition_harness_state(
             state["harness"],
             status=value.terminal_status,
-            phase=LoopPhase.FINALIZATION,
+            phase=LoopPhaseStatusType.FINALIZATION,
             terminal_intent=value.terminal_status.value,
         )
         await self.run_store.save(value.run_ref, state)
@@ -246,8 +246,8 @@ class FakePersistentRunStore:
         harness_state["last_confirmation_question"] = pending["question"]
         state["harness"] = transition_harness_state(
             harness_state,
-            status=HarnessStatus.RUNNING,
-            phase=LoopPhase.RESTORE_RUN,
+            status=HarnessStatusType.RUNNING,
+            phase=LoopPhaseStatusType.RESTORE_RUN,
         )
         self.states[run_ref.run_id] = copy.deepcopy(state)
         self.snapshots.append(copy.deepcopy(state))
@@ -287,10 +287,6 @@ class HarnessApiTest(unittest.TestCase):
                     object(),
                     self.llm,
                 ),
-            ),
-            patch(
-                "app.api.routers.harness._ensure_conversation",
-                new=AsyncMock(return_value={}),
             ),
             patch("app.api.routers.harness.ConversationRepository", return_value=self.conversation),
             patch("app.api.routers.harness.build_context_engine", return_value=self.context_engine),

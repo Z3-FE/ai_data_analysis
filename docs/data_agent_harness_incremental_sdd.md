@@ -12,7 +12,7 @@
 
 **现有能力**：`app/agent/state.py::AgentState` 是 `TypedDict(total=False)`，包含身份字段 `input_text`、`user_id`、`conversation_id`、`thread_id`、`turn_id`、`run_id`、`asset_ids`、`messages`，以及路由、分析、问数、报告、SQL 和文本输出字段。当前工作树还包含 `harness: HarnessControlState`；只有 `messages: Annotated[list[AnyMessage], add_messages]` 使用 reducer，旧节点通过 `state.get()` 读取并返回字典增量。当前 `AgentState` 和 `AgentRunRequest` 均没有 `project_id`；目标 Harness 若要传递项目范围，需要新增一个扁平可选字段，未提供时保持 `None`。
 
-**现有能力**：`app/agent/harness/contracts.py` 已有 `HarnessStatus`、`LoopPhase`、`ActionType`、`ResultStatus`、`ErrorCategory` 及一组 Pydantic DTO；`app/agent/harness/state.py` 已有默认控制状态和基础转换函数。当前能力尚未覆盖 schema version、身份恢复校验、终态前的 finalization 边界和 checkpoint DTO 校验。
+**现有能力**：`app/agent/harness/contracts.py` 已有 `HarnessStatusType`、`LoopPhaseStatusType`、`ActionType`、`ResultStatus`、`ErrorCategory` 及一组 Pydantic DTO；`app/agent/harness/state.py` 已有默认控制状态和基础转换函数。当前能力尚未覆盖 schema version、身份恢复校验、终态前的 finalization 边界和 checkpoint DTO 校验。
 
 **需要重构**：不能整体替换 `AgentState`，应在现有 `harness` 字段上补齐统一状态契约，旧业务字段保持扁平。
 
@@ -370,8 +370,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # 以下是跨文件设计片段；实际实现按 contracts.py、state.py 和 state 类型文件拆分。
 from app.agent.harness.contracts import (
     ErrorCategory,
-    HarnessStatus,
-    LoopPhase,
+    HarnessStatusType,
+    LoopPhaseStatusType,
     ResultStatus,
 )
 from app.agent.state import AgentState
@@ -529,8 +529,8 @@ class HarnessStateSnapshot(ContractModel):
     schema_version: int = Field(ge=1)
     state_version: int = Field(default=0, ge=0)
     fencing_token: int = Field(default=0, ge=0)
-    status: HarnessStatus
-    phase: LoopPhase
+    status: HarnessStatusType
+    phase: LoopPhaseStatusType
     iteration: int = Field(ge=0)
     # 新 run 初始为 0；正式动作提交后才从 1 开始递增。
     action_seq: int = Field(default=0, ge=0)
@@ -564,8 +564,8 @@ class HarnessStateMachine(Protocol):
         self,
         state: HarnessControlState,
         *,
-        status: HarnessStatus,
-        phase: LoopPhase,
+        status: HarnessStatusType,
+        phase: LoopPhaseStatusType,
         terminal_intent: str | None = None,
     ) -> HarnessControlState: ...
 
@@ -590,7 +590,7 @@ class CheckpointCodec(Protocol):
 
 ### 1.5 状态、阶段与转换规则
 
-当前 `app/agent/harness/contracts.py` 已有 `HarnessStatus`：`running`、`waiting_confirmation`、`completed`、`failed`、`cancelled`、`timeout`；已有 `LoopPhase`：`start_run`、`restore_run`、`build_context`、`plan`、`validate_action`、`execute_tool`、`handle_tool_result`、`record_observation`、`wait_confirmation`、`finalization`。后续模块不得另造同义枚举。`ConfirmationStatus` 需要新增，值为 `not_required`、`pending`、`confirmed`、`rejected`，仅表达确认业务状态；`ConfirmationVisibility` 的 `prepared/published` 只表达跨 Checkpointer 与业务表协调时的发布可见性，不能混入 `ConfirmationStatus`。状态机必须先调用 `validate_combination()` 校验当前组合，再校验目标组合和转换矩阵；不能只检查 HarnessStatus 是否变化。
+当前 `app/agent/harness/contracts.py` 已有 `HarnessStatusType`：`running`、`waiting_confirmation`、`completed`、`failed`、`cancelled`、`timeout`；已有 `LoopPhaseStatusType`：`start_run`、`restore_run`、`build_context`、`plan`、`validate_action`、`execute_tool`、`handle_tool_result`、`record_observation`、`wait_confirmation`、`finalization`。后续模块不得另造同义枚举。`ConfirmationStatus` 需要新增，值为 `not_required`、`pending`、`confirmed`、`rejected`，仅表达确认业务状态；`ConfirmationVisibility` 的 `prepared/published` 只表达跨 Checkpointer 与业务表协调时的发布可见性，不能混入 `ConfirmationStatus`。状态机必须先调用 `validate_combination()` 校验当前组合，再校验目标组合和转换矩阵；不能只检查 HarnessStatusType 是否变化。
 
 合法状态组合只有以下几类：
 
@@ -1702,8 +1702,8 @@ M4 的正式输入来自 M5 的动作提交结果。Planner 生成的 `NextActio
 | `conversation_id` | `str` | M1 | 是 | 非空；只用于会话归属和结果访问边界 |
 | `thread_id` | `str` | M1 | 是 | 必须与当前 Checkpointer 线程一致；工具不能切换线程 |
 | `tool_call` | `ToolCall` | M3/M5 | 是 | `tool_name` 必须精确匹配 Registry；`action_id` 是幂等主键 |
-| `state_status` | `HarnessStatus` | M1 | 是 | 只有 `running` 可以执行；`waiting_confirmation` 和所有终态拒绝执行 |
-| `state_phase` | `LoopPhase` | M1/M5 | 是 | 只允许在 `execute_tool` 阶段执行，其他阶段返回状态冲突 |
+| `state_status` | `HarnessStatusType` | M1 | 是 | 只有 `running` 可以执行；`waiting_confirmation` 和所有终态拒绝执行 |
+| `state_phase` | `LoopPhaseStatusType` | M1/M5 | 是 | 只允许在 `execute_tool` 阶段执行，其他阶段返回状态冲突 |
 | `attempt` | `int` | M5 `tool_retry_counts[action_id]` | 是 | 首次为 0；仅同动作临时错误重试时加 1，重复 attempt 不得再次调用 handler |
 | `agent_context` | `AgentContext` | AgentService 装配 | 否（运行时依赖） | 不属于可序列化 DTO；只作为请求级依赖注入，不写入 Checkpoint，不进入 Planner Prompt |
 
@@ -1818,8 +1818,8 @@ from app.agent.context import AgentContext
 from app.agent.harness.contracts import (
     ContractModel,
     HarnessRunRef,
-    HarnessStatus,
-    LoopPhase,
+    HarnessStatusType,
+    LoopPhaseStatusType,
     RunExecutionFence,
     ToolCall,
     ToolResult,
@@ -1835,8 +1835,8 @@ class ToolExecutionRequest(ContractModel):
     allowed_asset_ids: tuple[str, ...] = Field(default=(), max_length=32)
     tool_call: ToolCall
     attempt: int = Field(default=0, ge=0)
-    state_status: HarnessStatus
-    state_phase: LoopPhase
+    state_status: HarnessStatusType
+    state_phase: LoopPhaseStatusType
     execution_fence: RunExecutionFence
 
 
@@ -2509,7 +2509,7 @@ M4 不创建 DataCatalogAdapter、QueryAdapter、AnalysisAdapter 或 ReportAdapt
 
 规则要求的控制步骤映射到现有统一枚举如下：
 
-| 控制步骤 | `HarnessStatus` / `LoopPhase` | 所有者 | 持久化要求 |
+| 控制步骤 | `HarnessStatusType` / `LoopPhaseStatusType` | 所有者 | 持久化要求 |
 | --- | --- | --- | --- |
 | StartRun | `running/start_run` | Loop Controller | 创建 turn、run 业务记录和初始 checkpoint |
 | RestoreRun | `running/restore_run` | Loop Controller | 进程中断恢复；完整身份、版本和 prepared 动作对账后保存，不处理用户回复 |
@@ -2524,7 +2524,7 @@ M4 不创建 DataCatalogAdapter、QueryAdapter、AnalysisAdapter 或 ReportAdapt
 | ResumeRun | `running/restore_run` | Loop Controller | 用户确认恢复；先解析并核验 `ConfirmationReply`，再合并白名单条件并重新 BuildContext |
 | Finalization | `running/finalization` | M5 调 M6 | 先保存 terminal_intent；M6 成功后才进入终态 |
 
-`CheckContinuation`、`PauseRun` 和 `ResumeRun` 是控制步骤，不另造 `LoopPhase` 同义值。M1 已冻结的 `record_observation`、`wait_confirmation` 和 `restore_run` 分别承载这三个步骤。`RestoreRun` 与 `ResumeRun` 共享 `restore_run` 阶段但不是同一命令：前者由进程/任务恢复器调用，只恢复未完成的运行现场；后者由用户确认接口调用，必须携带并消费 `ConfirmationReply`。二者都不得创建新 `run_id`、`turn_id` 或 `thread_id`。
+`CheckContinuation`、`PauseRun` 和 `ResumeRun` 是控制步骤，不另造 `LoopPhaseStatusType` 同义值。M1 已冻结的 `record_observation`、`wait_confirmation` 和 `restore_run` 分别承载这三个步骤。`RestoreRun` 与 `ResumeRun` 共享 `restore_run` 阶段但不是同一命令：前者由进程/任务恢复器调用，只恢复未完成的运行现场；后者由用户确认接口调用，必须携带并消费 `ConfirmationReply`。二者都不得创建新 `run_id`、`turn_id` 或 `thread_id`。
 
 ### 6.3 输入 DTO 与校验
 
@@ -2544,8 +2544,8 @@ from app.agent.harness.contracts import (
     ConfirmationRecord,
     ContractModel,
     HarnessRunRef,
-    HarnessStatus,
-    LoopPhase,
+    HarnessStatusType,
+    LoopPhaseStatusType,
     RunError,
 )
 from app.agent.harness.finalization import FinalizationResult
@@ -2601,8 +2601,8 @@ class HarnessEvent(ContractModel):
         "run.timeout",
     ]
     run_ref: HarnessRunRef
-    phase: LoopPhase
-    status: HarnessStatus
+    phase: LoopPhaseStatusType
+    status: HarnessStatusType
     iteration: int = Field(ge=0)
     action_id: str | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -2613,8 +2613,8 @@ class RunningRunSnapshot(ContractModel):
     """只读状态查询结果；不表示一次同步执行已经完成。"""
 
     run_ref: HarnessRunRef
-    status: Literal[HarnessStatus.RUNNING] = HarnessStatus.RUNNING
-    phase: LoopPhase
+    status: Literal[HarnessStatusType.RUNNING] = HarnessStatusType.RUNNING
+    phase: LoopPhaseStatusType
     iteration: int = Field(ge=0)
     action_seq: int = Field(ge=0)
     cancel_requested: bool = False
@@ -2629,8 +2629,8 @@ class CancelAccepted(ContractModel):
     cancel_request_id: str = Field(min_length=1)
     run_ref: HarnessRunRef
     accepted: Literal[True] = True
-    status: Literal[HarnessStatus.RUNNING, HarnessStatus.WAITING_CONFIRMATION]
-    phase: LoopPhase
+    status: Literal[HarnessStatusType.RUNNING, HarnessStatusType.WAITING_CONFIRMATION]
+    phase: LoopPhaseStatusType
     iteration: int = Field(ge=0)
     cancel_requested: Literal[True] = True
     requested_at: datetime
@@ -2638,8 +2638,8 @@ class CancelAccepted(ContractModel):
 
 class LoopRunResult(ContractModel):
     run_ref: HarnessRunRef
-    status: HarnessStatus
-    phase: LoopPhase
+    status: HarnessStatusType
+    phase: LoopPhaseStatusType
     iteration: int = Field(ge=0)
     pending_confirmation: ConfirmationRequest | None = None
     finalization_result: FinalizationResult | None = None
@@ -2647,18 +2647,18 @@ class LoopRunResult(ContractModel):
 
     @model_validator(mode="after")
     def validate_outcome(self) -> "LoopRunResult":
-        if self.status is HarnessStatus.WAITING_CONFIRMATION:
-            if self.phase is not LoopPhase.WAIT_CONFIRMATION:
+        if self.status is HarnessStatusType.WAITING_CONFIRMATION:
+            if self.phase is not LoopPhaseStatusType.WAIT_CONFIRMATION:
                 raise ValueError("waiting_confirmation 结果的 phase 必须为 wait_confirmation")
             if self.pending_confirmation is None or self.finalization_result is not None:
                 raise ValueError("暂停结果必须且只能携带 pending_confirmation")
         elif self.status in {
-            HarnessStatus.COMPLETED,
-            HarnessStatus.FAILED,
-            HarnessStatus.CANCELLED,
-            HarnessStatus.TIMEOUT,
+            HarnessStatusType.COMPLETED,
+            HarnessStatusType.FAILED,
+            HarnessStatusType.CANCELLED,
+            HarnessStatusType.TIMEOUT,
         }:
-            if self.phase is not LoopPhase.FINALIZATION:
+            if self.phase is not LoopPhaseStatusType.FINALIZATION:
                 raise ValueError("终态结果的 phase 必须为 finalization")
             if self.finalization_result is None or self.pending_confirmation is not None:
                 raise ValueError("终态结果必须且只能携带 finalization_result")
@@ -3142,8 +3142,8 @@ from pydantic import Field, model_validator
 from app.agent.harness.contracts import (
     ContractModel,
     HarnessRunRef,
-    HarnessStatus,
-    LoopPhase,
+    HarnessStatusType,
+    LoopPhaseStatusType,
     RunExecutionFence,
 )
 from app.agent.harness.state import HarnessControlState
@@ -3152,7 +3152,7 @@ from app.agent.memory.enums import MemoryFormationStatus
 
 
 class TraceEntry(ContractModel):
-    phase: LoopPhase
+    phase: LoopPhaseStatusType
     action_id: str | None = None
     tool_name: str | None = None
     status: str = Field(min_length=1, max_length=32)
@@ -3195,9 +3195,9 @@ class FinalizationInput(ContractModel):
 
     @model_validator(mode="after")
     def validate_terminal_input(self) -> "FinalizationInput":
-        if str(self.control_state.get("status")) != HarnessStatus.RUNNING.value:
+        if str(self.control_state.get("status")) != HarnessStatusType.RUNNING.value:
             raise ValueError("FinalizationInput 必须来自 running/finalization")
-        if str(self.control_state.get("phase")) != LoopPhase.FINALIZATION.value:
+        if str(self.control_state.get("phase")) != LoopPhaseStatusType.FINALIZATION.value:
             raise ValueError("FinalizationInput 的 control_state.phase 必须为 finalization")
         if str(self.control_state.get("terminal_intent")) != self.terminal_intent:
             raise ValueError("terminal_intent 必须与 control_state 一致")
@@ -3224,7 +3224,7 @@ class FinalizationInput(ContractModel):
 
 class FinalizationResult(ContractModel):
     run_ref: HarnessRunRef
-    status: HarnessStatus
+    status: HarnessStatusType
     # partial 是会话输出质量，不是新的 Harness 生命周期状态。
     output_status: Literal["completed", "partial", "failed", "cancelled", "timeout"]
     output_type: str = Field(min_length=1, max_length=64)
@@ -3246,14 +3246,14 @@ class FinalizationResult(ContractModel):
     @model_validator(mode="after")
     def validate_terminal_result(self) -> "FinalizationResult":
         terminal_statuses = {
-            HarnessStatus.COMPLETED,
-            HarnessStatus.FAILED,
-            HarnessStatus.CANCELLED,
-            HarnessStatus.TIMEOUT,
+            HarnessStatusType.COMPLETED,
+            HarnessStatusType.FAILED,
+            HarnessStatusType.CANCELLED,
+            HarnessStatusType.TIMEOUT,
         }
         if self.status not in terminal_statuses:
             raise ValueError("FinalizationResult.status 必须是 Harness 终态")
-        if self.status is HarnessStatus.COMPLETED:
+        if self.status is HarnessStatusType.COMPLETED:
             if self.output_status not in {"completed", "partial"}:
                 raise ValueError("completed Harness 只能映射 completed/partial 输出")
         elif self.output_status != self.status.value:
@@ -3295,7 +3295,7 @@ class FinalizationLedgerState(ContractModel):
         "run_released",
         "completed",
     ] = "pending"
-    terminal_status: HarnessStatus | None = None
+    terminal_status: HarnessStatusType | None = None
     output_status: Literal["completed", "partial", "failed", "cancelled", "timeout"] | None = None
     output_type: str | None = Field(default=None, min_length=1, max_length=64)
     history_saved: bool = False
@@ -3338,16 +3338,16 @@ class FinalizationLedgerState(ContractModel):
         if self.finalization_status != "completed" and self.completed_at is not None:
             raise ValueError("未完成账本不能设置 completed_at")
         terminal_statuses = {
-            HarnessStatus.COMPLETED,
-            HarnessStatus.FAILED,
-            HarnessStatus.CANCELLED,
-            HarnessStatus.TIMEOUT,
+            HarnessStatusType.COMPLETED,
+            HarnessStatusType.FAILED,
+            HarnessStatusType.CANCELLED,
+            HarnessStatusType.TIMEOUT,
         }
         if self.terminal_status not in terminal_statuses:
             raise ValueError("账本必须保存 Harness 终态")
         if self.output_status is None or self.output_type is None:
             raise ValueError("账本必须保存 output_status 和 output_type")
-        if self.terminal_status is HarnessStatus.COMPLETED:
+        if self.terminal_status is HarnessStatusType.COMPLETED:
             if self.output_status not in {"completed", "partial"}:
                 raise ValueError("completed Harness 只能映射 completed/partial 输出")
         elif self.output_status != self.terminal_status.value:
@@ -3440,7 +3440,7 @@ class FinalizationCheckpointWriter(Protocol):
         self,
         *,
         run_ref: HarnessRunRef,
-        terminal_status: HarnessStatus,
+        terminal_status: HarnessStatusType,
         control_state: HarnessControlState,
         assistant_message: "CheckpointMessage",
         expected_human_message_id: str,
@@ -3457,7 +3457,7 @@ class FinalizationLedger(Protocol):
         *,
         run_ref: HarnessRunRef,
         digest: str,
-        terminal_status: HarnessStatus,
+        terminal_status: HarnessStatusType,
         output_status: Literal["completed", "partial", "failed", "cancelled", "timeout"],
         output_type: str,
         execution_fence: RunExecutionFence,
@@ -3557,7 +3557,7 @@ class PersistedFinalizationOutput(ContractModel):
 
     run_ref: HarnessRunRef
     finalization_digest: str = Field(min_length=64, max_length=64)
-    terminal_status: HarnessStatus
+    terminal_status: HarnessStatusType
     terminal_intent: Literal["completed", "failed", "cancelled", "timeout"]
     input_text: str = Field(min_length=1, max_length=20_000)
     execution_mode: str = Field(min_length=1, max_length=64)
@@ -3600,7 +3600,7 @@ class CheckpointMessage(ContractModel):
 class FinalCheckpointRecord(ContractModel):
     run_ref: HarnessRunRef
     finalization_digest: str = Field(min_length=64, max_length=64)
-    terminal_status: HarnessStatus
+    terminal_status: HarnessStatusType
     control_state: HarnessControlState
     checkpoint_id: str = Field(min_length=1)
     # Harness 协调修订号，映射 Saver checkpoint_id，不是 Saver 原生 CAS。
@@ -3688,7 +3688,7 @@ class FinalizationService(Protocol):
 | `timeout` | `timeout` | `timeout` | `timeout` | 写入 | 清空 | 可提交审计输入，不能覆盖超时答案 |
 | `waiting_confirmation` | 不进入 M6 | `waiting_confirmation` | 不适用 | 保持空 | 保持当前 run | 不提交 |
 
-`partial` 是会话输出质量和数据库轮次状态，不新增 `HarnessStatus.PARTIAL`。`FinalizationResult.status` 只使用 M1 已冻结的 HarnessStatus；`ConversationRepository.finish_turn()` 的会话 `status` 才可以使用 `partial`。
+`partial` 是会话输出质量和数据库轮次状态，不新增 `HarnessStatusType.PARTIAL`。`FinalizationResult.status` 只使用 M1 已冻结的 HarnessStatusType；`ConversationRepository.finish_turn()` 的会话 `status` 才可以使用 `partial`。
 
 ### 6.4 与现有结果整理和会话仓储的衔接
 
@@ -3885,7 +3885,7 @@ class TurnMemoryInput(BaseModel):
 ### 6.8 失败、部分结果和取消语义
 
 - 完整结果：`output_status="completed"`，助手消息和结构化输出可见，结果引用和证据引用可追溯。
-- 部分结果：`output_status="partial"`，仍可保存和返回；`limitations` 必须说明失败任务、截断、缺失映射或失败组件。不能新增 `HarnessStatus.PARTIAL`。
+- 部分结果：`output_status="partial"`，仍可保存和返回；`limitations` 必须说明失败任务、截断、缺失映射或失败组件。不能新增 `HarnessStatusType.PARTIAL`。
 - 不可恢复失败：`output_status="failed"`，只保存受控错误提示和执行轨迹；不能把异常对象或完整 traceback 写入历史。
 - 用户取消：`output_status="cancelled"`，使用服务端固定提示或已有安全摘要；不把未完成规划文本当作答案。
 - 超时：`output_status="timeout"`，明确运行超时；不把已超时的工具结果伪装成完整结论。
@@ -4194,7 +4194,7 @@ M3 final_answer
 | M6.11 | 需要新增 | `tests/test_harness_finalization_recovery.py` | 各崩溃点、重复提交、摘要冲突、消息/output 幂等 | M6.2/M6.7 |
 | M6.12 | 需要重构 | `app/api/routers/agent.py`、SSE 事件消费 | 只从 M5 结果收口；确认、状态、取消和最终结果映射 | M5/M6 |
 
-**单元测试**：覆盖 `FinalizationInput` 终态资格、`FinalizationResult` 的 Formation 状态约束、`FinalizationLedgerState` 单调状态/版本/时间戳校验、`partial` 与 `HarnessStatus` 分离、输出 payload 长度和引用去重、digest 稳定性、状态映射、Formation 失败隔离、`formation_key` 生成和重复/冲突判断。
+**单元测试**：覆盖 `FinalizationInput` 终态资格、`FinalizationResult` 的 Formation 状态约束、`FinalizationLedgerState` 单调状态/版本/时间戳校验、`partial` 与 `HarnessStatusType` 分离、输出 payload 长度和引用去重、digest 稳定性、状态映射、Formation 失败隔离、`formation_key` 生成和重复/冲突判断。
 
 **集成测试**：覆盖真实 `ConversationRepository.finish_turn()` 的 assistant/output/trace 一次提交、相同 digest 重试、不同 digest 冲突、最终 checkpoint 保存、checkpoint 已写但 active run 未释放、ledger 状态版本冲突、`FinalizationService.reconcile()` 不回到 M5、`MemoryFormationService.submit()` 的 Eligibility 到 Writer 链路、Formation 审计状态和 `MemoryManager.add()` 只通过 Writer 进入。
 
@@ -4207,7 +4207,7 @@ M3 final_answer
 3. 历史事务、最终 checkpoint、active run 条件释放、Formation 的顺序固定；任一步失败都有可恢复状态，终态 checkpoint 已存在时由 `reconcile()` 对账。
 4. 相同 `run_id + finalization_digest` 和相同 `formation_key` 重试幂等；摘要冲突返回 conflict，不覆盖已有结果。
 5. `assistant_content`、结构化输出和执行轨迹不会因同步/SSE/崩溃恢复重复写入；SSE 只传输事件。
-6. `partial` 可以进入会话和最终结果，但不新增 `HarnessStatus.PARTIAL`；`failed`、`cancelled`、`timeout` 有明确可见提示和审计。
+6. `partial` 可以进入会话和最终结果，但不新增 `HarnessStatusType.PARTIAL`；`failed`、`cancelled`、`timeout` 有明确可见提示和审计。
 7. Finalization 只调用 `MemoryFormationService.submit()`，长期记忆仍按 Eligibility、Extractor、Governance、MemoryWriter、`MemoryManager.add()` 链路形成。
 8. `finalize()` 与 `reconcile()`、相关数据库迁移、单元测试、集成测试和恢复测试全部通过后，才允许进入整体 API/SSE 和旧图迁移收口。
 

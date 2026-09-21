@@ -2,7 +2,7 @@
 
 import unittest
 
-from app.agent.state_result_store.contracts import HarnessRunRef, HarnessStatus, LoopPhase
+from app.agent.state_result_store.contracts import HarnessRunRef, HarnessStatusType, LoopPhaseStatusType
 from app.agent.loop_controller.contracts import StartRunCommand
 from app.agent.loop_controller.controller import LoopController
 from app.agent.streaming.writer import NullHarnessEventWriter
@@ -38,8 +38,8 @@ class SliceAVerticalTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(result.run_ref, run_ref)
-        self.assertEqual(result.status, HarnessStatus.COMPLETED)
-        self.assertEqual(result.phase, LoopPhase.FINALIZATION)
+        self.assertEqual(result.status, HarnessStatusType.COMPLETED)
+        self.assertEqual(result.phase, LoopPhaseStatusType.FINALIZATION)
         self.assertEqual(result.finalization_result.final_answer, "销售数据分析已完成。")
         self.assertEqual(len(planning_agent.calls), 1)
         self.assertEqual(len(finalization_service.calls), 1)

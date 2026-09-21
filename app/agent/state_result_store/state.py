@@ -5,8 +5,8 @@ from typing import Any, TypedDict
 from app.agent.state_result_store.contracts import (
     HarnessRunRef,
     HarnessStateSnapshot,
-    HarnessStatus,
-    LoopPhase,
+    HarnessStatusType,
+    LoopPhaseStatusType,
 )
 
 
@@ -51,8 +51,8 @@ _DEFAULTS: HarnessControlState = {
     "state_version": 0,
     "checkpoint_revision": 0,
     "fencing_token": 0,
-    "status": HarnessStatus.RUNNING.value,
-    "phase": LoopPhase.START_RUN.value,
+    "status": HarnessStatusType.RUNNING.value,
+    "phase": LoopPhaseStatusType.START_RUN.value,
     "iteration": 0,
     "action_seq": 0,
     "max_iterations": 8,
@@ -80,43 +80,43 @@ _DEFAULTS: HarnessControlState = {
 
 
 _PHASE_TRANSITIONS = {
-    LoopPhase.START_RUN: {LoopPhase.BUILD_CONTEXT, LoopPhase.FINALIZATION},
-    LoopPhase.RESTORE_RUN: {LoopPhase.BUILD_CONTEXT, LoopPhase.FINALIZATION},
-    LoopPhase.BUILD_CONTEXT: {
-        LoopPhase.BUILD_CONTEXT,
-        LoopPhase.PLAN,
-        LoopPhase.FINALIZATION,
+    LoopPhaseStatusType.START_RUN: {LoopPhaseStatusType.BUILD_CONTEXT, LoopPhaseStatusType.FINALIZATION},
+    LoopPhaseStatusType.RESTORE_RUN: {LoopPhaseStatusType.BUILD_CONTEXT, LoopPhaseStatusType.FINALIZATION},
+    LoopPhaseStatusType.BUILD_CONTEXT: {
+        LoopPhaseStatusType.BUILD_CONTEXT,
+        LoopPhaseStatusType.PLAN,
+        LoopPhaseStatusType.FINALIZATION,
     },
-    LoopPhase.PLAN: {
-        LoopPhase.PLAN,
-        LoopPhase.VALIDATE_ACTION,
-        LoopPhase.FINALIZATION,
+    LoopPhaseStatusType.PLAN: {
+        LoopPhaseStatusType.PLAN,
+        LoopPhaseStatusType.VALIDATE_ACTION,
+        LoopPhaseStatusType.FINALIZATION,
     },
-    LoopPhase.VALIDATE_ACTION: {
-        LoopPhase.VALIDATE_ACTION,
-        LoopPhase.EXECUTE_TOOL,
-        LoopPhase.WAIT_CONFIRMATION,
-        LoopPhase.FINALIZATION,
+    LoopPhaseStatusType.VALIDATE_ACTION: {
+        LoopPhaseStatusType.VALIDATE_ACTION,
+        LoopPhaseStatusType.EXECUTE_TOOL,
+        LoopPhaseStatusType.WAIT_CONFIRMATION,
+        LoopPhaseStatusType.FINALIZATION,
     },
-    LoopPhase.EXECUTE_TOOL: {
-        LoopPhase.EXECUTE_TOOL,
-        LoopPhase.HANDLE_TOOL_RESULT,
-        LoopPhase.FINALIZATION,
+    LoopPhaseStatusType.EXECUTE_TOOL: {
+        LoopPhaseStatusType.EXECUTE_TOOL,
+        LoopPhaseStatusType.HANDLE_TOOL_RESULT,
+        LoopPhaseStatusType.FINALIZATION,
     },
-    LoopPhase.HANDLE_TOOL_RESULT: {
-        LoopPhase.RECORD_OBSERVATION,
-        LoopPhase.WAIT_CONFIRMATION,
-        LoopPhase.FINALIZATION,
+    LoopPhaseStatusType.HANDLE_TOOL_RESULT: {
+        LoopPhaseStatusType.RECORD_OBSERVATION,
+        LoopPhaseStatusType.WAIT_CONFIRMATION,
+        LoopPhaseStatusType.FINALIZATION,
     },
-    LoopPhase.RECORD_OBSERVATION: {
-        LoopPhase.BUILD_CONTEXT,
-        LoopPhase.FINALIZATION,
+    LoopPhaseStatusType.RECORD_OBSERVATION: {
+        LoopPhaseStatusType.BUILD_CONTEXT,
+        LoopPhaseStatusType.FINALIZATION,
     },
-    LoopPhase.WAIT_CONFIRMATION: {
-        LoopPhase.RESTORE_RUN,
-        LoopPhase.FINALIZATION,
+    LoopPhaseStatusType.WAIT_CONFIRMATION: {
+        LoopPhaseStatusType.RESTORE_RUN,
+        LoopPhaseStatusType.FINALIZATION,
     },
-    LoopPhase.FINALIZATION: {LoopPhase.FINALIZATION},
+    LoopPhaseStatusType.FINALIZATION: {LoopPhaseStatusType.FINALIZATION},
 }
 
 
@@ -149,20 +149,20 @@ def new_harness_control_state(
 def transition_harness_state(
     state: HarnessControlState,
     *,
-    status: HarnessStatus,
-    phase: LoopPhase,
+    status: HarnessStatusType,
+    phase: LoopPhaseStatusType,
     terminal_intent: str | None = None,
 ) -> HarnessControlState:
     """执行阶段转换，并阻止业务阶段直接伪造终态。"""
     current = HarnessStateSnapshot.model_validate(state)
     terminal_statuses = {
-        HarnessStatus.COMPLETED,
-        HarnessStatus.FAILED,
-        HarnessStatus.CANCELLED,
-        HarnessStatus.TIMEOUT,
+        HarnessStatusType.COMPLETED,
+        HarnessStatusType.FAILED,
+        HarnessStatusType.CANCELLED,
+        HarnessStatusType.TIMEOUT,
     }
     if current.status in terminal_statuses:
-        if status is current.status and phase is LoopPhase.FINALIZATION:
+        if status is current.status and phase is LoopPhaseStatusType.FINALIZATION:
             return encode_harness_state(state)
         raise ValueError(f"非法 Harness 状态转换: {current.status} -> {status}")
     if phase not in _PHASE_TRANSITIONS[current.phase]:
@@ -170,7 +170,7 @@ def transition_harness_state(
 
     intent = terminal_intent if terminal_intent is not None else current.terminal_intent
     if status in terminal_statuses and (
-        current.phase is not LoopPhase.FINALIZATION or status.value != intent
+        current.phase is not LoopPhaseStatusType.FINALIZATION or status.value != intent
     ):
         raise ValueError("终态只能由 running/finalization 的同名 intent 提交")
 
@@ -181,7 +181,7 @@ def transition_harness_state(
         "terminal_intent": intent,
         "state_version": current.state_version + 1,
     }
-    if current.status is HarnessStatus.WAITING_CONFIRMATION and status is HarnessStatus.RUNNING:
+    if current.status is HarnessStatusType.WAITING_CONFIRMATION and status is HarnessStatusType.RUNNING:
         candidate["pending_confirmation"] = None
     return decode_harness_state(candidate)
 
@@ -204,7 +204,7 @@ def restore_harness_state(
         if state.get(field) != expected:
             raise ValueError(f"Harness 恢复身份不匹配: {field}")
     harness = decode_harness_state(state.get("harness", {}))
-    if HarnessStatus(harness["status"]) is not HarnessStatus.RUNNING:
+    if HarnessStatusType(harness["status"]) is not HarnessStatusType.RUNNING:
         raise ValueError("普通恢复只允许 running 或 running/finalization 状态")
     return {**state, "harness": harness}
 

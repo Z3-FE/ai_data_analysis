@@ -9,8 +9,8 @@ from app.agent.planning_agent.agent import PlanningAgent
 from app.agent.state_result_store.contracts import (
     ActionType,
     HarnessRunRef,
-    HarnessStatus,
-    LoopPhase,
+    HarnessStatusType,
+    LoopPhaseStatusType,
     PlannerCapabilities,
     ToolSpec,
 )
@@ -81,8 +81,8 @@ class SliceBVerticalTest(unittest.IsolatedAsyncioTestCase):
             '{"action_type":"tool_call","tool_call":{"tool_name":"query_data","arguments":{}}}',
             '{"action_type":"final_answer","final_answer":"工具结果已处理"}',
         )
-        self.assertEqual(result.status, HarnessStatus.COMPLETED)
-        self.assertEqual(result.phase, LoopPhase.FINALIZATION)
+        self.assertEqual(result.status, HarnessStatusType.COMPLETED)
+        self.assertEqual(result.phase, LoopPhaseStatusType.FINALIZATION)
         self.assertEqual(store.states["run-b"]["harness"]["action_seq"], 2)
         self.assertEqual(
             committer.events,
@@ -110,7 +110,7 @@ class SliceBVerticalTest(unittest.IsolatedAsyncioTestCase):
         result, committer, runtime, confirmation, finalization, store, _ = await self.run_case(
             '{"action_type":"ask_user","ask_user":{"question":"哪个月份？","reason_code":"missing_condition"}}'
         )
-        self.assertEqual(result.status, HarnessStatus.COMPLETED)
+        self.assertEqual(result.status, HarnessStatusType.COMPLETED)
         self.assertEqual(len(committer.calls), 1)
         self.assertEqual(len(confirmation.calls), 1)
         self.assertEqual(len(runtime.calls), 0)

@@ -25,7 +25,7 @@ from datetime import UTC, datetime
 from typing import Any, Iterator
 from uuid import uuid4
 
-from app.agent.state_result_store.contracts import HarnessRunRef, LoopPhase
+from app.agent.state_result_store.contracts import HarnessRunRef, LoopPhaseStatusType
 
 from .contracts import EventType, HarnessEvent, HarnessEventSink
 
@@ -124,7 +124,7 @@ class HarnessEventWriter:
         event_type: EventType,
         *,
         source: str | None = None,  # 来源标识；不传走 bind() 上下文，再回退 "harness"
-        phase: LoopPhase | None = None,  # 状态机阶段；不传走 bind() 上下文，再回退 START_RUN
+        phase: LoopPhaseStatusType | None = None,  # 状态机阶段；不传走 bind() 上下文，再回退 START_RUN
         iteration: int | None = None,  # 循环轮数（前端"第 N 轮"）；不传走 bind() 上下文，再回退 0
         action_id: str | None = None,  # 关联的动作（Planner 的 action_seq 体系）；不传走 bind() 上下文，再回退 None
         payload: Mapping[str, Any] | None = None,  # 业务数据 dict；发送前经 _sanitize 清洗（截断、剔 rows/sql/code 等大字段）
@@ -136,7 +136,7 @@ class HarnessEventWriter:
         try:
             context = self._context.get()
             effective_source = str(source or context.get("source") or "harness")
-            effective_phase = str(phase or context.get("phase") or LoopPhase.START_RUN)
+            effective_phase = str(phase or context.get("phase") or LoopPhaseStatusType.START_RUN)
             effective_iteration = int(
                 iteration if iteration is not None else context.get("iteration", 0)
             )
@@ -189,7 +189,7 @@ class HarnessEventWriter:
         self,
         *,
         source: str | None = None,
-        phase: LoopPhase | None = None,
+        phase: LoopPhaseStatusType | None = None,
         iteration: int | None = None,
         action_id: str | None = None,
     ) -> Iterator["HarnessEventWriter"]:

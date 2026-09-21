@@ -8,8 +8,8 @@ import unittest
 from app.agent.loop_controller.contracts import FinalizationResult, LoopRunResult
 from app.agent.state_result_store.contracts import (
     HarnessRunRef,
-    HarnessStatus,
-    LoopPhase,
+    HarnessStatusType,
+    LoopPhaseStatusType,
 )
 from app.agent.streaming.writer import HarnessEventWriter, QueueEventSink
 from app.api.routers.harness import _sse_response
@@ -34,12 +34,12 @@ class HarnessStreamingTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.03)
             return LoopRunResult(
                 run_ref=run_ref,
-                status=HarnessStatus.COMPLETED,
-                phase=LoopPhase.FINALIZATION,
+                status=HarnessStatusType.COMPLETED,
+                phase=LoopPhaseStatusType.FINALIZATION,
                 iteration=0,
                 finalization_result=FinalizationResult(
                     run_ref=run_ref,
-                    status=HarnessStatus.COMPLETED,
+                    status=HarnessStatusType.COMPLETED,
                     final_answer="完成",
                 ),
             )

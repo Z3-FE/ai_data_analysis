@@ -13,7 +13,7 @@ from app.agent.loop_controller.controller import LoopController
 from app.agent.planning_agent.agent import PlanningAgent
 from app.agent.state_result_store.contracts import (
     HarnessRunRef,
-    HarnessStatus,
+    HarnessStatusType,
     PlannerCapabilities,
     ToolSpec,
 )
@@ -194,7 +194,7 @@ class HarnessD6AnalyzeTest(unittest.IsolatedAsyncioTestCase):
                 StartRunCommand(run_ref=run_ref, input_text="计算月度销售额合计")
             )
 
-        self.assertEqual(result.status, HarnessStatus.COMPLETED)
+        self.assertEqual(result.status, HarnessStatusType.COMPLETED)
         self.assertEqual(result.finalization_result.final_answer, "月度销售额合计为 220。")
         self.assertEqual(len(query_graph.states), 1)
         self.assertEqual(query_graph.states[0]["run_id"], run_ref.run_id)

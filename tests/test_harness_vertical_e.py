@@ -12,7 +12,7 @@ from sqlalchemy import select
 from app.agent.finalization.service import PostgresFinalizationService
 from app.agent.loop_controller.contracts import StartRunCommand
 from app.agent.loop_controller.controller import LoopController
-from app.agent.state_result_store.contracts import HarnessStatus
+from app.agent.state_result_store.contracts import HarnessStatusType
 from app.agent.streaming.writer import NullHarnessEventWriter
 from app.models.memory import MemoryFormationRunModel
 from app.repositories.conversation_repository import ConversationRepository
@@ -102,7 +102,7 @@ class SliceEVerticalTest(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        self.assertEqual(result.status, HarnessStatus.COMPLETED)
+        self.assertEqual(result.status, HarnessStatusType.COMPLETED)
         self.assertEqual(result.phase.value, "finalization")
         self.assertEqual(result.finalization_result.final_answer, FINAL_ANSWER)
         self.assertEqual(result.finalization_result.run_ref, self._run_ref())
@@ -165,7 +165,7 @@ class SliceEVerticalTest(unittest.IsolatedAsyncioTestCase):
         replayed = await finalization.reconcile(
             run_id=self.identity["run_id"], user_id=self.identity["user_id"]
         )
-        self.assertEqual(replayed.status, HarnessStatus.COMPLETED)
+        self.assertEqual(replayed.status, HarnessStatusType.COMPLETED)
         self.assertEqual(replayed.final_answer, FINAL_ANSWER)
         detail = await repository.get_conversation(
             self.identity["user_id"], self.identity["conversation_id"]

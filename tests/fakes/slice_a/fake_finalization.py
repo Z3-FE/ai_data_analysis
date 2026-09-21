@@ -10,7 +10,7 @@
 from app.agent.loop_controller.contracts import FinalizationInput, FinalizationResult
 from app.agent.state_result_store.contracts import (
     HarnessStateSnapshot,
-    LoopPhase,
+    LoopPhaseStatusType,
 )
 from app.agent.state_result_store.state import transition_harness_state
 from tests.fakes.slice_a.fake_run_store import FakeRunStore
@@ -30,7 +30,7 @@ class FakeFinalizationService:
             state["harness"] = transition_harness_state(
                 state["harness"],
                 status=value.terminal_status,
-                phase=LoopPhase.FINALIZATION,
+                phase=LoopPhaseStatusType.FINALIZATION,
                 terminal_intent=value.terminal_status.value,
             )
             await self.run_store.save(value.run_ref, state)

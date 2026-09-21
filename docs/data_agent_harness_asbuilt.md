@@ -97,7 +97,7 @@ sequenceDiagram
     FZ-->>FE: run.completed + run.result（final_answer）
 ```
 
-### 1.3 HarnessStatus / LoopPhase 状态迁移图（已按代码核对）
+### 1.3 HarnessStatusType / LoopPhaseStatusType 状态迁移图（已按代码核对）
 
 ```mermaid
 stateDiagram-v2
@@ -143,7 +143,7 @@ stateDiagram-v2
 > ② `max_iterations` 检查在 RECORD_OBSERVATION 阶段、`iteration += 1` 与保存现场之后（controller.py:510-519），达到即 `_finalize(TIMEOUT)`——终态是 **TIMEOUT** 而非 FAILED。
 > ③ `COMPLETED` 只从 FINAL_ANSWER 处理分支进入（controller.py:423）；`_finalize` 默认 `terminal_status=COMPLETED`（controller.py:1013），其余全部调用点均显式指定 FAILED / CANCELLED / TIMEOUT。
 >
-> 另注：LoopPhase 还有三个在图中不占流程位置的值——`START_RUN`（start 入口事件，controller.py:126）、`RESTORE_RUN`（恢复 / 中断准备现场）、`FINALIZATION`（收口阶段）。
+> 另注：LoopPhaseStatusType 还有三个在图中不占流程位置的值——`START_RUN`（start 入口事件，controller.py:126）、`RESTORE_RUN`（恢复 / 中断准备现场）、`FINALIZATION`（收口阶段）。
 
 ### 1.4 术语表
 
@@ -306,7 +306,7 @@ async def start(self, command: StartRunCommand) -> LoopResult:
     state = self._new_state(command)                        # 内存构建初始现场（见下）
     await self.run_store.create(command.run_ref, state)     # harness_runs 行诞生 = 首次落库
     self._emit(command.run_ref, "run.started",
-               phase=LoopPhase.START_RUN, iteration=0)      # 生命周期第一个事件
+               phase=LoopPhaseStatusType.START_RUN, iteration=0)      # 生命周期第一个事件
     return await self._run_guarded(command, state)          # 进入守护主循环
 ```
 
@@ -330,8 +330,8 @@ return {
 `_DEFAULTS` 底座（state_result_store/state.py:43-79）关键字段：
 
 ```python
-"status": HarnessStatus.RUNNING.value,   # 一创建就是 running
-"phase": LoopPhase.START_RUN.value,      # 入口相位，第一次 transition 就离开
+"status": HarnessStatusType.RUNNING.value,   # 一创建就是 running
+"phase": LoopPhaseStatusType.START_RUN.value,      # 入口相位，第一次 transition 就离开
 "iteration": 0,                          # 轮次：观察记录后 +1（controller.py:510）
 "action_seq": 0,                         # 动作序号：提交成功后写（controller.py:825）
 "state_version": 0,                      # 乐观锁：每次 transition +1
@@ -368,7 +368,7 @@ while True:
     state = self._transition(state, status=RUNNING, phase=RECORD_OBSERVATION)
     state["harness"]["iteration"] += 1                                # ⑩ 轮次推进
     if state["harness"]["iteration"] >= state["harness"]["max_iterations"]:
-        return await self._finalize(..., terminal_status=HarnessStatus.TIMEOUT)  # 达上限收口
+        return await self._finalize(..., terminal_status=HarnessStatusType.TIMEOUT)  # 达上限收口
     state = self._transition(state, status=RUNNING, phase=BUILD_CONTEXT)  # ⑪ 回到 ①
 ```
 
@@ -379,7 +379,7 @@ while True:
 ```python
 state["harness"]["final_answer"] = final_answer          # 终答先进 state
 state = self._transition(state, status=RUNNING,
-                         phase=LoopPhase.FINALIZATION,   # 全系统唯一带 terminal_intent 的迁移
+                         phase=LoopPhaseStatusType.FINALIZATION,   # 全系统唯一带 terminal_intent 的迁移
                          terminal_intent=terminal_status.value)
 await self.run_store.save(command.run_ref, state)        # 收口前现场落库
 finalization = await self.finalization_service.finalize(FinalizationInput(...))  # Ledger 六 stage

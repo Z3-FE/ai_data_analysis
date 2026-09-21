@@ -21,8 +21,8 @@ from app.agent.state_result_store.contracts import (
     ConfirmationStatus,
     ConfirmationVisibility,
     HarnessRunRef,
-    HarnessStatus,
-    LoopPhase,
+    HarnessStatusType,
+    LoopPhaseStatusType,
 )
 from app.agent.state_result_store.state import (
     decode_harness_state,
@@ -225,7 +225,7 @@ class PostgresHarnessRunStore(HarnessRunStore):
             self._assert_ref(model, run_ref)
             self._assert_version(model, state)
             harness = state["harness"]
-            if harness["status"] != HarnessStatus.WAITING_CONFIRMATION.value:
+            if harness["status"] != HarnessStatusType.WAITING_CONFIRMATION.value:
                 raise HarnessPersistenceError("只有 waiting_confirmation 状态可以暂停")
             pending = harness.get("pending_confirmation")
             if not isinstance(pending, dict) or pending.get("confirmation_id") != record.request.confirmation_id:
@@ -312,7 +312,7 @@ class PostgresHarnessRunStore(HarnessRunStore):
                 if isinstance(pending, dict)
                 else None
             )
-            if harness["status"] != HarnessStatus.WAITING_CONFIRMATION.value:
+            if harness["status"] != HarnessStatusType.WAITING_CONFIRMATION.value:
                 raise HarnessPersistenceError("当前运行不在 waiting_confirmation 状态")
             if confirmation_id != reply.confirmation_id:
                 raise HarnessPersistenceError("confirmation_id 与当前运行不匹配")
@@ -339,8 +339,8 @@ class PostgresHarnessRunStore(HarnessRunStore):
                 state = {**state, "harness": harness}
             state["harness"] = transition_harness_state(
                 state["harness"],
-                status=HarnessStatus.RUNNING,
-                phase=LoopPhase.RESTORE_RUN,
+                status=HarnessStatusType.RUNNING,
+                phase=LoopPhaseStatusType.RESTORE_RUN,
             )
             self._apply_state(model, state)
             await session.commit()

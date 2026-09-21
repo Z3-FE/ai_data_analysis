@@ -57,7 +57,7 @@ Finalization 对账设计要点（已实现）：
 
 | 范围                 | 当前事实                                                                                                                                                                    | 状态                                      |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
-| Harness 状态         | `app/agent/harness/contracts.py`、`app/agent/harness/state.py`已存在`HarnessStatus`、`LoopPhase`、`HarnessRunRef`、`HarnessStateSnapshot`、`NextAction`、`ToolResult`等契约 | 现有能力，M1 已冻结                       |
+| Harness 状态         | `app/agent/harness/contracts.py`、`app/agent/harness/state.py`已存在`HarnessStatusType`、`LoopPhaseStatusType`、`HarnessRunRef`、`HarnessStateSnapshot`、`NextAction`、`ToolResult`等契约 | 现有能力，M1 已冻结                       |
 | LangGraph 状态       | `app/agent/state.py::AgentState`保留旧业务字段和`messages`reducer；`HarnessGraphState`当前位于`app/agent/state.py`                                                          | 现有能力                                  |
 | ContextEngine        | `app/agent/context_engine/engine.py::ContextEngine.build()`已实现；`ContextRequest`已包含`runtime_context`                                                                  | M2 部分具备，尚未形成 LoopController 闭环 |
 | Harness Context 投影 | `app/agent/harness/context_contracts.py`、`app/agent/harness/context_service.py`已存在`RuntimeContext`、`HarnessContextRequestFactory`、`HarnessRuntimeContextProjector`    | M2 部分具备                               |

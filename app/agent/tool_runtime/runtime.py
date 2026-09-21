@@ -10,7 +10,7 @@ from time import monotonic
 
 from app.agent.state_result_store.contracts import (
     ErrorCategory,
-    LoopPhase,
+    LoopPhaseStatusType,
     ResultStatus,
     ToolResult,
 )
@@ -81,7 +81,7 @@ class ToolRuntime:
             )
             with writer.bind(
                 source=spec.name,
-                phase=LoopPhase.EXECUTE_TOOL,
+                phase=LoopPhaseStatusType.EXECUTE_TOOL,
                 iteration=request.iteration,
                 action_id=request.tool_call.action_id,
             ):

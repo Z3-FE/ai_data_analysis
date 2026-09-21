@@ -9,8 +9,8 @@ from app.agent.loop_controller.controller import LoopController
 from app.agent.planning_agent.agent import PlanningAgent
 from app.agent.state_result_store.contracts import (
     HarnessRunRef,
-    HarnessStatus,
-    LoopPhase,
+    HarnessStatusType,
+    LoopPhaseStatusType,
     PlannerCapabilities,
     ToolSpec,
 )
@@ -111,8 +111,8 @@ class SliceCVerticalTest(unittest.IsolatedAsyncioTestCase):
                 )
             )
 
-        self.assertEqual(result.status, HarnessStatus.COMPLETED)
-        self.assertEqual(result.phase, LoopPhase.FINALIZATION)
+        self.assertEqual(result.status, HarnessStatusType.COMPLETED)
+        self.assertEqual(result.phase, LoopPhaseStatusType.FINALIZATION)
         self.assertEqual(result.finalization_result.final_answer, "销售额查询完成")
         self.assertEqual([call.action.action_seq for call in committer.calls], [1, 2])
         self.assertEqual(len(runtime.calls), 1)

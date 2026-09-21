@@ -14,8 +14,8 @@ from app.agent.state_result_store.contracts import (
     HarnessRequest,
     HarnessRunRef,
     HarnessStateSnapshot,
-    HarnessStatus,
-    LoopPhase,
+    HarnessStatusType,
+    LoopPhaseStatusType,
     NextAction,
     ResultStatus,
     RunError,
@@ -41,8 +41,8 @@ def run_ref():
 def finalizing(intent="completed"):
     return transition_harness_state(
         new_harness_control_state(original_goal="goal"),
-        status=HarnessStatus.RUNNING,
-        phase=LoopPhase.FINALIZATION,
+        status=HarnessStatusType.RUNNING,
+        phase=LoopPhaseStatusType.FINALIZATION,
         terminal_intent=intent,
     )
 
@@ -82,22 +82,22 @@ def test_valid_state_transitions_require_finalization_intent():
     state = new_harness_control_state(original_goal="goal")
     with pytest.raises(ValueError):
         transition_harness_state(
-            state, status=HarnessStatus.COMPLETED, phase=LoopPhase.FINALIZATION
+            state, status=HarnessStatusType.COMPLETED, phase=LoopPhaseStatusType.FINALIZATION
         )
     state = finalizing()
     assert state["status"] == "running"
     assert state["terminal_intent"] == "completed"
     state = transition_harness_state(
-        state, status=HarnessStatus.COMPLETED, phase=LoopPhase.FINALIZATION
+        state, status=HarnessStatusType.COMPLETED, phase=LoopPhaseStatusType.FINALIZATION
     )
     assert state["status"] == "completed"
     assert state["state_version"] == 2
     assert transition_harness_state(
-        state, status=HarnessStatus.COMPLETED, phase=LoopPhase.FINALIZATION
+        state, status=HarnessStatusType.COMPLETED, phase=LoopPhaseStatusType.FINALIZATION
     ) == state
     with pytest.raises(ValueError):
         transition_harness_state(
-            state, status=HarnessStatus.RUNNING, phase=LoopPhase.PLAN
+            state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.PLAN
         )
 
 
@@ -105,8 +105,8 @@ def test_phase_cannot_skip_planning():
     with pytest.raises(ValueError):
         transition_harness_state(
             new_harness_control_state(original_goal="goal"),
-            status=HarnessStatus.RUNNING,
-            phase=LoopPhase.EXECUTE_TOOL,
+            status=HarnessStatusType.RUNNING,
+            phase=LoopPhaseStatusType.EXECUTE_TOOL,
         )
 
 
@@ -123,7 +123,7 @@ def test_waiting_confirmation_requires_matching_phase_and_request():
     with pytest.raises(ValueError):
         restore_harness_state({**run_ref().model_dump(), "harness": waiting}, run_ref())
     resumed = transition_harness_state(
-        waiting, status=HarnessStatus.RUNNING, phase=LoopPhase.RESTORE_RUN
+        waiting, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.RESTORE_RUN
     )
     assert resumed["pending_confirmation"] is None
     assert resumed["original_goal"] == "goal"
@@ -146,9 +146,9 @@ def test_checkpoint_round_trip_and_schema_boundary():
             decode_harness_state({**state, **patch})
 
 
-@pytest.mark.parametrize("phase", [LoopPhase.PLAN, LoopPhase.FINALIZATION])
+@pytest.mark.parametrize("phase", [LoopPhaseStatusType.PLAN, LoopPhaseStatusType.FINALIZATION])
 def test_restore_preserves_identity_and_scene(phase):
-    harness = finalizing() if phase is LoopPhase.FINALIZATION else {
+    harness = finalizing() if phase is LoopPhaseStatusType.FINALIZATION else {
         **new_harness_control_state(original_goal="goal"), "phase": phase.value
     }
     state = {**run_ref().model_dump(), "harness": harness, "sql": "select 1"}
@@ -160,7 +160,7 @@ def test_restore_preserves_identity_and_scene(phase):
 
 def test_restore_rejects_completed_run():
     state = transition_harness_state(
-        finalizing(), status=HarnessStatus.COMPLETED, phase=LoopPhase.FINALIZATION
+        finalizing(), status=HarnessStatusType.COMPLETED, phase=LoopPhaseStatusType.FINALIZATION
     )
     with pytest.raises(ValueError):
         restore_harness_state({**run_ref().model_dump(), "harness": state}, run_ref())
