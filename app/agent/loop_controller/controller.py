@@ -1062,7 +1062,34 @@ class LoopController:
                 final_output_ref=final_output_ref,
             )
         )
-        self._emit_terminal(finalization)
+        # 终态已成功持久化，发布一次本次运行的终态事件
+        event_type = {
+            HarnessStatus.COMPLETED: "run.completed",
+            HarnessStatus.FAILED: "run.failed",
+            HarnessStatus.TIMEOUT: "run.timeout",
+            HarnessStatus.CANCELLED: "run.cancelled",
+        }[finalization.status]
+        self.event_writer.emit(
+            event_type,
+            phase=LoopPhase.FINALIZATION,
+            iteration=finalization.iteration,
+            payload={
+                "status": finalization.status.value,
+                "final_answer": finalization.final_answer,
+                "final_output_type": finalization.final_output_type,
+                "final_output_ref": finalization.final_output_ref,
+                "error_code": (
+                    None
+                    if finalization.last_error is None
+                    else finalization.last_error.code
+                ),
+                "error_message": (
+                    None
+                    if finalization.last_error is None
+                    else finalization.last_error.message
+                ),
+            },
+        )
         return LoopRunResult(
             run_ref=command.run_ref,
             status=finalization.status,
@@ -1120,39 +1147,6 @@ class LoopController:
             "asset_ids": list(command.asset_ids),
             "harness": harness,
         }
-
-    def _emit_terminal(
-        self,
-        finalization: FinalizationResult,
-    ) -> None:
-        """只在终态已成功持久化后发布一次本次控制器实例的终态事件。"""
-        event_type = {
-            HarnessStatus.COMPLETED: "run.completed",
-            HarnessStatus.FAILED: "run.failed",
-            HarnessStatus.TIMEOUT: "run.timeout",
-            HarnessStatus.CANCELLED: "run.cancelled",
-        }[finalization.status]
-        self.event_writer.emit(
-            event_type,
-            phase=LoopPhase.FINALIZATION,
-            iteration=finalization.iteration,
-            payload={
-                "status": finalization.status.value,
-                "final_answer": finalization.final_answer,
-                "final_output_type": finalization.final_output_type,
-                "final_output_ref": finalization.final_output_ref,
-                "error_code": (
-                    None
-                    if finalization.last_error is None
-                    else finalization.last_error.code
-                ),
-                "error_message": (
-                    None
-                    if finalization.last_error is None
-                    else finalization.last_error.message
-                ),
-            },
-        )
 
     @staticmethod
     def _run_ref_from_state(state: HarnessGraphState):
