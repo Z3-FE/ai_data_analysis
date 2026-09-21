@@ -51,6 +51,7 @@ _DEFAULTS: HarnessControlState = {
     "state_version": 0,
     "checkpoint_revision": 0,
     "fencing_token": 0,
+    # 新运行的起点：宏观状态直接 RUNNING，阶段指针停在 START_RUN（下一步迁移到 BUILD_CONTEXT）
     "status": HarnessStatusType.RUNNING.value,
     "phase": LoopPhaseStatusType.START_RUN.value,
     "iteration": 0,
@@ -137,6 +138,7 @@ def new_harness_control_state(
         "plan_progress": {},
         "observations": [],
         "resolved_conditions": {},
+        # 这四个 {}/[] 故意重写：_DEFAULTS 是模块级单例，直接引用会跨运行共享可变对象
         "last_confirmation_answer": None,
         "confirmation_attempt_count": 0,
         "last_confirmation_reason_code": None,

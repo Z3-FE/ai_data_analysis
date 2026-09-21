@@ -122,7 +122,7 @@ class LoopController:
         # 1.新建状态： state
         state = self._new_state(command)
 
-        await self.run_store.create(command.run_ref, state)
+        await self.run_store.create(command.run_ref, state) #
         self.event_writer.emit(
             EventType.RUN_STARTED,
             phase=LoopPhaseStatusType.START_RUN,
@@ -1130,6 +1130,8 @@ class LoopController:
 
     def _new_state(self, command: StartRunCommand) -> HarnessGraphState:
         now = datetime.now(UTC)
+        # 初始 status/phase 不在这里写：新运行起点（RUNNING/START_RUN）由 state.py 的
+        # _DEFAULTS 统一给出；controller 只补 run 身份和逐次可变的值，避免两处真相
         harness = new_harness_control_state(
             original_goal=command.input_text,
             max_iterations=self.max_iterations,
