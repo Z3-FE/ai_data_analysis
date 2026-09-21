@@ -25,9 +25,9 @@ from datetime import UTC, datetime
 from typing import Any, Iterator
 from uuid import uuid4
 
-from app.agent.state_result_store.contracts import HarnessRunRef
+from app.agent.state_result_store.contracts import HarnessRunRef, LoopPhase
 
-from .contracts import HarnessEvent, HarnessEventSink
+from .contracts import EventType, HarnessEvent, HarnessEventSink
 
 logger = logging.getLogger(__name__)
 
@@ -120,11 +120,11 @@ class HarnessEventWriter:
 
     def emit(
         self,
-        # 唯一必填参数（位置传参）：事件名，前端按它分类消费，习惯"域.动作"（run.started / tool.progress / context.failed）
-        event_type: str,
+        # 唯一必填参数（位置传参）：事件名必须取自 EventType 枚举——协议一处定义，拼错直接报错
+        event_type: EventType,
         *,
         source: str | None = None,  # 来源标识；不传走 bind() 上下文，再回退 "harness"
-        phase: str | None = None,  # 状态机阶段（LoopPhase 枚举直接传，它本身就是 str）；不传走 bind() 上下文，再回退 "start_run"
+        phase: LoopPhase | None = None,  # 状态机阶段；不传走 bind() 上下文，再回退 START_RUN
         iteration: int | None = None,  # 循环轮数（前端"第 N 轮"）；不传走 bind() 上下文，再回退 0
         action_id: str | None = None,  # 关联的动作（Planner 的 action_seq 体系）；不传走 bind() 上下文，再回退 None
         payload: Mapping[str, Any] | None = None,  # 业务数据 dict；发送前经 _sanitize 清洗（截断、剔 rows/sql/code 等大字段）
@@ -136,7 +136,7 @@ class HarnessEventWriter:
         try:
             context = self._context.get()
             effective_source = str(source or context.get("source") or "harness")
-            effective_phase = str(phase or context.get("phase") or "start_run")
+            effective_phase = str(phase or context.get("phase") or LoopPhase.START_RUN)
             effective_iteration = int(
                 iteration if iteration is not None else context.get("iteration", 0)
             )
@@ -176,7 +176,7 @@ class HarnessEventWriter:
         context = self._context.get()
         source = f"{context.get('source', 'tool')}:{node}"
         return self.emit(
-            "tool.progress",
+            EventType.TOOL_PROGRESS,
             source=source,
             payload={
                 "custom_type": custom_type,
@@ -189,7 +189,7 @@ class HarnessEventWriter:
         self,
         *,
         source: str | None = None,
-        phase: str | None = None,
+        phase: LoopPhase | None = None,
         iteration: int | None = None,
         action_id: str | None = None,
     ) -> Iterator["HarnessEventWriter"]:

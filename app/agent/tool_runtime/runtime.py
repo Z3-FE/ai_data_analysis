@@ -10,9 +10,11 @@ from time import monotonic
 
 from app.agent.state_result_store.contracts import (
     ErrorCategory,
+    LoopPhase,
     ResultStatus,
     ToolResult,
 )
+from app.agent.streaming.contracts import EventType
 from app.agent.streaming.writer import HarnessEventWriter, NullHarnessEventWriter
 from app.agent.tool_runtime.artifacts import (
     ArtifactReadRequest,
@@ -70,7 +72,7 @@ class ToolRuntime:
                 request.tool_call.timeout_seconds or spec.timeout_seconds
             )
             writer.emit(
-                "tool.started",
+                EventType.TOOL_STARTED,
                 source=spec.name,
                 phase="execute_tool",
                 iteration=request.iteration,
@@ -79,7 +81,7 @@ class ToolRuntime:
             )
             with writer.bind(
                 source=spec.name,
-                phase="execute_tool",
+                phase=LoopPhase.EXECUTE_TOOL,
                 iteration=request.iteration,
                 action_id=request.tool_call.action_id,
             ):
@@ -202,9 +204,9 @@ class ToolRuntime:
     ) -> None:
         """在结果完成或失败后发布受控事件，并记录小体积结构化日志。"""
         terminal_type = (
-            "tool.completed"
+            EventType.TOOL_COMPLETED
             if result.status in {ResultStatus.SUCCESS, ResultStatus.PARTIAL}
-            else "tool.failed"
+            else EventType.TOOL_FAILED
         )
         writer.emit(
             terminal_type,

@@ -10,7 +10,7 @@ from app.agent.streaming.writer import HarnessEventWriter, NullHarnessEventWrite
 from app.agent.context import AgentContext
 from app.agent.query_graph import query_graph
 from app.agent.state import AgentState
-from app.agent.state_result_store.contracts import HarnessRunRef
+from app.agent.state_result_store.contracts import HarnessRunRef, LoopPhase
 
 from .contracts import QueryDataInput, QueryDataOutput
 
@@ -39,7 +39,7 @@ class QueryDataTool:
         self.event_writer = event_writer or NullHarnessEventWriter(run_ref=run_ref)
 
     async def execute(self, value: QueryDataInput) -> QueryDataOutput:
-        """装配旧图 state，流式跑 query_graph，把最终状态收敛为受控查询结果。"""
+        """执行： 装配旧图 state，流式跑 query_graph，把最终状态收敛为受控查询结果。"""
         state: AgentState = {
             "input_text": value.query,
             "original_question": value.query,
@@ -55,7 +55,7 @@ class QueryDataTool:
         # bind：图内桥接事件统一挂 query_data 源（tool.progress 的 source 形如 query_data:节点名）
         with self.event_writer.bind(
             source=self.name,
-            phase="execute_tool",
+            phase=LoopPhase.EXECUTE_TOOL,
             action_id=None,
         ):
             async for event in query_graph.astream(

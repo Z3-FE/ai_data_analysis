@@ -3,11 +3,50 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, Mapping, Protocol
 
 from pydantic import Field
 
 from app.agent.state_result_store.contracts import ContractModel, HarnessRunRef
+
+
+class EventType(StrEnum):
+    """前后端事件协议的全部事件名；一处定义，调用点、前端与测试按值对齐。"""
+
+    # —— run 生命周期 ——
+    RUN_STARTED = "run.started"
+    RUN_RESULT = "run.result"  # API 层在 operation 结束后发布的最终结果
+    RUN_COMPLETED = "run.completed"
+    RUN_FAILED = "run.failed"
+    RUN_TIMEOUT = "run.timeout"
+    RUN_CANCELLED = "run.cancelled"
+    # —— SSE 流 ——
+    STREAM_FAILED = "stream.failed"
+    # —— 确认 ——
+    CONFIRMATION_RESOLVED = "confirmation.resolved"
+    CONFIRMATION_REQUIRED = "confirmation.required"
+    # —— planner ——
+    PLANNER_STARTED = "planner.started"
+    PLANNER_RETRYING = "planner.retrying"
+    PLANNER_COMPLETED = "planner.completed"
+    PLANNER_FAILED = "planner.failed"
+    # —— 工具 ——
+    TOOL_STARTED = "tool.started"
+    TOOL_RETRYING = "tool.retrying"
+    TOOL_COMPLETED = "tool.completed"
+    TOOL_FAILED = "tool.failed"
+    TOOL_PROGRESS = "tool.progress"  # custom() 的固定归一化目标
+    # —— 动作 ——
+    ACTION_COMMITTED = "action.committed"
+    # —— context 构建 ——
+    CONTEXT_STARTED = "context.started"
+    CONTEXT_FAILED = "context.failed"
+    CONTEXT_MEMORY_RETRIEVED = "context.memory_retrieved"
+    CONTEXT_KNOWLEDGE_RETRIEVED = "context.knowledge_retrieved"
+    CONTEXT_PLAN = "context.plan"
+    CONTEXT_COMPILED = "context.context_compiled"
+    CONTEXT_COMPLETED = "context.completed"
 
 
 class HarnessEvent(ContractModel):
@@ -30,4 +69,4 @@ class HarnessEventSink(Protocol):
     def publish(self, event: HarnessEvent) -> None: ...
 
 
-__all__ = ["HarnessEvent", "HarnessEventSink"]
+__all__ = ["EventType", "HarnessEvent", "HarnessEventSink"]

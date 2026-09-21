@@ -43,6 +43,7 @@ from app.agent.state_result_store.contracts import (
     ToolSpec,
 )
 from app.agent.state_result_store.state import transition_harness_state
+from app.agent.streaming.contracts import EventType
 from app.agent.streaming.writer import (
     HarnessEventWriter,
     QueueEventSink,
@@ -510,7 +511,7 @@ def _sse_response(
         try:
             result = await operation()
             writer.emit(
-                "run.result",
+                EventType.RUN_RESULT,
                 source="harness",
                 phase=(
                     result.phase.value
@@ -536,7 +537,7 @@ def _sse_response(
                         run_ref.run_id,
                     )
             writer.emit(
-                "stream.failed",
+                EventType.STREAM_FAILED,
                 source="harness",
                 phase="finalization",
                 payload={
