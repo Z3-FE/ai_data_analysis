@@ -46,6 +46,7 @@ from app.agent.state_result_store.state import transition_harness_state
 from app.agent.streaming.contracts import EventType
 from app.agent.streaming.writer import (
     HarnessEventWriter,
+    NullHarnessEventWriter,
     QueueEventSink,
     format_sse,
     stream_done_marker,
@@ -251,6 +252,11 @@ def _build_controller(
     event_writer: HarnessEventWriter | None = None,
 ) -> LoopController:
     """组装 Harness 运行的完整对象"""
+
+    # ⓪ 唯一兜底点：非流式入口（/run、/run/resume）不传事件写出器，这里补 Null——
+    #    事件照常构造但直接丢弃；流式入口已自带 QueueEventSink 的 writer
+    if event_writer is None:
+        event_writer = NullHarnessEventWriter(run_ref=run_ref)
 
     # ① 工具契约：ToolSpec 声明规划器可调用的动作（名称/权限/入参 schema/超时），
     query_spec = _query_tool_spec()

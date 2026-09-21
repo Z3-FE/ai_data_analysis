@@ -555,7 +555,8 @@ class HarnessApiTest(unittest.TestCase):
         final_state = self.run_store.states[response.json()["run_ref"]["run_id"]]
         self.assertEqual(final_state["harness"]["observations"][0]["status"], "unrecoverable_error")
 
-    def test_temporary_query_error_retries_same_action(self) -> None:
+    def test_query_dependency_error_fails_directly_without_retry(self) -> None:
+        # 86c4c04 起工具失败不自动重试：连接类错误同样直接收口，动作不重放。
         self.graph_error = ConnectionError("database unavailable")
         response = self.post_run(
             '{"action_type":"tool_call","tool_call":{"tool_name":"query_data","arguments":{"query":"查询销售额"}}}',
@@ -563,10 +564,10 @@ class HarnessApiTest(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(self.query.await_count, 3)
+        self.assertEqual(self.query.await_count, 1)
         self.assertEqual([call.action.action_seq for call in self.action_committer.calls], [1, 2])
         final_state = self.run_store.states[response.json()["run_ref"]["run_id"]]
-        self.assertEqual(final_state["harness"]["observations"][0]["status"], "temporary_error")
+        self.assertEqual(final_state["harness"]["observations"][0]["status"], "unrecoverable_error")
 
     def test_query_timeout_is_not_replayed(self) -> None:
         self.graph_error = TimeoutError("query tool timed out")
