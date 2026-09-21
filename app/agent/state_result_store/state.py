@@ -11,10 +11,15 @@ from app.agent.state_result_store.contracts import (
 
 
 class HarnessControlState(TypedDict, total=False):
+    """Harness 现场的 JSON 传输形态；强类型契约与校验见 HarnessStateSnapshot。"""
+
+    # total=False：允许老 checkpoint 缺键进入，缺什么由 decode 的模型默认值补全。
     schema_version: int
     state_version: int
     checkpoint_revision: int
     fencing_token: int
+    # 运行时取值是枚举的 .value 字符串（model_dump(mode="json") 的产物）；
+    # 取值范围不在类型层用 Literal 重复枚举，统一由 decode_harness_state 的 model_validate 把关
     status: str
     phase: str
     action_seq: int
