@@ -14,13 +14,14 @@ from app.agent.state_result_store.contracts import ContractModel, HarnessRunRef
 class EventType(StrEnum):
     """前后端事件协议的全部事件名；一处定义，调用点、前端与测试按值对齐。"""
 
-    # —— run 生命周期 ——
-    RUN_STARTED = "run.started"
-    RUN_RESULT = "run.result"  # API 层在 operation 结束后发布的最终结果
-    RUN_COMPLETED = "run.completed"
-    RUN_FAILED = "run.failed"
-    RUN_TIMEOUT = "run.timeout"
-    RUN_CANCELLED = "run.cancelled"
+    # —— run 生命周期：run.started（入口）→ 循环过程事件 → 终态四选一（controller 收口后发）
+    #    → run.result（API 层把最终结果载荷发给前端）——
+    RUN_STARTED = "run.started"  # start() 创建现场后发：运行开始
+    RUN_RESULT = "run.result"  # API 层在 operation 返回后发：最终结果载荷（前端渲染最终答案用它）
+    RUN_COMPLETED = "run.completed"  # 终态宣告：正常完成
+    RUN_FAILED = "run.failed"  # 终态宣告：不可恢复失败
+    RUN_TIMEOUT = "run.timeout"  # 终态宣告：超出运行级 deadline
+    RUN_CANCELLED = "run.cancelled"  # 终态宣告：用户取消/断连收口
     # —— SSE 流 ——
     STREAM_FAILED = "stream.failed"
     # —— 确认 ——
