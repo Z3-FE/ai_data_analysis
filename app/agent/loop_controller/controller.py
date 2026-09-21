@@ -343,13 +343,18 @@ class LoopController:
             state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.BUILD_CONTEXT
         )
         await self._save_running_state(command, state)
-        # 从现场读 phase 而不是写字面量：迁移目标改了，日志自动跟着变，不会两处漂移
+        # 迁移状态成功
         logger.info(
-            "Harness phase=%s: run_id=%s turn_id=%s",
+            "Harness step=%s phase=%s: run_id=%s turn_id=%s",
+            "入口迁移构建上下文",
             state["harness"]["phase"],
             command.run_ref.run_id,
             command.run_ref.turn_id,
-            extra={"run_id": command.run_ref.run_id, "turn_id": command.run_ref.turn_id},
+            extra={
+                "step": "入口迁移构建上下文",
+                "run_id": command.run_ref.run_id,
+                "turn_id": command.run_ref.turn_id,
+            },
         )
 
         # ② 构建首轮上下文（记忆读取 + 元数据召回），构建期间同样受 deadline 约束
