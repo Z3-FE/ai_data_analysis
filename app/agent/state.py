@@ -80,14 +80,14 @@ class AgentState(TypedDict, total=False):
     output_text: str
     llm_output: str
 
-    # ── Harness 控制字段：HarnessGraphState 运行时写入，普通图运行不涉及 ──
+    # ── Harness 控制字段：HarnessRunState 运行时写入，普通图运行不涉及 ──
     harness: HarnessControlState
 
 
-class HarnessGraphState(AgentState, total=False):
+class HarnessRunState(AgentState, total=False):
     """Harness 循环运行的状态：在 AgentState 之上仅补 project_id；harness 控制字段由父类持有。"""
 
     project_id: str | None  # 仅 Harness 请求（new/restore）携带的项目 ID
 
 
-__all__ = ["AgentState", "HarnessGraphState"]
+__all__ = ["AgentState", "HarnessRunState"]

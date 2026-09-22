@@ -30,7 +30,7 @@ from app.agent.loop_controller.contracts import (
 )
 from app.agent.loop_controller.controller import LoopController
 from app.agent.planning_agent.agent import AutoLLMPlannerClient, PlanningAgent
-from app.agent.state import HarnessGraphState
+from app.agent.state import HarnessRunState
 from app.agent.state_result_store.contracts import (
     ConfirmationReply,
     ErrorCategory,
@@ -687,7 +687,7 @@ async def run_harness_stream(payload: HarnessRunRequest) -> StreamingResponse:
     try:
         runtime, session_factory, llm_client = _require_runtime()  # 预检：记忆运行时/PG 工厂/LLM，缺一直接拒绝
 
-        # Harness 运行状态
+        # Harness run_ref 的初始化参数
         run_ref = HarnessRunRef(
             user_id=payload.user_id,
             conversation_id=conversation_id,
@@ -702,7 +702,7 @@ async def run_harness_stream(payload: HarnessRunRequest) -> StreamingResponse:
         if meta_factory is None or dw_factory is None:
             raise RuntimeError("Meta/DW Session 工厂尚未初始化")
 
-        # 事件通道三件套：本次运行 SSE 的生产者-消费者桥
+        # 事件通道三件套：本次运行 SSE 的生产者-消费者桥 （不重要，了解，就是事件流传给前端看）
 
         #     运行结束后整体落库为执行轨迹（save_execution_trace）
         #     上下文，清洗 payload 后交给 sink；控制器与工具只认它

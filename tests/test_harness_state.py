@@ -29,7 +29,7 @@ from app.agent.state_result_store.state import (
     restore_harness_state,
     transition_harness_state,
 )
-from app.agent.state import AgentState, HarnessGraphState
+from app.agent.state import AgentState, HarnessRunState
 
 
 def run_ref():
@@ -168,7 +168,7 @@ def test_restore_rejects_completed_run():
 
 def test_graph_state_keeps_old_fields_and_messages_reducer():
     old = get_type_hints(AgentState, include_extras=True)
-    combined = get_type_hints(HarnessGraphState, include_extras=True)
+    combined = get_type_hints(HarnessRunState, include_extras=True)
     assert old.keys() <= combined.keys()
     assert "project_id" in combined
     assert combined["messages"].__metadata__ == (add_messages,)

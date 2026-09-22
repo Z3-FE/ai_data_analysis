@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from app.agent.state import HarnessGraphState
+    from app.agent.state import HarnessRunState
 
 from app.agent.context_engine.contracts import CompiledContext, ContextRequest
 from app.agent.context_engine.harness_context_contracts import (
@@ -21,7 +21,7 @@ from app.agent.state_result_store.contracts import HarnessStateSnapshot
 
 
 class RuntimeContextProjector(Protocol):
-    def project(self, state: HarnessGraphState) -> RuntimeContext: ...
+    def project(self, state: HarnessRunState) -> RuntimeContext: ...
 
 
 class ContextBuilder(Protocol):
@@ -31,7 +31,7 @@ class ContextBuilder(Protocol):
 class ContextRequestFactory(Protocol):
     def create(
         self,
-        state: HarnessGraphState,
+        state: HarnessRunState,
         *,
         system_instructions: str,
         agent_type: str = "general",
@@ -117,10 +117,10 @@ def _project_errors(error: Mapping[str, Any] | None) -> tuple[RuntimeErrorSummar
 class HarnessRuntimeContextProjector:
     """从已校验 Harness 状态创建无身份、有限大小的运行态视图。"""
 
-    def project(self, state: HarnessGraphState) -> RuntimeContext:
+    def project(self, state: HarnessRunState) -> RuntimeContext:
         harness = state.get("harness")
         if not isinstance(harness, Mapping):
-            raise ValueError("HarnessGraphState 缺少 harness 状态")
+            raise ValueError("HarnessRunState 缺少 harness 状态")
         snapshot = HarnessStateSnapshot.model_validate(harness)
         progress = snapshot.plan_progress
         return RuntimeContext(
@@ -145,14 +145,14 @@ class HarnessRuntimeContextProjector:
 
 
 class HarnessContextRequestFactory:
-    """只映射 HarnessGraphState，不创建 ContextEngine 或外部依赖。"""
+    """只映射 HarnessRunState，不创建 ContextEngine 或外部依赖。"""
 
     def __init__(self, projector: RuntimeContextProjector | None = None) -> None:
         self.projector = projector or HarnessRuntimeContextProjector()
 
     def create(
         self,
-        state: HarnessGraphState,
+        state: HarnessRunState,
         *,
         system_instructions: str,
         agent_type: str = "general",

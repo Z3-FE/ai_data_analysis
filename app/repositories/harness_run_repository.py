@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.agent.loop_controller.contracts import (
     HarnessRunStore,
 )
-from app.agent.state import HarnessGraphState
+from app.agent.state import HarnessRunState
 from app.agent.state_result_store.contracts import (
     ConfirmationRecord,
     ConfirmationReply,
@@ -45,7 +45,7 @@ def _json_safe(value: Any) -> Any:
     return json.loads(json.dumps(value, ensure_ascii=False, default=str))
 
 
-def _state_payload(state: HarnessGraphState) -> dict[str, Any]:
+def _state_payload(state: HarnessRunState) -> dict[str, Any]:
     """只保存可恢复的 JSON-safe Harness 状态。"""
     payload: dict[str, Any] = {}
     for key, value in state.items():
@@ -56,7 +56,7 @@ def _state_payload(state: HarnessGraphState) -> dict[str, Any]:
     return payload
 
 
-def _state_from_payload(payload: dict[str, Any]) -> HarnessGraphState:
+def _state_from_payload(payload: dict[str, Any]) -> HarnessRunState:
     """读取数据库现场并重新通过 Harness 状态校验。"""
     state = dict(payload)
     state["harness"] = decode_harness_state(state.get("harness", {}))
@@ -101,7 +101,7 @@ class PostgresHarnessRunStore(HarnessRunStore):
                 raise HarnessPersistenceError(f"Harness 运行身份不匹配: {field}")
 
     @staticmethod
-    def _assert_version(model: HarnessRunModel, state: HarnessGraphState) -> None:
+    def _assert_version(model: HarnessRunModel, state: HarnessRunState) -> None:
         """要求状态版本严格递增，拒绝旧 Worker 覆盖新现场。"""
         candidate = int(state["harness"]["state_version"])
         current = int(model.state_version)
@@ -115,7 +115,7 @@ class PostgresHarnessRunStore(HarnessRunStore):
             )
 
     @staticmethod
-    def _apply_state(model: HarnessRunModel, state: HarnessGraphState) -> None:
+    def _apply_state(model: HarnessRunModel, state: HarnessRunState) -> None:
         """把受控状态同步到查询列和完整 JSON 现场。"""
         harness = state["harness"]
         model.status = str(harness["status"])
@@ -130,7 +130,7 @@ class PostgresHarnessRunStore(HarnessRunStore):
         model.state_payload = _state_payload(state)
         model.updated_at = _utcnow()
 
-    async def create(self, run_ref: HarnessRunRef, state: HarnessGraphState) -> None:
+    async def create(self, run_ref: HarnessRunRef, state: HarnessRunState) -> None:
         """创建一条新的 Harness 运行现场。"""
         payload = _state_payload(state)
         harness = state["harness"]
@@ -179,7 +179,7 @@ class PostgresHarnessRunStore(HarnessRunStore):
             raise HarnessPersistenceError("Harness run 不存在")
         return model
 
-    async def load(self, run_ref: HarnessRunRef) -> HarnessGraphState:
+    async def load(self, run_ref: HarnessRunRef) -> HarnessRunState:
         """按完整运行身份读取现场。"""
         async with self.session_factory() as session:
             model = await self._locked_model(
@@ -188,13 +188,13 @@ class PostgresHarnessRunStore(HarnessRunStore):
             self._assert_ref(model, run_ref)
             return _state_from_payload(dict(model.state_payload))
 
-    async def load_by_id(self, *, run_id: str, user_id: str) -> HarnessGraphState:
+    async def load_by_id(self, *, run_id: str, user_id: str) -> HarnessRunState:
         """按用户隔离读取运行现场，供状态查询和恢复入口使用。"""
         async with self.session_factory() as session:
             model = await self._locked_model(session, run_id=run_id, user_id=user_id)
             return _state_from_payload(dict(model.state_payload))
 
-    async def save(self, run_ref: HarnessRunRef, state: HarnessGraphState) -> None:
+    async def save(self, run_ref: HarnessRunRef, state: HarnessRunState) -> None:
         """以连续 state_version 保存普通运行阶段。"""
         async with self.session_factory() as session:
             model = await self._locked_model(
@@ -208,7 +208,7 @@ class PostgresHarnessRunStore(HarnessRunStore):
     async def pause_for_confirmation(
         self,
         run_ref: HarnessRunRef,
-        state: HarnessGraphState,
+        state: HarnessRunState,
         record: ConfirmationRecord,
     ) -> None:
         """在一个 PostgreSQL 事务内发布确认请求并保存等待现场。"""

@@ -62,7 +62,7 @@ class HarnessRunModel(Base):
     pending_confirmation_id: Mapped[str | None] = mapped_column(
         String(128), nullable=True
     )
-    # 完整 JSON-safe HarnessGraphState，用于恢复运行现场。
+    # 完整 JSON-safe HarnessRunState，用于恢复运行现场。
     state_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     # 创建时间。
     created_at: Mapped[datetime] = mapped_column(

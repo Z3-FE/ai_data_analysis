@@ -15,7 +15,7 @@ from app.agent.loop_controller.contracts import (
 )
 from app.agent.memory.contracts import TurnMemoryInput
 from app.agent.memory.formation_service import MemoryFormationService
-from app.agent.state import HarnessGraphState
+from app.agent.state import HarnessRunState
 from app.agent.state_result_store.contracts import (
     HarnessRunRef,
     HarnessStateSnapshot,
@@ -86,7 +86,7 @@ class PostgresFinalizationService(FinalizationPort):
         self,
         model: HarnessFinalizationModel,
         value: FinalizationInput,
-        state: HarnessGraphState,
+        state: HarnessRunState,
     ) -> FinalizationResult:
         """从账本当前阶段推进到 completed；失败时停在已到达的阶段。"""
         try:
@@ -207,7 +207,7 @@ class PostgresFinalizationService(FinalizationPort):
 
     @staticmethod
     def _require_finalizable(
-        state: HarnessGraphState, terminal_status: HarnessStatusType
+        state: HarnessRunState, terminal_status: HarnessStatusType
     ) -> None:
         """收口前校验现场：必须处于 finalization 阶段且终态意图一致。"""
         snapshot = HarnessStateSnapshot.model_validate(state["harness"])

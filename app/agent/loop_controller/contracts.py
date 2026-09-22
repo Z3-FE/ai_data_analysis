@@ -29,7 +29,7 @@ from app.agent.state_result_store.contracts import (
 from app.agent.tool_runtime.contracts import ToolExecutionRequest, ToolRuntime
 
 if TYPE_CHECKING:
-    from app.agent.state import HarnessGraphState
+    from app.agent.state import HarnessRunState
 
 
 class StartRunCommand(ContractModel):
@@ -182,18 +182,18 @@ class FinalizationPort(Protocol):
 class HarnessRunStore(Protocol):
     """Harness 运行现场和确认恢复的持久化边界。"""
 
-    async def create(self, run_ref: HarnessRunRef, state: HarnessGraphState) -> None: ...
+    async def create(self, run_ref: HarnessRunRef, state: HarnessRunState) -> None: ...
 
-    async def save(self, run_ref: HarnessRunRef, state: HarnessGraphState) -> None: ...
+    async def save(self, run_ref: HarnessRunRef, state: HarnessRunState) -> None: ...
 
-    async def load(self, run_ref: HarnessRunRef) -> HarnessGraphState: ...
+    async def load(self, run_ref: HarnessRunRef) -> HarnessRunState: ...
 
-    async def load_by_id(self, *, run_id: str, user_id: str) -> HarnessGraphState: ...
+    async def load_by_id(self, *, run_id: str, user_id: str) -> HarnessRunState: ...
 
     async def pause_for_confirmation(
         self,
         run_ref: HarnessRunRef,
-        state: HarnessGraphState,
+        state: HarnessRunState,
         record: ConfirmationRecord,
     ) -> None: ...
 

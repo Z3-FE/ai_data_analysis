@@ -31,7 +31,7 @@ from app.agent.loop_controller.contracts import (
 )
 from app.agent.planning_agent.contracts import ActionIssuanceContext
 from app.agent.planning_agent.errors import PlannerFailure
-from app.agent.state import HarnessGraphState
+from app.agent.state import HarnessRunState
 from app.agent.state_result_store.contracts import (
     ActionType,
     AskUserRequest,
@@ -121,7 +121,7 @@ class LoopController:
         """创建新运行并执行，直到暂停或进入终态。"""
         # 1.新建状态： state
         # 状态类型：status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.START_RUN
-        state: HarnessGraphState = self._new_state(command)
+        state: HarnessRunState = self._new_state(command)
 
         await self.run_store.create(command.run_ref, state) #把run_store， 写入 PG数据库
         self.event_writer.emit(
@@ -131,12 +131,12 @@ class LoopController:
         )
         logger.info(
             "Harness step=%s event=%s: run_id=%s turn_id=%s",
-            "运行启动",
+            "Harness运行启动",
             EventType.RUN_STARTED,
             command.run_ref.run_id,
             command.run_ref.turn_id,
             extra={
-                "step": "运行启动",
+                "step": "Harness运行启动",
                 "run_id": command.run_ref.run_id,
                 "turn_id": command.run_ref.turn_id,
             },
@@ -190,7 +190,7 @@ class LoopController:
     async def _run_guarded(
         self,
         command: StartRunCommand,
-        state: HarnessGraphState,
+        state: HarnessRunState,
     ) -> LoopResult:
         """把运行级超时和 HTTP 请求取消收口为可查询的 Harness 终态。"""
         try:
@@ -262,7 +262,7 @@ class LoopController:
 
     @staticmethod
     def _set_interruption_error(
-        state: HarnessGraphState,
+        state: HarnessRunState,
         *,
         code: str,
         message: str,
@@ -278,20 +278,20 @@ class LoopController:
         ).model_dump(mode="json")
 
     @staticmethod
-    def _remaining_seconds(state: HarnessGraphState) -> float | None:
+    def _remaining_seconds(state: HarnessRunState) -> float | None:
         """读取持久化 deadline_at，返回当前运行剩余秒数。"""
         snapshot = HarnessStateSnapshot.model_validate(state["harness"])
         if snapshot.deadline_at is None:
             return None
         return (snapshot.deadline_at - datetime.now(UTC)).total_seconds()
 
-    def _check_deadline(self, state: HarnessGraphState) -> None:
+    def _check_deadline(self, state: HarnessRunState) -> None:
         """在每个循环边界阻止已过期运行继续调用 Planner 或工具。"""
         remaining = self._remaining_seconds(state)
         if remaining is not None and remaining <= 0:
             raise HarnessDeadlineExceeded("Harness 运行已超过 deadline_at")
 
-    async def _await_with_deadline(self, awaitable, state: HarnessGraphState):
+    async def _await_with_deadline(self, awaitable, state: HarnessRunState):
         """让单个外部调用服从运行级 deadline，而不是只依赖组件超时。"""
         remaining = self._remaining_seconds(state)
         if remaining is None:
@@ -313,10 +313,10 @@ class LoopController:
         self,
         *,
         command: StartRunCommand,
-        state: HarnessGraphState,
+        state: HarnessRunState,
         code: str,
         message: str,
-    ) -> HarnessGraphState:
+    ) -> HarnessRunState:
         """以最后一个已持久化版本为基础准备 timeout/cancelled 收口。"""
         try:
             persisted_state = await self.run_store.load(command.run_ref)
@@ -336,18 +336,16 @@ class LoopController:
     async def _run(
         self,
         command: StartRunCommand,
-        state: HarnessGraphState,
+        state: HarnessRunState,
     ) -> LoopResult:
         """从 start_run 或 restore_run 进入统一上下文、规划和工具循环。"""
 
-        # ① 入口：deadline 预检 → 迁移 BUILD_CONTEXT → 落库。
-        #    后文固定节奏都是「_transition 推进阶段指针 → _save_running_state 落库」，
-        #    保证现场每一步都可恢复。
+        # ① 入口：deadline 预检 → 迁移 BUILD_CONTEXT → 落库PG。
         self._check_deadline(state) # 检查是否超时
         state = self._transition(
             state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.BUILD_CONTEXT
         )
-        await self._save_running_state(command, state)
+        await self._save_running_state(command, state) # 修改PG数据库
         # 迁移状态成功
         logger.info(
             "Harness step=%s phase=%s: run_id=%s turn_id=%s",
@@ -578,7 +576,7 @@ class LoopController:
         self,
         *,
         command: StartRunCommand,
-        state: HarnessGraphState,
+        state: HarnessRunState,
         request: AskUserRequest,
     ) -> LoopPausedResult:
         """创建确认凭证，并将请求和等待现场写入同一个 PostgreSQL 事务。"""
@@ -644,7 +642,7 @@ class LoopController:
         self,
         *,
         command: StartRunCommand,
-        state: HarnessGraphState,
+        state: HarnessRunState,
         failure: PlannerFailure,
     ) -> bool:
         """记录 Planner 失败；返回 True 表示允许在同一上下文上重试。"""
@@ -672,7 +670,7 @@ class LoopController:
 
     @classmethod
     def _should_stop_for_repeated_confirmation(
-        cls, state: HarnessGraphState, request: AskUserRequest
+        cls, state: HarnessRunState, request: AskUserRequest
     ) -> bool:
         """阻止 Planner 在没有消费用户回复时无限重复相同确认。"""
         harness = state["harness"]
@@ -753,7 +751,7 @@ class LoopController:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _has_failed_tool_request(state: HarnessGraphState, request_hash: str) -> bool:
+    def _has_failed_tool_request(state: HarnessRunState, request_hash: str) -> bool:
         """相同工具请求只要已有失败观察，就不再交给模型重复执行。"""
         return any(
             observation.get("request_hash") == request_hash
@@ -777,7 +775,7 @@ class LoopController:
     async def _plan_action(
         self,
         command: StartRunCommand,
-        state: HarnessGraphState,
+        state: HarnessRunState,
         planner_input: PlannerInput,
     ):
         iteration = int(state["harness"]["iteration"])
@@ -892,7 +890,7 @@ class LoopController:
         )
 
     # 构建上下文
-    async def _build_context(self, state):
+    async def _build_context(self, state: HarnessRunState) -> CompiledContext:
         """构建本轮 LLM 上下文并广播 context.* 事件族；首轮与每轮重建共用。"""
         # ① 从现场取身份与阶段：phase 供本函数所有事件挂靠，这里只读不推进阶段指针。
         run_ref = self._run_ref_from_state(state)
@@ -1076,7 +1074,7 @@ class LoopController:
         self,
         *,
         command: StartRunCommand,
-        state: HarnessGraphState,
+        state: HarnessRunState,
         compiled_context,
         final_answer: str | None,
         terminal_status: HarnessStatusType = HarnessStatusType.COMPLETED,
@@ -1153,7 +1151,7 @@ class LoopController:
         )
 
     async def _save_running_state(
-        self, command: StartRunCommand, state: HarnessGraphState
+        self, command: StartRunCommand, state: HarnessRunState
     ) -> None:
         """保存非终态现场，并让保存操作服从运行级 deadline。"""
         await self._await_with_deadline(
@@ -1161,7 +1159,7 @@ class LoopController:
             state,
         )
 
-    def _final_output(self, state: HarnessGraphState) -> tuple[str, str | None]:
+    def _final_output(self, state: HarnessRunState) -> tuple[str, str | None]:
         """按 ToolSpec.result_kind 回溯本轮结构化输出，不按工具名判断。"""
         report_specs = {
             spec.name: spec
@@ -1180,7 +1178,7 @@ class LoopController:
                 return spec.artifact_kind or spec.name, observation.result_ref
         return "text", None
 
-    def _new_state(self, command: StartRunCommand) -> HarnessGraphState:
+    def _new_state(self, command: StartRunCommand) -> HarnessRunState:
         now = datetime.now(UTC)
         # 初始 status/phase 不在这里写：新运行起点（RUNNING/START_RUN）由 state.py 的
         # _DEFAULTS 统一给出；controller 只补 run 身份和逐次可变的值，避免两处真相
@@ -1204,7 +1202,7 @@ class LoopController:
         }
 
     @staticmethod
-    def _run_ref_from_state(state: HarnessGraphState):
+    def _run_ref_from_state(state: HarnessRunState):
         """从可恢复现场重建完整身份，不接受状态之外的覆盖。"""
         from app.agent.state_result_store.contracts import HarnessRunRef
 
@@ -1218,12 +1216,12 @@ class LoopController:
 
     @staticmethod
     def _transition(
-        state: HarnessGraphState,
+        state: HarnessRunState,
         *,
         status: HarnessStatusType,
         phase: LoopPhaseStatusType,
         terminal_intent: str | None = None,
-    ) -> HarnessGraphState:
+    ) -> HarnessRunState:
         """harness 现场迁移一步并回写整个 state；迁移规则全在 store 层把关。"""
 
         # 这里只做子字典搬运：transition_harness_state 只认识 harness 字典，
