@@ -161,7 +161,7 @@ class FinalizationRecoveryTest(unittest.IsolatedAsyncioTestCase):
     def _controller(self, service: PostgresFinalizationService) -> LoopController:
         context_engine, _, _ = _engine(FakeMemoryReader())
         return LoopController(
-            context_builder=context_engine,
+            context_engine=context_engine,
             planning_agent=FakePlanningAgent(final_answer=FINAL_ANSWER),
             finalization_service=service,
             run_store=self.run_store,

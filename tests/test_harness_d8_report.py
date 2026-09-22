@@ -215,7 +215,7 @@ class HarnessD8ReportTest(unittest.IsolatedAsyncioTestCase):
         store = FakeRunStore()
         finalization = FakeFinalizationService(store)
         controller = LoopController(
-            context_builder=context_engine,
+            context_engine=context_engine,
             planning_agent=planner,
             finalization_service=finalization,
             run_store=store,

@@ -85,7 +85,7 @@ class SliceCVerticalTest(unittest.IsolatedAsyncioTestCase):
         finalization = FakeFinalizationService(store)
         committer = FakeActionCommitter()
         controller = LoopController(
-            context_builder=context_engine,
+            context_engine=context_engine,
             planning_agent=planner,
             finalization_service=finalization,
             run_store=store,

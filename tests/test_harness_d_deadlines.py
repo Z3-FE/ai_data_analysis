@@ -160,10 +160,10 @@ def _ask_user(issuance: ActionIssuanceContext) -> NextAction:
 
 
 class HarnessDeadlineTest(unittest.IsolatedAsyncioTestCase):
-    def _controller(self, *, planner, store, context_builder=None, **kwargs):
-        context_engine, _, _ = _engine(FakeMemoryReader())
+    def _controller(self, *, planner, store, context_engine=None, **kwargs):
+        default_engine, _, _ = _engine(FakeMemoryReader())
         return LoopController(
-            context_builder=context_builder or context_engine,
+            context_engine=context_engine or default_engine,
             planning_agent=planner,
             finalization_service=FakeFinalizationService(run_store=store),
             run_store=store,
@@ -179,7 +179,7 @@ class HarnessDeadlineTest(unittest.IsolatedAsyncioTestCase):
         controller = self._controller(
             planner=ScriptedPlanner(_final_answer),
             store=store,
-            context_builder=SlowContextBuilder(context_engine, 0.2),
+            context_engine=SlowContextBuilder(context_engine, 0.2),
         )
 
         result = await controller.start(

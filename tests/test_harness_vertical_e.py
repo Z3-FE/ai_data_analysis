@@ -56,7 +56,7 @@ class SliceEVerticalTest(unittest.IsolatedAsyncioTestCase):
         )
         context_engine, _, _ = _engine(FakeMemoryReader())
         return LoopController(
-            context_builder=context_engine,
+            context_engine=context_engine,
             planning_agent=FakePlanningAgent(final_answer=FINAL_ANSWER),
             finalization_service=finalization,
             run_store=run_store,

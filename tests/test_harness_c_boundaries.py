@@ -71,7 +71,7 @@ class PlannerRetryTest(unittest.IsolatedAsyncioTestCase):
         store = FakeRunStore()
         run_ref = _run_ref()
         controller = LoopController(
-            context_builder=context_engine,
+            context_engine=context_engine,
             planning_agent=planner,
             finalization_service=FakeFinalizationService(store),
             run_store=store,

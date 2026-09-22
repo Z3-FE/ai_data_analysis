@@ -9,13 +9,13 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from app.agent.context_engine.engine import ContextEngine
 from app.agent.context_engine.harness_context import HarnessContextRequestFactory
 from app.agent.context_engine.contracts import CompiledContext, ContextSourceKind
 from app.agent.finalization.errors import FinalizationFailure
 from app.agent.loop_controller.action_commit import ActionCommitRequest, ActionCommitter
 from app.agent.loop_controller.contracts import (
     ConfirmationDispatcher,
-    ContextBuilder,
     FinalizationInput,
     FinalizationPort,
     FinalizationResult,
@@ -75,7 +75,7 @@ class LoopController:
     def __init__(
         self,
         *,
-        context_builder: ContextBuilder,
+        context_engine: ContextEngine,
         planning_agent: PlanningPort,
         finalization_service: FinalizationPort,
         run_store: HarnessRunStore, # HarnessRunStore的操作
@@ -99,7 +99,7 @@ class LoopController:
             raise ValueError("max_iterations 必须大于 0")
         if run_timeout_seconds <= 0:
             raise ValueError("run_timeout_seconds 必须大于 0")
-        self.context_builder = context_builder
+        self.context_engine = context_engine
         self.planning_agent = planning_agent
         self.finalization_service = finalization_service
         self.run_store = run_store
@@ -892,9 +892,11 @@ class LoopController:
     # 构建上下文
     async def _build_context(self, state: HarnessRunState) -> CompiledContext:
         """构建本轮 LLM 上下文并广播 context.* 事件族；首轮与每轮重建共用。"""
+
         # ① 从现场取身份与阶段：phase 供本函数所有事件挂靠，这里只读不推进阶段指针。
         run_ref = self._run_ref_from_state(state)
         phase = LoopPhaseStatusType(state["harness"]["phase"])
+
         # ② 开闸事件 context.started，阶段生命周期从此开始配对。
         self.event_writer.emit(
             EventType.CONTEXT_STARTED,
@@ -914,6 +916,7 @@ class LoopController:
                 "turn_id": run_ref.turn_id,
             },
         )
+
         # ③ 组装请求（系统指令 + agent_type）并异步编译；编译期间受调用点的 _await_with_deadline 约束。
         try:
             request = self.context_request_factory.create(
@@ -921,7 +924,7 @@ class LoopController:
                 system_instructions=self.system_instructions,
                 agent_type="data_agent",
             )
-            compiled_context = await self.context_builder.build(request)
+            compiled_context = await self.context_engine.build(request)
         except Exception:
             # context 是唯一可能 started 后没有终态的阶段；补发失败事件保证生命周期配对。
             self.event_writer.emit(
@@ -931,6 +934,7 @@ class LoopController:
                 payload={"error_code": "context_build_failed"},
             )
             raise
+
         # ④ 编译产物回写现场：build_id 与 token 数挂在 harness 字典上，供后续步骤与恢复路径读取。
         state["harness"]["last_context_build_id"] = compiled_context.build_id
         state["harness"]["last_context_token_count"] = compiled_context.token_count

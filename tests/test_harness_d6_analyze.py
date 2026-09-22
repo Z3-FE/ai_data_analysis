@@ -173,7 +173,7 @@ class HarnessD6AnalyzeTest(unittest.IsolatedAsyncioTestCase):
         )
         store = FakeRunStore()
         controller = LoopController(
-            context_builder=context_engine,
+            context_engine=context_engine,
             planning_agent=planner,
             finalization_service=FakeFinalizationService(store),
             run_store=store,

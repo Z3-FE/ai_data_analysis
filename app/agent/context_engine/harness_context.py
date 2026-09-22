@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 if TYPE_CHECKING:
     from app.agent.state import HarnessRunState
 
-from app.agent.context_engine.contracts import CompiledContext, ContextRequest
+from app.agent.context_engine.contracts import ContextRequest
 from app.agent.context_engine.harness_context_contracts import (
     RuntimeCondition,
     RuntimeContext,
@@ -22,10 +22,6 @@ from app.agent.state_result_store.contracts import HarnessStateSnapshot
 
 class RuntimeContextProjector(Protocol):
     def project(self, state: HarnessRunState) -> RuntimeContext: ...
-
-
-class ContextBuilder(Protocol):
-    async def build(self, request: ContextRequest) -> CompiledContext: ...
 
 
 class ContextRequestFactory(Protocol):
@@ -176,7 +172,6 @@ class HarnessContextRequestFactory:
 
 
 __all__ = [
-    "ContextBuilder",
     "ContextRequestFactory",
     "HarnessContextRequestFactory",
     "HarnessRuntimeContextProjector",

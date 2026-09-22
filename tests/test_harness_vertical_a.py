@@ -26,7 +26,7 @@ class SliceAVerticalTest(unittest.IsolatedAsyncioTestCase):
             run_id="run-1",
         )
         controller = LoopController(
-            context_builder=context_engine,
+            context_engine=context_engine,
             planning_agent=planning_agent,
             finalization_service=finalization_service,
             run_store=run_store,
