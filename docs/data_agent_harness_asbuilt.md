@@ -170,19 +170,35 @@ stateDiagram-v2
 
 #### 模块一：API 入口与装配（`app/api/routers/harness.py`）
 
+主要功能：构建loop_controller、进行聊天会话管理
+
+入口函数：run_harness_stream()
+
+
+
+
 - 1.1 **预检 `_require_runtime`**：记忆运行时 / PG 会话工厂 / LLM 客户端，缺一直接拒绝。
 - 1.2 **构造 `HarnessRunRef`**：run_id / turn_id 是本次运行的身份标识，后续事件与落库都挂在这上面。
-- 1.3 **流式三件套（仅流式入口）**：队列 + `QueueEventSink`（入队适配器，put_nowait 非阻塞）+ SSE 响应。
+- 1.3 **流式三件套**：内存队列 queue + `QueueEventSink`（入队适配器，put_nowait 非阻塞）+ `HarnessEventWriter`（盖章 run_ref / event_id / 时间戳）；SSE 生成器从队列消费。
 - 1.4 **`_build_controller`**：装配 loop_controller、context_engine、tool_runtime 等组件；非流式入口在此兜底 `NullHarnessEventWriter`。
-- 1.5 **`controller.start`**：把 `StartRunCommand`（run_ref + 输入）交给 controller，进入模块二。
+- 1.5 **聊天会话管理（`ConversationRepository.start_turn`）**：本轮用户输入落会话，turn 从此可查。
+- 1.6 **`controller.start`**：把 `StartRunCommand`（run_ref + 输入）交给 controller，进入模块二。
 
-#### 模块二：初始状态与运行登记（`app/agent/loop_controller/controller.py` → `app/agent/state_result_store/state.py`）
+#### 模块二：初始状态与运行登记（`app/agent/loop_controller/controller.py` → ``）
+
+主要功能：新建运行状态、落库登记、发出启动事件
+
+入口函数：LoopController.start()
 
 - 2.1 **`_new_state` 创建初始状态**：初始值唯一定义在 state.py 的 `_DEFAULTS`——status=RUNNING、phase=START_RUN；controller 不重复写第二份真相。deadline_at 在此落定：`now + run_timeout_seconds`（config.yaml `run_timeout_seconds: 1800`）的**绝对时刻**，之后恢复/重入都不重置。
 - 2.2 **`run_store.create` 落库**：新状态写入 PG，运行从此有据可查。
 - 2.3 **发出 `run.started` 事件**：emit → 盖章/清洗 → sink.publish；日志 `step="Harness运行启动" event=RUN_STARTED`（message 与 extra 双份，extra 不进控制台）。
 
 #### 模块三：主循环入口（`app/agent/loop_controller/controller.py` `_run`）
+
+主要功能：主循环统一入口——deadline 预检、阶段迁移推进并落库
+
+入口函数：LoopController._run()（由 start() 经 _run_guarded 进入，_run_guarded 把运行级超时/请求取消收口为可查询终态）
 
 - 3.1 **`_check_deadline`**：读持久化 deadline_at 算剩余时间，超了抛 `HarnessDeadlineExceeded`；只检查不处理，处理交给异常路径（§4.2）。
 - 3.2 **迁移 BUILD_CONTEXT + 落库**：`_transition` 推进 harness 现场（查 `_PHASE_TRANSITIONS` 合法性）→ `_save_running_state` 写 PG → 日志 `step="入口迁移构建上下文"`，phase 从现场动态读取不写死。
