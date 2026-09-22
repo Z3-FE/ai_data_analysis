@@ -85,18 +85,22 @@ class ContextEngine:
         """执行 resolve、plan、gather、select、compile 和 trace 全流程。"""
         # ① 入参校验：身份与问题非空、预算为正、附件数量与长度上限，不合规直接 ValueError。
         self._validate_request(request)
+
         # ② 生成构建身份：build_id 随机；query_hash 是问题正文的 SHA256，审计可比对但不落正文。
         build_id = str(uuid4())
         query_hash = hashlib.sha256(request.query.encode("utf-8")).hexdigest()
-        # ③ 预算兜底：请求未显式携带时用策略默认上限。
+
+        # ③ 预算兜底: token上限12000。
         token_budget = request.token_budget or self.policy.max_context_tokens
-        # ④ 落"构建开始"审计：从此刻起 build_id 在库里可查；与上层 context.started 事件平行，这是落库侧。
+
+        # ④ 落"构建开始"审计：从此刻起 build_id 在库里可查；与上层 context.started 事件平行，这是落库 PG ：ContextBuildRunModel。
         await self.context_repository.start_build(
             build_id=build_id,
             request=request,
             token_budget=token_budget,
             query_hash=query_hash,
         )
+
         try:
             # ⑤ 委托 _build 全流程编排：resolve → plan → gather → select → compile。
             compiled = await self._build(
@@ -137,19 +141,23 @@ class ContextEngine:
         token_budget: int,
         request: ContextRequest,
     ) -> CompiledContext:
+        # ① 基线复核：system_instructions 等固定开销先占预算，超了直接失败——召回只能花剩余空间。
         base_tokens = self.compiler.base_token_count(request)
         if base_tokens > token_budget:
             raise ValueError(
                 "system_instructions 与当前问题已经超过本轮上下文 token 预算"
             )
+        # ② 载入工作记忆：本会话近期消息，供引用解析与规划判断。
         working = await self.memory_reader.load_working(
             user_id=request.user_id,
             conversation_id=request.conversation_id,
             limit=None,
         )
+        # ③ 解析引用并规划检索：resolver 把附件等指代落成 asset_ids；planner 决定本轮召回来什么——context.plan 事件与 trace.retrieval_plan 的源头。
         resolution = await self.resolver.resolve(request, working)
         plan = await self.planner.plan(request, working, resolution)
 
+        # ④ 候选预算：总预算扣掉固定开销与格式保留；计划包含 working 且有空间时，压缩旧会话进候选（可能顺带滚动更新摘要）。
         candidate_budget = max(
             0,
             token_budget - base_tokens - self.policy.format_reserve_tokens,
@@ -163,19 +171,23 @@ class ContextEngine:
                 working=working,
                 token_budget=int(candidate_budget * self.policy.working_history_ratio),
             )
+        # ⑤ 并行召回其余来源：长期记忆（三类）、附件正文、可选 RAG。
         other_items = await self._gather_other_sources(
             request=request,
             plan=plan,
             resolution=resolution,
         )
+        # ⑥ 合并候选并去重：历史条目与召回结果进同一池子，重复内容只留一份。
         candidates = [
             *(history_result.items if history_result is not None else ()),
             *other_items,
         ]
         deduplicated = self.deduplicator.deduplicate(candidates)
+        # ⑦ 预算内打分选择：按相关性/重要性/新近度/优先级，花 candidate_budget 挑出入选项。
         selection = await self.selector.select(
             list(deduplicated.items), token_budget=candidate_budget
         )
+        # ⑧ 只为入选项补真实记忆来源，落选项不白白查库。
         selected, source_decisions = await self._enrich_selected_sources(
             selection, request.user_id
         )
@@ -184,12 +196,14 @@ class ContextEngine:
             items=selected,
             decisions=source_decisions,
         )
+        # ⑨ 真实 token 复核：编译后仍超预算就从最低分可选候选开始移除，循环到 fit——产出最终 messages/sections。
         selection, messages, sections, final_tokens = await self._fit_compiled_budget(
             request=request,
             resolution=resolution,
             selection=selection,
             token_budget=token_budget,
         )
+        # ⑩ 汇总审计轨迹：去重决策 + 选择决策拼成完整 decisions，与 build() 的 build_id/query_hash 对齐审计开闸。
         decisions = (*deduplicated.decisions, *selection.decisions)
         trace = ContextBuildTrace(
             build_id=build_id,
@@ -210,6 +224,7 @@ class ContextEngine:
                 history_result is not None and history_result.summary_updated
             ),
         )
+        # ⑪ 返回编译产物：messages 给 LLM、sections 给事件快照、trace 给审计与前端。
         return CompiledContext(
             build_id=build_id,
             messages=messages,
