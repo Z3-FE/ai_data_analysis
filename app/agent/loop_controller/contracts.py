@@ -149,6 +149,10 @@ LoopResult = LoopRunResult | LoopPausedResult | LoopResumeAcceptedResult
 class ContextBuilder(Protocol):
     """ContextEngine 的最小异步调用边界。"""
 
+    # 不继承 ContextEngine：controller 只认 build() 这一个动作，端口不背具象实现
+    # （引擎构造要 11 个协作者，内部还有十余个私有方法）。Protocol 靠结构化类型
+    # 匹配——ContextEngine 的 build 同名同签名，传参处自动满足；测试里不继承任何
+    # 东西的最小 fake（如 SlowContextBuilder）同样成立。本文件其余 Port 同此模式。
     async def build(self, request: ContextRequest) -> CompiledContext: ...
 
 
