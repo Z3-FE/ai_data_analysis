@@ -85,10 +85,9 @@ class AgentState(TypedDict, total=False):
 
 
 class HarnessGraphState(AgentState, total=False):
-    """现有 AgentState 加 Harness 控制字段的组合状态。"""
+    """Harness 循环运行的状态：在 AgentState 之上仅补 project_id；harness 控制字段由父类持有。"""
 
     project_id: str | None  # 仅 Harness 请求（new/restore）携带的项目 ID
-    harness: HarnessControlState
 
 
 __all__ = ["AgentState", "HarnessGraphState"]
