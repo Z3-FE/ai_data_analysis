@@ -893,13 +893,17 @@ class LoopController:
 
     # 构建上下文
     async def _build_context(self, state):
+        """构建本轮 LLM 上下文并广播 context.* 事件族；首轮与每轮重建共用。"""
+        # ① 从现场取身份与阶段：phase 供本函数所有事件挂靠，这里只读不推进阶段指针。
         run_ref = self._run_ref_from_state(state)
         phase = LoopPhaseStatusType(state["harness"]["phase"])
+        # ② 开闸事件 context.started，阶段生命周期从此开始配对。
         self.event_writer.emit(
             EventType.CONTEXT_STARTED,
             phase=phase,
             iteration=int(state["harness"]["iteration"]),
         )
+        # ③ 组装请求（系统指令 + agent_type）并异步编译；编译期间受调用点的 _await_with_deadline 约束。
         try:
             request = self.context_request_factory.create(
                 state,
@@ -916,8 +920,10 @@ class LoopController:
                 payload={"error_code": "context_build_failed"},
             )
             raise
+        # ④ 编译产物回写现场：build_id 与 token 数挂在 harness 字典上，供后续步骤与恢复路径读取。
         state["harness"]["last_context_build_id"] = compiled_context.build_id
         state["harness"]["last_context_token_count"] = compiled_context.token_count
+        # ⑤ 从编译轨迹统计命中：按来源类型计数，再归并出"记忆三类之和"与"知识(RAG)数"两组指标。
         selected_by_kind: dict[str, int] = {}
         for decision in compiled_context.trace.decisions:
             if decision.selected:
@@ -932,6 +938,7 @@ class LoopController:
             )
         )
         knowledge_count = selected_by_kind.get(ContextSourceKind.RAG.value, 0)
+        # ⑥ 检索结果事件×2：记忆三类分布（memory_retrieved）、知识命中与外部证据条数（knowledge_retrieved）。
         self.event_writer.emit(
             EventType.CONTEXT_MEMORY_RETRIEVED,
             phase=phase,
@@ -957,6 +964,7 @@ class LoopController:
                 "evidence_count": len(compiled_context.sections.external_evidence),
             },
         )
+        # ⑦ 快照与检索计划：_context_snapshot 转成可展示摘要，随 context.plan 事件给前端（A 档展示检索决策）。
         snapshot = self._context_snapshot(compiled_context)
         plan = compiled_context.trace.retrieval_plan
         self.event_writer.emit(
@@ -973,6 +981,7 @@ class LoopController:
                 "token_count": compiled_context.token_count,
             },
         )
+        # ⑧ 收尾：context.compiled 带快照 → context.completed，与 ② 的 started 配对闭合；最后日志汇总本轮编译指标。
         self.event_writer.emit(
             EventType.CONTEXT_COMPILED,
             phase=phase,
