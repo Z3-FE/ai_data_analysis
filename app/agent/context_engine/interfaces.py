@@ -69,7 +69,7 @@ class ContextKnowledgeRetriever(Protocol):
     ) -> list[ContextKnowledgeItem]: ...
 
 
-class ContextStore(Protocol):
+class ContextRepository(Protocol):
     """增量会话摘要和构建 trace 的持久化端口。"""
 
     async def get_summary(
@@ -98,7 +98,7 @@ __all__ = [
     "ContextKnowledgeRetriever",
     "ContextCompressor",
     "ContextPlanner",
-    "ContextStore",
+    "ContextRepository",
     "ConversationSummarizer",
     "MemoryContextReader",
     "TokenCounter",

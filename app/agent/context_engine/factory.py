@@ -27,7 +27,7 @@ from app.agent.context_engine.summarizer import (
     LlmConversationSummarizer,
 )
 from app.agent.context_engine.token_counter import TiktokenCounter
-from app.repositories.context_repository import PostgresContextStore
+from app.repositories.context_repository import PostgresContextRepository
 
 
 def build_context_engine(
@@ -44,7 +44,7 @@ def build_context_engine(
     """组装独立 ContextEngine；当前函数不会修改或接入 Agent 图。"""
     resolved_policy = policy or ContextPolicy()
     token_counter = TiktokenCounter(model_name=model_name)
-    store = PostgresContextStore(session_factory)
+    context_repository = PostgresContextRepository(session_factory)
     fallback_summarizer = DeterministicConversationSummarizer(token_counter)
     resolved_summarizer = summarizer or (
         LlmConversationSummarizer(
@@ -63,7 +63,7 @@ def build_context_engine(
     )
     resolver = ContextReferenceResolver(memory_reader)
     history = ConversationHistoryManager(
-        store=store,
+        context_repository=context_repository,
         summarizer=resolved_summarizer,
         token_counter=token_counter,
         policy=resolved_policy,
@@ -76,7 +76,7 @@ def build_context_engine(
     )
     return ContextEngine(
         memory_reader=memory_reader,
-        store=store,
+        context_repository=context_repository,
         planner=resolved_planner,
         resolver=resolver,
         history=history,

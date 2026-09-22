@@ -55,7 +55,7 @@ def _summary(model: ContextConversationSummaryModel) -> ContextConversationSumma
     )
 
 
-class PostgresContextStore:
+class PostgresContextRepository:
     """持久化增量摘要和不含正文的上下文构建 trace。"""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -201,4 +201,4 @@ class PostgresContextStore:
             await session.commit()
 
 
-__all__ = ["PostgresContextStore"]
+__all__ = ["PostgresContextRepository"]

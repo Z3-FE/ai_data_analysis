@@ -156,7 +156,7 @@ class FakeMemoryReader:
         return [MemorySource("turn", f"source-{memory_id}")]
 
 
-class InMemoryContextStore:
+class InMemoryContextRepository:
     """测试用摘要和 trace 仓储。"""
 
     def __init__(self) -> None:
@@ -193,10 +193,10 @@ class InMemoryContextStore:
 def _engine(
     reader: FakeMemoryReader,
     *,
-    store: InMemoryContextStore | None = None,
+    context_repository: InMemoryContextRepository | None = None,
     policy: ContextPolicy | None = None,
-) -> tuple[ContextEngine, InMemoryContextStore, SimpleTokenCounter]:
-    resolved_store = store or InMemoryContextStore()
+) -> tuple[ContextEngine, InMemoryContextRepository, SimpleTokenCounter]:
+    resolved_repository = context_repository or InMemoryContextRepository()
     resolved_policy = policy or ContextPolicy(
         max_context_tokens=800,
         format_reserve_tokens=80,
@@ -210,11 +210,11 @@ def _engine(
     return (
         ContextEngine(
             memory_reader=reader,
-            store=resolved_store,
+            context_repository=resolved_repository,
             planner=DeterministicContextPlanner(),
             resolver=resolver,
             history=ConversationHistoryManager(
-                store=resolved_store,
+                context_repository=resolved_repository,
                 summarizer=summarizer,
                 token_counter=counter,
                 policy=resolved_policy,
@@ -229,7 +229,7 @@ def _engine(
             token_counter=counter,
             policy=resolved_policy,
         ),
-        resolved_store,
+        resolved_repository,
         counter,
     )
 
@@ -364,7 +364,7 @@ class ContextPlannerAndResolverTest(unittest.IsolatedAsyncioTestCase):
 class ContextHistoryAndSelectionTest(unittest.IsolatedAsyncioTestCase):
     async def test_summary_only_processes_newly_evicted_messages(self) -> None:
         counter = SimpleTokenCounter()
-        store = InMemoryContextStore()
+        context_repository = InMemoryContextRepository()
         policy = ContextPolicy(
             max_context_tokens=300,
             format_reserve_tokens=20,
@@ -374,7 +374,7 @@ class ContextHistoryAndSelectionTest(unittest.IsolatedAsyncioTestCase):
             min_compression_tokens=8,
         )
         manager = ConversationHistoryManager(
-            store=store,
+            context_repository=context_repository,
             summarizer=DeterministicConversationSummarizer(counter),
             token_counter=counter,
             policy=policy,
@@ -563,7 +563,7 @@ class ContextEngineBuildTest(unittest.IsolatedAsyncioTestCase):
                 MemoryType.SEMANTIC: [MemorySearchResult(semantic, 0.9, 0.95, "vector")]
             },
         )
-        engine, store, _ = _engine(reader)
+        engine, context_repository, _ = _engine(reader)
 
         result = await engine.build(
             ContextRequest(
@@ -583,7 +583,7 @@ class ContextEngineBuildTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(secret_query, trace_json)
         self.assertNotIn(semantic.content, trace_json)
         self.assertIn("source-semantic-1", trace_json)
-        self.assertEqual(store.finished, [result.trace])
+        self.assertEqual(context_repository.finished, [result.trace])
 
     async def test_final_compiled_messages_never_exceed_token_budget(self) -> None:
         working = [

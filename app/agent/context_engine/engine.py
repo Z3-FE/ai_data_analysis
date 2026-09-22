@@ -27,7 +27,7 @@ from app.agent.context_engine.history import ConversationHistoryManager
 from app.agent.context_engine.interfaces import (
     ContextKnowledgeRetriever,
     ContextPlanner,
-    ContextStore,
+    ContextRepository,
     MemoryContextReader,
     TokenCounter,
 )
@@ -58,7 +58,7 @@ class ContextEngine:
         self,
         *,
         memory_reader: MemoryContextReader,
-        store: ContextStore,
+        context_repository: ContextRepository, # PostgresContextRepository
         planner: ContextPlanner,
         resolver: ContextReferenceResolver,
         history: ConversationHistoryManager,
@@ -70,7 +70,7 @@ class ContextEngine:
         knowledge_retriever: ContextKnowledgeRetriever | None = None,
     ) -> None:
         self.memory_reader = memory_reader
-        self.store = store
+        self.context_repository = context_repository
         self.planner = planner
         self.resolver = resolver
         self.history = history
@@ -87,7 +87,7 @@ class ContextEngine:
         build_id = str(uuid4())
         query_hash = hashlib.sha256(request.query.encode("utf-8")).hexdigest()
         token_budget = request.token_budget or self.policy.max_context_tokens
-        await self.store.start_build(
+        await self.context_repository.start_build(
             build_id=build_id,
             request=request,
             token_budget=token_budget,
@@ -100,7 +100,7 @@ class ContextEngine:
                 token_budget=token_budget,
                 request=request,
             )
-            await self.store.finish_build(compiled.trace)
+            await self.context_repository.finish_build(compiled.trace)
             return compiled
         except Exception as exc:
             logger.exception(
@@ -109,7 +109,7 @@ class ContextEngine:
                 request.conversation_id,
             )
             try:
-                await self.store.fail_build(
+                await self.context_repository.fail_build(
                     build_id,
                     error_message=(
                         f"{type(exc).__name__}: 上下文构建失败，"

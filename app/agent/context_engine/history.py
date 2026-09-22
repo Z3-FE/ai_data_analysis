@@ -12,7 +12,7 @@ from app.agent.context_engine.contracts import (
     ContextSourceRef,
 )
 from app.agent.context_engine.interfaces import (
-    ContextStore,
+    ContextRepository,
     ConversationSummarizer,
     TokenCounter,
 )
@@ -35,12 +35,12 @@ class ConversationHistoryManager:
     def __init__(
         self,
         *,
-        store: ContextStore,
+        context_repository: ContextRepository,
         summarizer: ConversationSummarizer,
         token_counter: TokenCounter,
         policy: ContextPolicy,
     ) -> None:
-        self.store = store
+        self.context_repository = context_repository
         self.summarizer = summarizer
         self.token_counter = token_counter
         self.policy = policy
@@ -56,7 +56,7 @@ class ConversationHistoryManager:
     ) -> PreparedHistory:
         """按消息索引更新摘要，再返回摘要和未覆盖的近期消息。"""
         ordered = sorted(working, key=self._message_index)
-        existing = await self.store.get_summary(user_id, conversation_id)
+        existing = await self.context_repository.get_summary(user_id, conversation_id)
         covered_through = existing.covered_through_index if existing is not None else -1
         uncovered = [
             record
@@ -162,7 +162,7 @@ class ConversationHistoryManager:
             created_at=existing.created_at if existing else now,
             updated_at=now,
         )
-        return await self.store.save_summary(summary)
+        return await self.context_repository.save_summary(summary)
 
     def _summary_batches(self, records: list[MemoryRecord]) -> list[list[MemoryRecord]]:
         """按 token 预算切分新增历史；单条超长消息由摘要器输出预算处理。"""
