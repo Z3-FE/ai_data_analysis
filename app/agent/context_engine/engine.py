@@ -83,10 +83,14 @@ class ContextEngine:
 
     async def build(self, request: ContextRequest) -> CompiledContext:
         """执行 resolve、plan、gather、select、compile 和 trace 全流程。"""
+        # ① 入参校验：身份与问题非空、预算为正、附件数量与长度上限，不合规直接 ValueError。
         self._validate_request(request)
+        # ② 生成构建身份：build_id 随机；query_hash 是问题正文的 SHA256，审计可比对但不落正文。
         build_id = str(uuid4())
         query_hash = hashlib.sha256(request.query.encode("utf-8")).hexdigest()
+        # ③ 预算兜底：请求未显式携带时用策略默认上限。
         token_budget = request.token_budget or self.policy.max_context_tokens
+        # ④ 落"构建开始"审计：从此刻起 build_id 在库里可查；与上层 context.started 事件平行，这是落库侧。
         await self.context_repository.start_build(
             build_id=build_id,
             request=request,
@@ -94,15 +98,19 @@ class ContextEngine:
             query_hash=query_hash,
         )
         try:
+            # ⑤ 委托 _build 全流程编排：resolve → plan → gather → select → compile。
             compiled = await self._build(
                 build_id=build_id,
                 query_hash=query_hash,
                 token_budget=token_budget,
                 request=request,
             )
+            # ⑥ 成功终态：完整 trace 落库后返回编译结果。
             await self.context_repository.finish_build(compiled.trace)
             return compiled
         except Exception as exc:
+            # ⑦ 失败也必须有终态：完整异常栈只进应用日志，审计只留类型摘要；
+            #    fail_build 自身失败不能吞掉原始异常（见下方注释），最后原样上抛交上层补发 context.failed。
             logger.exception(
                 "上下文构建失败：build_id=%s conversation_id=%s",
                 build_id,
