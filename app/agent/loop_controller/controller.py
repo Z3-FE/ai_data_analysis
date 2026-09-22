@@ -901,6 +901,19 @@ class LoopController:
             phase=phase,
             iteration=int(state["harness"]["iteration"]),
         )
+        logger.info(
+            "=====================第iteration=%s轮：Harness step=%s event=%s: run_id=%s turn_id=%s====================",
+            "构建上下文开始",
+            int(state["harness"]["iteration"]),
+            EventType.CONTEXT_STARTED,
+            run_ref.run_id,
+            run_ref.turn_id,
+            extra={
+                "step": "构建上下文开始",
+                "run_id": run_ref.run_id,
+                "turn_id": run_ref.turn_id,
+            },
+        )
         # ③ 组装请求（系统指令 + agent_type）并异步编译；编译期间受调用点的 _await_with_deadline 约束。
         try:
             request = self.context_request_factory.create(
