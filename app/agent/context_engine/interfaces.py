@@ -4,8 +4,6 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from app.agent.context_engine.contracts import (
-    ContextBuildTrace,
-    ContextConversationSummary,
     ContextItem,
     ContextKnowledgeItem,
     ContextRequest,
@@ -69,36 +67,10 @@ class ContextKnowledgeRetriever(Protocol):
     ) -> list[ContextKnowledgeItem]: ...
 
 
-class ContextRepository(Protocol):
-    """增量会话摘要和构建 trace 的持久化端口。"""
-
-    async def get_summary(
-        self, user_id: str, conversation_id: str
-    ) -> ContextConversationSummary | None: ...
-
-    async def save_summary(
-        self, summary: ContextConversationSummary
-    ) -> ContextConversationSummary: ...
-
-    async def start_build(
-        self,
-        *,
-        build_id: str,
-        request: ContextRequest,
-        token_budget: int,
-        query_hash: str,
-    ) -> None: ...
-
-    async def finish_build(self, trace: ContextBuildTrace) -> None: ...
-
-    async def fail_build(self, build_id: str, *, error_message: str) -> None: ...
-
-
 __all__ = [
     "ContextKnowledgeRetriever",
     "ContextCompressor",
     "ContextPlanner",
-    "ContextRepository",
     "ConversationSummarizer",
     "MemoryContextReader",
     "TokenCounter",

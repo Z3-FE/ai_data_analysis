@@ -24,10 +24,10 @@ from app.agent.context_engine.contracts import (
 )
 from app.agent.context_engine.deduplicator import ContextDeduplicator
 from app.agent.context_engine.history import ConversationHistoryManager
+from app.repositories.context_repository import PostgresContextRepository
 from app.agent.context_engine.interfaces import (
     ContextKnowledgeRetriever,
     ContextPlanner,
-    ContextRepository,
     MemoryContextReader,
     TokenCounter,
 )
@@ -58,7 +58,7 @@ class ContextEngine:
         self,
         *,
         memory_reader: MemoryContextReader,
-        context_repository: ContextRepository, # PostgresContextRepository
+        context_repository: PostgresContextRepository,
         planner: ContextPlanner,
         resolver: ContextReferenceResolver,
         history: ConversationHistoryManager,
