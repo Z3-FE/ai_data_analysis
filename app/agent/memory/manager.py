@@ -3,7 +3,6 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any
 
 from app.agent.memory.contracts import GovernedCandidate
 from app.agent.memory.enums import MemoryDecisionAction, MemoryType
@@ -16,6 +15,7 @@ from app.agent.memory.interfaces import (
     MemorySource,
     MemoryWriteResult,
 )
+from app.agent.memory.types.base import PersistentMemory
 from app.agent.memory.types.episodic import EpisodicMemory
 from app.agent.memory.types.perceptual import PerceptualMemory
 from app.agent.memory.types.semantic import SemanticMemory
@@ -41,22 +41,20 @@ class MemoryManager(MemoryContextReader):
         working: WorkingMemory | None = None,
         repository: MemoryRepository | None = None,
     ) -> None:
-        # 四类记忆按类型注册，调用方可以按需启用或替换实现。
-        self._memories: dict[MemoryType, Any] = {
-            MemoryType.WORKING: working,
-            MemoryType.EPISODIC: episodic,
-            MemoryType.SEMANTIC: semantic,
-            MemoryType.PERCEPTUAL: perceptual,
+        # Working 与长期记忆分开持有：具体类型单独成字段，load/登记处的 IDE 可直接定位实现；
+        # 长期三类共享 PersistentMemory 维护接口，按类型注册、按需启用。
+        self._working: WorkingMemory | None = working
+        self._long_terms: dict[MemoryType, PersistentMemory] = {
+            memory_type: memory
+            for memory_type, memory in (
+                (MemoryType.EPISODIC, episodic),
+                (MemoryType.SEMANTIC, semantic),
+                (MemoryType.PERCEPTUAL, perceptual),
+            )
+            if memory is not None
         }
         # 长期记忆写入必须由治理后的候选进入该事实仓储。
         self._repository = repository
-
-    def _get(self, memory_type: MemoryType) -> Any:
-        """获取指定类型的实现；未启用时给出清晰错误。"""
-        memory = self._memories.get(memory_type)
-        if memory is None:
-            raise RuntimeError(f"记忆类型 {memory_type.value} 尚未启用")
-        return memory
 
     def _require_repository(self) -> MemoryRepository:
         """获取长期记忆事实仓储；未组装完成时不要静默返回空结果。"""
@@ -64,14 +62,17 @@ class MemoryManager(MemoryContextReader):
             raise RuntimeError("MemoryManager 未配置长期记忆事实仓储")
         return self._repository
 
-    def _get_long_term(self, memory_type: MemoryType) -> Any:
+    def _get_long_term(self, memory_type: MemoryType) -> PersistentMemory:
         """获取可维护的长期记忆；Working Memory 不属于事实维护接口。"""
         if memory_type is MemoryType.WORKING:
             raise ValueError(
                 "Working Memory 由 AgentState.messages + Checkpointer 管理，"
                 "不能通过长期记忆维护接口操作"
             )
-        return self._get(memory_type)
+        memory = self._long_terms.get(memory_type)
+        if memory is None:
+            raise RuntimeError(f"记忆类型 {memory_type.value} 尚未启用")
+        return memory
 
     async def add(self, governed: GovernedCandidate) -> MemoryWriteResult:
         """唯一长期记忆写入口，只接受已经通过 Governance 的候选。"""
@@ -114,7 +115,11 @@ class MemoryManager(MemoryContextReader):
         }
         if memory_type is MemoryType.PERCEPTUAL:
             kwargs["asset_ids"] = asset_ids
-        return await self._get(memory_type).search(**kwargs)
+        if memory_type is MemoryType.WORKING:
+            if self._working is None:
+                raise RuntimeError("记忆类型 working 尚未启用")
+            return await self._working.search(**kwargs)
+        return await self._get_long_term(memory_type).search(**kwargs)
 
     async def search_many(
         self,
@@ -192,7 +197,9 @@ class MemoryManager(MemoryContextReader):
 
     async def register_asset(self, asset: MemoryAsset) -> MemoryAsset:
         """登记感知附件；当前只有文本内容可转为记忆。"""
-        perceptual = self._get(MemoryType.PERCEPTUAL)
+        perceptual = self._long_terms.get(MemoryType.PERCEPTUAL)
+        if not isinstance(perceptual, PerceptualMemory):
+            raise RuntimeError("记忆类型 perceptual 尚未启用")
         return await perceptual._register_asset(asset)
 
     async def get_asset(self, asset_id: str, user_id: str) -> MemoryAsset | None:
@@ -207,7 +214,9 @@ class MemoryManager(MemoryContextReader):
         limit: int | None = None,
     ) -> list[MemoryRecord]:
         """读取当前线程的 Working Memory，供 ContextEngine 编译短期上下文。"""
-        return await self._get(MemoryType.WORKING).load(
+        if self._working is None:
+            raise RuntimeError("记忆类型 working 尚未启用")
+        return await self._working.load(
             user_id=user_id,
             conversation_id=conversation_id,
             limit=limit,
