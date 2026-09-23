@@ -8,14 +8,27 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import delete, desc, select
+from sqlalchemy import delete, desc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agent.state_result_store.contracts import HarnessStatusType
 from app.models.agent_history import (
     ConversationMessageModel,
     ConversationModel,
     ConversationTurnModel,
     TurnOutputModel,
+)
+from app.models.harness import HarnessRunModel
+
+
+# 视为"占用者已死"的运行终态；running/waiting_confirmation 视为仍占用，照常拒绝。
+_DEAD_RUN_STATUSES = frozenset(
+    {
+        HarnessStatusType.COMPLETED,
+        HarnessStatusType.FAILED,
+        HarnessStatusType.CANCELLED,
+        HarnessStatusType.TIMEOUT,
+    }
 )
 
 
@@ -173,7 +186,29 @@ class ConversationRepository:
                 session.add(conversation) # 不是添加完毕，要等flush
             else:
                 if conversation.active_run_id not in (None, run_id):
-                    raise ValueError("当前会话已有未完成的 Harness 运行")
+                    # 自愈前置检查：占用者可能已被进程中断杀死——turn 落库后 run 未创建（硬孤儿），
+                    # 或 run 已终态而 release 未执行。两者都就地清理遗留现场并放行；
+                    # 只有占用者确实在跑（running/waiting_confirmation）才拒绝新运行。
+                    occupant = await session.scalar(
+                        select(HarnessRunModel).where(
+                            HarnessRunModel.run_id == conversation.active_run_id
+                        )
+                    )
+                    if occupant is not None and occupant.status not in _DEAD_RUN_STATUSES:
+                        raise ValueError("当前会话已有未完成的 Harness 运行")
+                    # 占用者的 running turn 就地终态化：前端历史拿到明确失败，不再拿孤儿 run_id 反复 404。
+                    await session.execute(
+                        update(ConversationTurnModel)
+                        .where(
+                            ConversationTurnModel.run_id == conversation.active_run_id,
+                            ConversationTurnModel.status == "running",
+                        )
+                        .values(
+                            status="failed",
+                            error_message="进程中断遗留的运行现场，已自动释放",
+                            completed_at=now,
+                        )
+                    )
                 existing_turn = await session.scalar(
                     select(ConversationTurnModel).where(
                         ConversationTurnModel.turn_id == turn_id,
