@@ -159,6 +159,7 @@ class ContextEngine:
             conversation_id=request.conversation_id,
             limit=None,
         )
+        logger.info("引入工作记忆成功！")
         # ③ 解析引用并规划检索：resolver 把附件等指代落成 asset_ids；planner 决定本轮召回来什么——context.plan 事件与 trace.retrieval_plan 的源头。
         resolution = await self.resolver.resolve(request, working)
         plan = await self.planner.plan(request, working, resolution)
@@ -491,6 +492,10 @@ class ContextEngine:
 
     @staticmethod
     def _validate_request(request: ContextRequest) -> None:
+        """入参快检：值不合法当场拒绝。"""
+        # 时机在审计开闸（start_build）之前：这里失败不留 ContextBuildRunModel 行；
+        # 开闸后的 ValueError/RuntimeError 才走 build() ⑦ fail_build 留痕，再由 controller
+        # 补发 context.failed、_run_guarded 收口 FAILED——捕获方全是 except Exception，不点名异常类型。
         if not request.user_id.strip():
             raise ValueError("user_id 不能为空")
         if not request.conversation_id.strip():
