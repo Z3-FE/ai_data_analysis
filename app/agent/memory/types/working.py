@@ -36,6 +36,7 @@ class WorkingMemory:
         limit: int | None = None,
     ) -> list[MemoryRecord]:
         """按时间顺序读取当前线程最近的消息。"""
+        # ① 查库：join conversations 校验会话归属（非该用户查不到任何消息），按 created_at + sequence_no 时间序取全量。
         async with self.session_factory() as session:
             messages = list(
                 (
@@ -58,6 +59,7 @@ class WorkingMemory:
                 ).all()
             )
 
+        # ② 尾部窗口截断：limit=None 读全量（ContextEngine 传 None，裁剪留给 token 预算）；否则取最近 N 条，max_items 是装配期兜底上限。
         requested_limit = len(messages) if limit is None else max(0, limit)
         selected_count = (
             min(requested_limit, self.max_items)
@@ -67,6 +69,7 @@ class WorkingMemory:
         if selected_count == 0:
             return []
         selected = messages[-selected_count:]
+        # ③ 投影成 MemoryRecord：空内容跳过；message_index 是会话内绝对序号，供 compiler._message_index 还原多轮顺序。
         records: list[MemoryRecord] = []
         start_index = len(messages) - len(selected)
         for offset, message in enumerate(selected):
@@ -82,6 +85,7 @@ class WorkingMemory:
                 importance = max(0.0, min(1.0, float(raw_importance)))
             except (TypeError, ValueError):
                 importance = 0.5
+            # 伪 ID：working 记忆不落记忆库，由 conversation_id + message_id 合成，供 source_refs 追踪引用。
             records.append(
                 MemoryRecord(
                     memory_id=f"working:{conversation_id}:{message.message_id}",
