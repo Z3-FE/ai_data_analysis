@@ -16,7 +16,6 @@ from app.agent.business_tools.analyze_data import AnalyzeDataTool
 from app.agent.business_tools.build_report import BuildReportTool
 from app.agent.business_tools.query_data import QueryDataTool
 from app.agent.context import AgentContext
-from app.agent.context_engine import ContextEngine
 from app.agent.context_engine.factory import build_context_engine
 from app.agent.context_engine.harness_context import HarnessContextRequestFactory
 from app.agent.finalization.errors import FinalizationFailure
@@ -309,7 +308,7 @@ def _build_controller(
         event_writer=event_writer,
     )
     # ⑥ 上下文引擎：每轮迭代执行前重建上下文（记忆读取 + 元数据召回）
-    context_engine: ContextEngine = build_context_engine(
+    context_engine = build_context_engine(
         memory_reader=runtime.manager,
         session_factory=session_factory,
         llm_client=llm_client,

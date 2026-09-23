@@ -43,12 +43,12 @@ class ContextCompiler:
             else:
                 grouped[item.source_kind].append(item.content)
 
-        sections = ContextSections(
+        sections: ContextSections = ContextSections(
             conversation_summary=tuple(grouped[ContextSourceKind.SUMMARY]),
             known_facts=tuple(grouped[ContextSourceKind.SEMANTIC]),
-            prior_work=tuple(grouped[ContextSourceKind.EPISODIC]),
+            prior_work=tuple[str, ...](grouped[ContextSourceKind.EPISODIC]),
             attachments=tuple(grouped[ContextSourceKind.PERCEPTUAL]),
-            external_evidence=tuple(grouped[ContextSourceKind.RAG]),
+            external_evidence=tuple[str, ...](grouped[ContextSourceKind.RAG]),
             unresolved_references=resolution.unresolved_references,
         )
         messages: list[dict] = []

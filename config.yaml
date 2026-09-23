@@ -137,7 +137,7 @@ llm:
   # Agent 只依赖 AutoLLM；切换兼容服务时修改本段配置，不修改业务节点。
   provider: openai-compatible
   # 当前使用阿里云百炼的 OpenAI 兼容接口；API Key 不写入配置文件。
-  model_name: ${oc.env:DASHSCOPE_MODEL,qwen3.7-plus}
+  model_name: ${oc.env:DASHSCOPE_MODEL,qwen3.7-flash-2026-07-15}
   api_key: ${oc.env:DASHSCOPE_API_KEY,""}
   base_url: ${oc.env:DASHSCOPE_BASE_URL,https://dashscope.aliyuncs.com/compatible-mode/v1}
   # LLM 响应连续 30 分钟没有返回时超时；流式收到事件后重新计时。

@@ -924,7 +924,7 @@ class LoopController:
                 system_instructions=self.system_instructions,
                 agent_type="data_agent",
             )
-            compiled_context = await self.context_engine.build(request)
+            compiled_context = await self.context_engine.build(request) # 构建触发
         except Exception:
             # context 是唯一可能 started 后没有终态的阶段；补发失败事件保证生命周期配对。
             self.event_writer.emit(

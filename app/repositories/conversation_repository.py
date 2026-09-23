@@ -152,6 +152,7 @@ class ConversationRepository:
     ) -> bool:
         """以一个事务写入用户问题，并把会话置为 running。"""
         now = datetime.utcnow()
+        # 幂等操作： 同一个操作，执行一次和执行多次，对系统产生的结果/状态影响是一样的
         async with self.session_factory() as session:
             conversation = await session.scalar(
                 select(ConversationModel)
@@ -159,7 +160,7 @@ class ConversationRepository:
                     ConversationModel.conversation_id == conversation_id,
                     ConversationModel.user_id == user_id,
                 )
-                .with_for_update()
+                .with_for_update()  # FOR UPDATE 行级排他锁
             )
             if conversation is None:
                 conversation = ConversationModel(
@@ -169,7 +170,7 @@ class ConversationRepository:
                     title=input_text[:80] or "新建会话",
                     data_source_id="olist",
                 )
-                session.add(conversation)
+                session.add(conversation) # 不是添加完毕，要等flush
             else:
                 if conversation.active_run_id not in (None, run_id):
                     raise ValueError("当前会话已有未完成的 Harness 运行")
