@@ -9,6 +9,7 @@ from app.agent.memory.contracts import GovernedCandidate
 from app.agent.memory.enums import MemoryDecisionAction, MemoryType
 from app.agent.memory.interfaces import (
     MemoryAsset,
+    MemoryContextReader,
     MemoryRecord,
     MemoryRepository,
     MemorySearchResult,
@@ -23,7 +24,8 @@ from app.agent.memory.types.working import WorkingMemory
 logger = logging.getLogger(__name__)
 
 
-class MemoryManager:
+# 显式继承 ContextEngine 的只读记忆端口：签名漂移在类定义处就暴露，而不是等到传参点（隐式履约的校验时机）。
+class MemoryManager(MemoryContextReader):
     """为上层 Agent 和 ContextEngine 提供统一的记忆读写入口。
 
     上层只依赖这个门面：长期记忆的形成、治理、投影同步和版本处理都在门面
