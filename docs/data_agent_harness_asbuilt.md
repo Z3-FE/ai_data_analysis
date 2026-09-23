@@ -82,7 +82,7 @@ sequenceDiagram
     loop 每一轮
         LC->>CE: build（问题 + 记忆/知识/证据）
         CE-->>LC: CompiledContext
-        Note over LC: context.started → memory_retrieved<br/>→ knowledge_retrieved → context_compiled<br/>→ context.completed
+        Note over LC: context.started → context.memory_retrieved<br/>→ context.knowledge_retrieved → context.plan<br/>→ context.compiled → context.completed
         LC->>PL: CompiledContext（+ 受控错误反馈）
         PL-->>LC: NextAction（tool_call / ask_user / finish）
         Note over LC: planner.started → planner.completed<br/>→ action.committed（action_seq 递增）
@@ -161,10 +161,11 @@ stateDiagram-v2
 
 ### 2.1 触发入口
 
-两个端点，都先过同一套预检再进 controller（`app/api/routers/harness.py`）：
+两个运行端点，都先过同一套预检再进 controller（`app/api/routers/harness.py`）：
 
 - `POST /run`（非流式）：装配时不传事件写出器，由 `_build_controller` 兜底 `NullHarnessEventWriter`——事件照常构造但直接丢弃。
 - `POST /run/stream`（流式）：自带 `QueueEventSink` 的 writer，SSE 循环把事件推给前端。
+- `GET /run/status`（只读快照，不进 controller）：按 run_id 返回 status / phase / iteration / pending_confirmation / last_error。用途是「回头再看」——SSE 连接断开即触发 cancelled 收口（§4.3），刷新页面或切回会话时不重放事件流，用 status 一次恢复执行面板快照。
 
 ### 2.2 主线步骤链（按执行顺序）
 
@@ -181,7 +182,7 @@ stateDiagram-v2
 - 1.2 **构造 `HarnessRunRef`**：run_id / turn_id 是本次运行的身份标识，后续事件与落库都挂在这上面。
 - 1.3 **流式三件套**：内存队列 queue + `QueueEventSink`（入队适配器，put_nowait 非阻塞）+ `HarnessEventWriter`（盖章 run_ref / event_id / 时间戳）；SSE 生成器从队列消费。
 - 1.4 **`_build_controller`**：装配 loop_controller、context_engine、tool_runtime 等组件；非流式入口在此兜底 `NullHarnessEventWriter`。
-- 1.5 **聊天会话管理（`ConversationRepository.start_turn`）**：本轮用户输入落会话，turn 从此可查。
+- 1.5 **聊天会话管理（`ConversationRepository.start_turn`）**：本轮用户输入落会话，turn 从此可查。写入前先过占用检查：会话 `active_run_id` 被占且占用者 run 行不存在或已终态（completed/failed/cancelled/timeout）→ 就地释放遗留现场并放行（自愈，§4.5）；占用者仍在跑（running/waiting_confirmation）→ 拒绝新运行。
 - 1.6 **`controller.start`**：把 `StartRunCommand`（run_ref + 输入）交给 controller，进入模块二。
 
 #### 模块二：初始状态与运行登记（`app/agent/loop_controller/controller.py` → ``）
@@ -213,7 +214,7 @@ stateDiagram-v2
   - ⑧ 收尾配对：`context.compiled`（带快照）→ `context.completed`，与 ② 的 started 闭合；日志汇总本轮编译指标。
   - **ContextEngine 内部两层分工**（`app/agent/context_engine/engine.py`：`build` 管审计与兜底，`_build` 管编译管线）：
     - **`build` ①-⑦（审计与兜底）**：① 入参校验：身份与问题非空、预算为正、附件数量与长度上限，不合规直接 ValueError → ② 生成构建身份：build_id 随机；query_hash 是问题正文的 SHA256，审计可比对但不落正文 → ③ 预算兜底：请求未带预算时取 `policy.max_context_tokens`（默认 12000，`app/agent/context_engine/contracts.py`）→ ④ 落「构建开始」审计 `start_build`（PG 表 `ContextBuildRunModel`）——与上层 `context.started` 事件平行：事件给前端、审计给落库，覆盖同一次构建 → ⑤ 委托 `_build` 全流程编排（resolve → plan → gather → select → compile）→ ⑥ 成功终态 `finish_build`：完整 trace 落库后返回编译结果 → ⑦ 失败终态 `fail_build`：完整异常栈只进应用日志、审计只留类型摘要、fail_build 自身失败不吞原始异常，原样上抛交上层补发 `context.failed`。
-    - **`_build` ①-⑪（编译管线）**：① 基线复核：system_instructions 固定开销先占预算，超了直接失败——召回只能花剩余空间 → ② 载入工作记忆：本会话近期消息，供引用解析与规划判断 → ③ 解析引用并规划检索：resolver 把附件等指代落成 asset_ids；planner 决定本轮召回来什么——`context.plan` 事件与 trace.retrieval_plan 的源头 → ④ 候选预算：总预算扣固定开销与格式保留；计划包含 working 且有空间时，压缩旧会话进候选（可能顺带滚动更新摘要）→ ⑤ 并行召回其余来源：长期记忆三类、附件正文、可选 RAG → ⑥ 合并候选并去重：历史条目与召回结果进同一池子，重复内容只留一份 → ⑦ 预算内打分选择：按相关性/重要性/新近度/优先级，花 candidate_budget 挑出入选项 → ⑧ 只为入选项补真实记忆来源——落选项不白白查库 → ⑨ 真实 token 复核：编译后仍超预算就从最低分可选候选开始移除，循环到 fit——产出最终 messages/sections → ⑩ 汇总审计轨迹：去重 + 选择决策拼成完整 decisions，与 build() 的 build_id/query_hash 对齐审计开闸 → ⑪ 返回三路产物：messages 给 LLM、sections 给事件快照、trace 给审计与前端。
+    - **`_build` ①-⑪（编译管线）**：① 基线复核：system_instructions 固定开销先占预算，超了直接失败——召回只能花剩余空间 → ② 载入工作记忆：本会话近期消息（此处只数条数、不做 token 裁剪，token 预算复核在 ⑨），供引用解析与规划判断 → ③ 解析引用并规划检索：resolver 把附件等指代落成 asset_ids；planner 决定本轮召回来什么——`context.plan` 事件与 trace.retrieval_plan 的源头 → ④ 候选预算：总预算扣固定开销与格式保留；计划包含 working 且有空间时，压缩旧会话进候选（可能顺带滚动更新摘要）→ ⑤ 并行召回其余来源：长期记忆三类、附件正文、可选 RAG → ⑥ 合并候选并去重：历史条目与召回结果进同一池子，重复内容只留一份 → ⑦ 预算内打分选择：按相关性/重要性/新近度/优先级，花 candidate_budget 挑出入选项 → ⑧ 只为入选项补真实记忆来源——落选项不白白查库 → ⑨ 真实 token 复核：编译后仍超预算就从最低分可选候选开始移除，循环到 fit——产出最终 messages/sections → ⑩ 汇总审计轨迹：去重 + 选择决策拼成完整 decisions，与 build() 的 build_id/query_hash 对齐审计开闸 → ⑪ 返回三路产物：messages 给 LLM、sections 给事件快照、trace 给审计与前端。
 
 <!-- 学习进度：已写至模块三 3.3。下一步：3.4 迁移 PLAN；随走查逐步续写。 -->
 
@@ -303,6 +304,16 @@ SSE `body()` 检测到断连 cancel task 并 shield（harness.py:561-569）→ �
 前端 partial 语义：statusForEvents 检测到 run.cancelled / run.timeout / run.failed 即判 interrupted，未走完的分组显示「中断」，已完成项保留成功态。
 
 例外：`FinalizationFailure` 不在异常收口之列——不降级成 FAILED、留给 reconcile（controller.py:228-231）；前端表现为 run 迟迟没有终态事件，直到 reconcile 完成才收到终态。
+
+### 4.5 进程中断：无收口机会的第四种走向
+
+前三种异常无论多糟，进程还活着，`_run_guarded` 都有机会落终态。进程本身被杀（uvicorn auto-reload、kill）时连收口都不会执行，现场可能停在任何中间态，包括**硬孤儿**：turn 已落库但 run 行还没创建（start_turn 提交与 run_store.create 之间被杀）——会话被 `active_run_id` 永久卡死，前端拿 latestTurn.run_id 查 /run/status 得 404（2026-09-23 实发事故，影响 8 个会话）。
+
+自愈不在被中断的进程里（它已经死了），而在**下一次 start_turn 的前置检查**（`app/repositories/conversation_repository.py`）：
+
+- 占用者 run 行不存在，或状态已是终态（completed/failed/cancelled/timeout）→ 视为占用者已死：遗留的 running turn 就地终态化（failed，error_message 标注进程中断）→ 释放 `active_run_id` → 放行新运行。
+- 占用者 running / waiting_confirmation → 照常拒绝（「当前会话已有未完成的 Harness 运行」），不越权接管活着的运行。
+- 守护测试：`tests/test_start_turn_self_heal.py`（硬孤儿放行 / 终态占用放行 / 在跑占用拒绝）。
 
 ### 疑点清单
 
