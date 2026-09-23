@@ -157,7 +157,7 @@ stateDiagram-v2
 ## 2. 路径一：正常完成（主干详版）
 
 > 本章是其余路径的基准。写法：按模块分步，模块有序、模块内步骤有序；状态与事件内联在对应步骤里；代码引用只标项目相对路径 + 函数/步骤号，不写行号。
-> 本章随走查增量补写：当前写到「模块三 3.2」，后续步骤随学习进度续接（见 2.2 末尾进度占位），不预先补全。
+> 本章随走查增量补写：当前写到「模块三 3.3」，后续步骤随学习进度续接（见 2.2 末尾进度占位），不预先补全。
 
 ### 2.1 触发入口
 
@@ -202,8 +202,20 @@ stateDiagram-v2
 
 - 3.1 **`_check_deadline`**：读持久化 deadline_at 算剩余时间，超了抛 `HarnessDeadlineExceeded`；只检查不处理，处理交给异常路径（§4.2）。
 - 3.2 **迁移 BUILD_CONTEXT + 落库**：`_transition` 推进 harness 现场（查 `_PHASE_TRANSITIONS` 合法性）→ `_save_running_state` 写 PG → 日志 `step="入口迁移构建上下文"`，phase 从现场动态读取不写死。
+- 3.3 **`_build_context` 首轮上下文编译**（`app/agent/loop_controller/controller.py` ①-⑧；首轮与每轮重建共用同一函数）——产物走两路：编译元数据回写状态字典（给循环与恢复路径），context.* 事件族（给前端）：
+  - ① 从现场取身份与阶段：phase 供本函数所有事件挂靠，只读不推进阶段指针。
+  - ② 开闸事件 `context.started` + 日志路标 `step="构建上下文开始" event=CONTEXT_STARTED`（message 与 extra 双份）——BUILD_CONTEXT 阶段生命周期从此开始配对。
+  - ③ 组装请求（系统指令 + agent_type）并调用 `context_engine.build` 异步编译；编译期间受调用点的 `_await_with_deadline` 约束（§4.2）。异常时补发 `context.failed` 再上抛——context 是唯一可能 started 后没有终态的阶段，补发保证配对闭环。
+  - ④ 产物回写现场：`last_context_build_id` / `last_context_token_count` 挂上 harness 字典，供后续步骤与恢复路径读取。
+  - ⑤ 轨迹统计：遍历 trace.decisions 的 selected 条目按来源类型计数，归并出「记忆三类之和」与「知识(RAG)数」两组指标。
+  - ⑥ 检索结果事件 ×2：`context.memory_retrieved`（记忆三类分布）+ `context.knowledge_retrieved`（知识命中数 + 外部证据条数）。
+  - ⑦ 检索计划：`context.plan` 事件携带 include_working / memory_types / use_rag / reason 与候选/入选/token 计数（前端 A 档展示检索决策）。
+  - ⑧ 收尾配对：`context.compiled`（带快照）→ `context.completed`，与 ② 的 started 闭合；日志汇总本轮编译指标。
+  - **ContextEngine 内部两层分工**（`app/agent/context_engine/engine.py`：`build` 管审计与兜底，`_build` 管编译管线）：
+    - **`build` ①-⑦（审计与兜底）**：① 入参校验：身份与问题非空、预算为正、附件数量与长度上限，不合规直接 ValueError → ② 生成构建身份：build_id 随机；query_hash 是问题正文的 SHA256，审计可比对但不落正文 → ③ 预算兜底：请求未带预算时取 `policy.max_context_tokens`（默认 12000，`app/agent/context_engine/contracts.py`）→ ④ 落「构建开始」审计 `start_build`（PG 表 `ContextBuildRunModel`）——与上层 `context.started` 事件平行：事件给前端、审计给落库，覆盖同一次构建 → ⑤ 委托 `_build` 全流程编排（resolve → plan → gather → select → compile）→ ⑥ 成功终态 `finish_build`：完整 trace 落库后返回编译结果 → ⑦ 失败终态 `fail_build`：完整异常栈只进应用日志、审计只留类型摘要、fail_build 自身失败不吞原始异常，原样上抛交上层补发 `context.failed`。
+    - **`_build` ①-⑪（编译管线）**：① 基线复核：system_instructions 固定开销先占预算，超了直接失败——召回只能花剩余空间 → ② 载入工作记忆：本会话近期消息，供引用解析与规划判断 → ③ 解析引用并规划检索：resolver 把附件等指代落成 asset_ids；planner 决定本轮召回来什么——`context.plan` 事件与 trace.retrieval_plan 的源头 → ④ 候选预算：总预算扣固定开销与格式保留；计划包含 working 且有空间时，压缩旧会话进候选（可能顺带滚动更新摘要）→ ⑤ 并行召回其余来源：长期记忆三类、附件正文、可选 RAG → ⑥ 合并候选并去重：历史条目与召回结果进同一池子，重复内容只留一份 → ⑦ 预算内打分选择：按相关性/重要性/新近度/优先级，花 candidate_budget 挑出入选项 → ⑧ 只为入选项补真实记忆来源——落选项不白白查库 → ⑨ 真实 token 复核：编译后仍超预算就从最低分可选候选开始移除，循环到 fit——产出最终 messages/sections → ⑩ 汇总审计轨迹：去重 + 选择决策拼成完整 decisions，与 build() 的 build_id/query_hash 对齐审计开闸 → ⑪ 返回三路产物：messages 给 LLM、sections 给事件快照、trace 给审计与前端。
 
-<!-- 学习进度：已写至模块三 3.2。下一步：3.3 _build_context（首轮上下文编译）→ 3.4 迁移 PLAN；随走查逐步续写。 -->
+<!-- 学习进度：已写至模块三 3.3。下一步：3.4 迁移 PLAN；随走查逐步续写。 -->
 
 ## 3. 路径二：确认暂停与恢复（差异版）
 
