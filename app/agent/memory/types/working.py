@@ -4,6 +4,7 @@ Working Memory 是当前会话的可见消息历史，直接读取 Agent Postgre
 ``conversation_messages``。Harness 自己负责运行现场和暂停恢复，不再通过旧
 LangGraph Graph 读取另一份历史状态。
 """
+import logging
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -13,7 +14,7 @@ from app.agent.memory.interfaces import MemoryRecord, MemorySearchResult
 from app.agent.memory.lexical import lexical_scores
 from app.models.agent_history import ConversationMessageModel, ConversationModel
 
-
+logger = logging.getLogger(__name__)
 class WorkingMemory:
     """从 conversation_messages 读取当前会话的短期记忆。"""
 
@@ -58,8 +59,10 @@ class WorkingMemory:
                     )
                 ).all()
             )
+        logger.info("读取PG数据：读取用户与ai信息，表名称：conversation_messages")
 
-        # ② 尾部窗口截断：limit=None 读全量（ContextEngine 传 None，裁剪留给 token 预算）；否则取最近 N 条，max_items 是装配期兜底上限。
+        # ② 条数窗口（只数条数，与 token 无关）：limit=None 一条不截全量返回；token 窗口在下游
+        # history._split_recent 按真实 token 从最新往回逐条累加切分，溢出部分滚动进会话摘要——max_items 是装配期兜底上限。
         requested_limit = len(messages) if limit is None else max(0, limit)
         selected_count = (
             min(requested_limit, self.max_items)
