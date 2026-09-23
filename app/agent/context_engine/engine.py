@@ -24,10 +24,10 @@ from app.agent.context_engine.contracts import (
 )
 from app.agent.context_engine.deduplicator import ContextDeduplicator
 from app.agent.context_engine.history import ConversationHistoryManager
-from app.repositories.context_repository import PostgresContextRepository
 from app.agent.context_engine.interfaces import (
     ContextKnowledgeRetriever,
     ContextPlanner,
+    ContextRepository,
     MemoryContextReader,
     TokenCounter,
 )
@@ -58,7 +58,7 @@ class ContextEngine:
         self,
         *,
         memory_reader: MemoryContextReader,
-        context_repository: PostgresContextRepository,
+        context_repository: ContextRepository,
         planner: ContextPlanner,
         resolver: ContextReferenceResolver,
         history: ConversationHistoryManager,
@@ -100,6 +100,7 @@ class ContextEngine:
             token_budget=token_budget,
             query_hash=query_hash,
         )
+
 
         try:
             # ⑤ 委托 _build 全流程编排：resolve → plan → gather → select → compile。

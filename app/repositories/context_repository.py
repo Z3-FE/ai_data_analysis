@@ -15,6 +15,7 @@ from app.agent.context_engine.contracts import (
     ContextConversationSummary,
     ContextRequest,
 )
+from app.agent.context_engine.interfaces import ContextRepository
 from app.models.context_engine import (
     ContextBuildRunModel,
     ContextConversationSummaryModel,
@@ -55,7 +56,8 @@ def _summary(model: ContextConversationSummaryModel) -> ContextConversationSumma
     )
 
 
-class PostgresContextRepository:
+# 显式继承端口协议：方法签名漂移在类定义处就暴露，而不是等到传参点（隐式履约的校验时机）。
+class PostgresContextRepository(ContextRepository):
     """持久化增量摘要和不含正文的上下文构建 trace。"""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:

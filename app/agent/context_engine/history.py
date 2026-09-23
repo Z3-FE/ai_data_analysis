@@ -11,8 +11,8 @@ from app.agent.context_engine.contracts import (
     ContextSourceKind,
     ContextSourceRef,
 )
-from app.repositories.context_repository import PostgresContextRepository
 from app.agent.context_engine.interfaces import (
+    ContextRepository,
     ConversationSummarizer,
     TokenCounter,
 )
@@ -35,7 +35,7 @@ class ConversationHistoryManager:
     def __init__(
         self,
         *,
-        context_repository: PostgresContextRepository,
+        context_repository: ContextRepository,
         summarizer: ConversationSummarizer,
         token_counter: TokenCounter,
         policy: ContextPolicy,
