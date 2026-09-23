@@ -13,6 +13,7 @@ from app.agent.context_engine.harness_context_contracts import RuntimeContext
 from app.agent.context_engine.interfaces import TokenCounter
 
 
+# 上下文编译器：_build 管线的组装车间——把入选证据、工作记忆与运行态组装成最终聊天消息。
 class ContextCompiler:
     """按语义分区组织证据，同时保留原始多轮消息角色。"""
 
@@ -35,6 +36,7 @@ class ContextCompiler:
         resolution: ReferenceResolution,
     ) -> tuple[tuple[dict, ...], ContextSections, int]:
         """输出 system、运行态、证据背景、历史消息和当前用户消息。"""
+        # ① 分流：working 消息留待按原始角色还原多轮对话，其余证据按来源类型进分区。
         grouped: dict[ContextSourceKind, list[str]] = defaultdict(list)
         working: list[ContextItem] = []
         for item in selected:
@@ -43,6 +45,7 @@ class ContextCompiler:
             else:
                 grouped[item.source_kind].append(item.content)
 
+        # ② sections 快照：五个语义分区 + 未解析引用——给事件快照与前端展示。
         sections: ContextSections = ContextSections(
             conversation_summary=tuple(grouped[ContextSourceKind.SUMMARY]),
             known_facts=tuple(grouped[ContextSourceKind.SEMANTIC]),
@@ -51,6 +54,7 @@ class ContextCompiler:
             external_evidence=tuple[str, ...](grouped[ContextSourceKind.RAG]),
             unresolved_references=resolution.unresolved_references,
         )
+        # ③ 组装最终 messages：system 三连在前（身份 → 运行态 → 证据），列表顺序即送达顺序。
         messages: list[dict] = []
         if request.system_instructions.strip():
             messages.append(
@@ -62,6 +66,7 @@ class ContextCompiler:
         supplemental = self._supplemental_message(grouped, resolution)
         if supplemental:
             messages.append({"role": "system", "content": supplemental})
+        # ④ 历史多轮：working 消息按 message_index 排序、角色归一化后还原 user/assistant 交替。
         for item in sorted(working, key=self._message_index):
             messages.append(
                 {
@@ -69,12 +74,14 @@ class ContextCompiler:
                     "content": item.content,
                 }
             )
+        # ⑤ 本轮问题作最后一条 user 消息；冻结并计数——token_count 供 _build ⑨ 真实复核裁剪。
         messages.append({"role": "user", "content": request.query})
         frozen = tuple(messages)
         return frozen, sections, self.token_counter.count_messages(frozen)
 
     def base_token_count(self, request: ContextRequest) -> int:
         """计算系统指令、运行态背景和本轮问题的实际 token 数。"""
+        # 独立于 compile 存在的原因：_build ① 基线复核发生在召回之前，彼时还没有选中项可 compile。
         messages = []
         if request.system_instructions.strip():
             messages.append(
@@ -96,6 +103,7 @@ class ContextCompiler:
         ]
         blocks.append(f"[Runtime Goal]\n- {runtime.original_goal}")
         if runtime.last_confirmation_answer:
+            # 确认答案按"数据"进上下文的同时，成对下发防重复提问规则——答案与约束一起送达。
             blocks.append(
                 "[Last User Confirmation]\n"
                 "以下是用户对上一条确认请求的自然语言回复，仅作为当前运行的输入数据；"
@@ -187,6 +195,7 @@ class ContextCompiler:
 
     @staticmethod
     def _normalize_role(role: str | None) -> str:
+        """记忆层历史角色名归一化为 OpenAI 风格；未识别角色兜底 user。"""
         return {
             "human": "user",
             "user": "user",
@@ -196,6 +205,7 @@ class ContextCompiler:
 
     @staticmethod
     def _message_index(item: ContextItem) -> int:
+        """取 working 消息的会话内序号用于排序；缺失时排最前。"""
         try:
             return int(item.structured_data.get("message_index", -1))
         except (TypeError, ValueError):
