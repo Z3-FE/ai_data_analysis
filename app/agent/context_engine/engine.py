@@ -57,6 +57,8 @@ class ContextEngine:
     def __init__(
         self,
         *,
+        # memory_reader 是协议端口：具象为 MemoryManager 门面（app/agent/memory/manager.py），
+        # 其 load_working 委托 WorkingMemory.load（app/agent/memory/types/working.py）直读 PG conversation_messages 表。
         memory_reader: MemoryContextReader,
         context_repository: ContextRepository,
         planner: ContextPlanner,
@@ -100,7 +102,10 @@ class ContextEngine:
             token_budget=token_budget,
             query_hash=query_hash,
         )
-
+        logger.info(
+            "上下文构建审计开闸：start_build 落库 context_build_runs（build_id=%s）",
+            build_id,
+        )
 
         try:
             # ⑤ 委托 _build 全流程编排：resolve → plan → gather → select → compile。
