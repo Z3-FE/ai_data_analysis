@@ -75,6 +75,8 @@ class WorkingMemory:
         selected = messages[-selected_count:]
         # ③ 投影成 MemoryRecord：空内容跳过；message_index 是会话内绝对序号，供 compiler._message_index 还原多轮顺序。
         records: list[MemoryRecord] = []
+        # start_index：被选块首条的全会话绝对下标，供 ③ 的 message_index 锚定。用 len(selected)
+        # 而非 selected_count——limit 可大于库存（messages[-100:] 只得 10 条），切片结果才是实拿条数。
         start_index = len(messages) - len(selected)
         for offset, message in enumerate(selected):
             content = (message.content or "").strip()
