@@ -15,6 +15,7 @@ from app.agent.context_engine.contracts import (
     ContextRetrievalPlan,
     ReferenceResolution,
 )
+from app.agent.context_engine.interfaces import ContextPlanner
 from app.agent.memory.enums import MemoryType
 from app.agent.memory.interfaces import MemoryRecord
 
@@ -29,7 +30,7 @@ class _PlannerDecision(BaseModel):
     reason: str = ""
 
 
-class DeterministicContextPlanner:
+class DeterministicContextPlanner(ContextPlanner):
     """使用稳定、可解释的信号生成默认召回计划。"""
 
     # 这些词只负责召回源规划，不承担完整自然语言意图分类。
@@ -79,15 +80,21 @@ class DeterministicContextPlanner:
         resolution: ReferenceResolution,
     ) -> ContextRetrievalPlan:
         """优先服从显式策略，否则按问题信号按需选择长期记忆。"""
+        # 确定性规划器只看问题文本与解析结果，不消费 working（LLM 规划器才拿它当历史提示）；
+        # 参数保留是为了与 ContextPlanner 协议签名一致。
         del working
+        # ① 归一化问题文本；reasons 是决策理由链——最终拼进 plan.reason 供审计与前端展示。
         query = request.query.strip()
         normalized = query.lower()
         reasons: list[str] = []
 
+        # ② 长期记忆类型：显式指定直接服从，否则按关键词信号推断。
         if request.memory_types is not None:
+            # 调用方说了算；_long_term_only 滤掉 WORKING——它不归 memory_types 管，由 include_working 单独开关。
             memory_types = self._long_term_only(request.memory_types)
             reasons.append("调用方显式指定长期记忆类型")
         else:
+            # 三类线索词独立命中、互不排斥：稳定事实→SEMANTIC、历史经验→EPISODIC、附件→PERCEPTUAL。
             inferred: list[MemoryType] = []
             if self._contains(normalized, self._semantic_cues):
                 inferred.append(MemoryType.SEMANTIC)
@@ -95,13 +102,16 @@ class DeterministicContextPlanner:
             if self._contains(normalized, self._episodic_cues):
                 inferred.append(MemoryType.EPISODIC)
                 reasons.append("问题包含历史任务或经验信号")
+            # 附件两类信号：resolver 已解析出 asset_id（指代成立），或问题文本提到附件字眼。
             if resolution.asset_ids or self._contains(
                 normalized, self._perceptual_cues
             ):
                 inferred.append(MemoryType.PERCEPTUAL)
                 reasons.append("问题包含当前或历史附件信号")
+            # dict.fromkeys 去重且保序：同一类型只进一次召回清单。
             memory_types = tuple(dict.fromkeys(inferred))
 
+        # ③ include_working 几乎恒真：有指代上下文/召回了长期记忆/带了附件/有问题文本，任一即保留会话历史。
         include_working = bool(
             resolution.needs_working_context
             or memory_types
@@ -110,9 +120,11 @@ class DeterministicContextPlanner:
         )
         if include_working:
             reasons.insert(0, "保留当前会话 Working Memory")
+        # ④ RAG 不由规划器自行开启，只服从调用方开关 enable_rag——检索计划不能自己扩大召回面。
         use_rag = request.enable_rag
         if use_rag:
             reasons.append("调用方允许业务知识检索")
+        # ⑤ 汇总成检索计划：reason 有兜底文案；plan 直接决定 engine._build ④⑤ 走哪些召回分支。
         return ContextRetrievalPlan(
             include_working=include_working,
             memory_types=memory_types,
