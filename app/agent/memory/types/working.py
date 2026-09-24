@@ -64,6 +64,8 @@ class WorkingMemory:
 
         # ② 条数窗口（只数条数，与 token 无关）：limit=None 一条不截全量返回；token 窗口在下游
         # history._split_recent 按真实 token 从最新往回逐条累加切分，溢出部分滚动进会话摘要——max_items 是装配期兜底上限。
+        # 不在 SQL LIMIT 的原因：主调用方（ContextEngine）要全量——溢出旧消息是会话摘要的原料、
+        # 绝对序号锚定需要 len(messages)；单会话消息量级小，全量读回不是瓶颈。
         requested_limit = len(messages) if limit is None else max(0, limit)
         selected_count = (
             min(requested_limit, self.max_items)
