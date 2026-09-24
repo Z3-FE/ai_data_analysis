@@ -10,7 +10,6 @@ from typing import Any
 
 from neo4j import AsyncDriver
 from qdrant_client import AsyncQdrantClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent.memory.eligibility import MemoryEligibilityEvaluator
 from app.agent.memory.encoders.text import TextMemoryEncoder
@@ -26,6 +25,7 @@ from app.agent.memory.types.perceptual import PerceptualMemory
 from app.agent.memory.types.semantic import SemanticMemory
 from app.agent.memory.types.working import WorkingMemory
 from app.agent.memory.writer import MemoryWriter
+from app.clients.postgres_client import AgentSessionFactory
 from app.core.config import Neo4jConfig, QdrantConfig, settings
 from app.repositories.memory.neo4j_graph_repository import Neo4jGraphRepository
 from app.repositories.memory.postgres_memory_repository import PostgresMemoryRepository
@@ -54,7 +54,10 @@ class MemoryRuntime:
 
 async def build_memory_runtime(
     *,
-    session_factory: async_sessionmaker[AsyncSession],
+    # 连的是 Agent PostgreSQL：postgres_client_manager.init() 用 settings.postgres.database_url
+    # 建引擎后传入，Harness 现场/会话历史/记忆/context 审计同库共池。AgentSessionFactory 是语义
+    # 别名——async_sessionmaker 类型本身看不出连哪个库，身份在 engine 与传递链上。
+    session_factory: AgentSessionFactory,
     qdrant_client: AsyncQdrantClient | None = None,
     embedding_client: Any = None,
     neo4j_driver: AsyncDriver | None = None,

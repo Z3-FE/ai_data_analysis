@@ -63,13 +63,19 @@ def _mark_active_connection_error_as_disconnect(exception_context: Any) -> None:
         exception_context.is_disconnect = True
 
 
+# 语义别名：本管理器产出的 session 工厂连的是 Agent PostgreSQL（settings.postgres.database_url）。
+# SQLAlchemy 的 async_sessionmaker 类型不携带库身份（库身份在 engine 里，与 sessionmaker 解耦），
+# 与 mysql_client 的 sessionmaker 在类型上同构——区分靠这条传递链，不靠类型签名。
+type AgentSessionFactory = async_sessionmaker[AsyncSession]
+
+
 class PostgresClientManager:
     """管理 Harness、会话历史和记忆层共用的 PostgreSQL 连接池。"""
 
     def __init__(self, config: PostgresConfig) -> None:
         self.config = config
         self.engine: AsyncEngine | None = None
-        self.session_factory: async_sessionmaker | None = None
+        self.session_factory: AgentSessionFactory | None = None
 
     async def init(self) -> None:
         """初始化业务表和 PostgreSQL 会话工厂。"""
@@ -119,4 +125,4 @@ class PostgresClientManager:
 postgres_client_manager = PostgresClientManager(settings.postgres)
 
 
-__all__ = ["PostgresClientManager", "postgres_client_manager"]
+__all__ = ["AgentSessionFactory", "PostgresClientManager", "postgres_client_manager"]
