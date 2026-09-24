@@ -133,7 +133,9 @@ async def build_memory_runtime(
         vector_repository=vector_repository,
         encoder=encoder,
     )
-    # Working Memory 与 Harness 共用 PostgreSQL 的会话消息表。
+    # Working Memory 与 Harness 共用 PostgreSQL 的会话消息表；工厂只注入连接池、不写查询——
+    # 各记忆类型的 load/search 是领域行为，内聚在各自类型文件里；共享仓储（PostgresMemoryRepository）
+    # 只服务长期三类共读的 agent_memories 表，Working 直读 conversation_messages 无共享对象。
     working = WorkingMemory(session_factory)
     manager = MemoryManager(
         working=working,
