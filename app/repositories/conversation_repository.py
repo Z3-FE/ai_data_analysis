@@ -233,6 +233,8 @@ class ConversationRepository:
                 status="running",
                 started_at=now,
             )
+            # conversation_messages 写入源头①：user 消息固定 sequence_no=0；finish_turn 写 assistant（seq=1），
+            # 每个 turn 两行。WorkingMemory.load 读的就是这两类行（本表只在此两处写入）。
             user_message = ConversationMessageModel(
                 message_id=str(uuid4()),
                 conversation_id=conversation_id,
@@ -328,6 +330,7 @@ class ConversationRepository:
             conversation.updated_at = now
 
             if assistant_content:
+                # conversation_messages 写入源头②：assistant 最终回复固定 sequence_no=1。
                 assistant_message = ConversationMessageModel(
                     message_id=str(uuid4()),
                     conversation_id=conversation_id,

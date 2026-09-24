@@ -36,7 +36,8 @@ class WorkingMemory:
         conversation_id: str,
         limit: int | None = None,
     ) -> list[MemoryRecord]:
-        """按时间顺序读取当前线程最近的消息。"""
+        """按时间顺序读取当前线程最近的消息。本类只读不写：conversation_messages 的写入源头是
+        conversation_repository.start_turn（user, seq=0）与 finish_turn（assistant, seq=1）。"""
         # ① 查库：join conversations 校验会话归属（非该用户查不到任何消息），按 created_at + sequence_no 时间序取全量。
         async with self.session_factory() as session:
             messages = list(
