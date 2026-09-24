@@ -30,7 +30,7 @@ class _PlannerDecision(BaseModel):
     reason: str = ""
 
 
-class DeterministicContextPlanner(ContextPlanner):
+class DeterministicContextPlanner:
     """使用稳定、可解释的信号生成默认召回计划。"""
 
     # 这些词只负责召回源规划，不承担完整自然语言意图分类。
@@ -150,7 +150,7 @@ class DeterministicContextPlanner(ContextPlanner):
         )
 
 
-class LlmContextPlanner:
+class LlmContextPlanner(ContextPlanner):
     """让 LLM 判断召回组合，并用确定性规划器处理失败和显式策略。"""
 
     def __init__(
@@ -172,21 +172,30 @@ class LlmContextPlanner:
         resolution: ReferenceResolution,
     ) -> ContextRetrievalPlan:
         """生成结构化检索计划；格式或模型失败时可预测地降级。"""
+        # ① 显式策略短路：调用方指定了记忆类型就不花 LLM 调用，直接走确定性规划。
         if request.memory_types is not None:
             return await self.fallback.plan(request, working, resolution)
         try:
+            # ② 组装规划提示词（近期历史、引用解析、JSON Schema）并调用 LLM；
+            #    working 在这里才被消费——_prompt 只取最近若干字符当历史提示。
             raw = await self._invoke(
                 self._prompt(request=request, working=working, resolution=resolution)
             )
+            # ③ 模型自由文本必须结构化收编：_extract_json 抠出 {} 边界，Pydantic 校验成受控决策——
+            #    LLM 不能直接执行检索，只能产出这个决策对象。
             decision = _PlannerDecision.model_validate_json(self._extract_json(raw))
         except Exception:
+            # ④ 可预测降级：网络/格式/校验任何失败都落回确定性规划器，不把异常抛给上层。
             return await self.fallback.plan(request, working, resolution)
 
+        # ⑤ LLM 意见先过统一规则：滤掉 WORKING（它由 include_working 单独管，与 fallback 同规）、去重保序。
         memory_types = tuple(
             dict.fromkeys(
                 item for item in decision.memory_types if item is not MemoryType.WORKING
             )
         )
+        # ⑥ 产出计划——LLM 的每个意见都被钳制：include_working 有 resolver 强制下限（指代未消解就不许不留），
+        #    use_rag 是 LLM 意见 AND 调用方开关（不能自行扩大召回面），search_query/reason 空则回退原问题/兜底文案。
         return ContextRetrievalPlan(
             include_working=decision.include_working
             or resolution.needs_working_context,
