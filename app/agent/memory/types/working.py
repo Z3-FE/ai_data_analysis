@@ -26,19 +26,19 @@ class WorkingMemory:
     ) -> None:
         # Harness 和 Memory 共用 Agent PostgreSQL 连接池。
         self.session_factory = session_factory
-        # ContextEngine 默认读取完整会话，再按 token 预算做窗口选择。
-        self.max_items = max(1, max_items) if max_items is not None else None
+
+        self.max_items = max(1, max_items) if max_items is not None else None # 系统最大返回条数
 
     async def load(
         self,
         *,
         user_id: str,
         conversation_id: str,
-        limit: int | None = None,
+        limit: int | None = None, # 每次用户选择的返回条数，不能大于max_items
     ) -> list[MemoryRecord]:
         """按时间顺序读取当前线程最近的消息。本类只读不写：conversation_messages 的写入源头是
         conversation_repository.start_turn（user, seq=0）与 finish_turn（assistant, seq=1）。"""
-        # ① 查库：join conversations 校验会话归属（非该用户查不到任何消息），按 created_at + sequence_no 时间序取全量。
+        # ① 查库：按 created_at + sequence_no(轮次内顺序) 时间序取全量。
         async with self.session_factory() as session:
             messages = list(
                 (
@@ -55,18 +55,15 @@ class WorkingMemory:
                         )
                         .order_by(
                             ConversationMessageModel.created_at,
-                            ConversationMessageModel.sequence_no,
+                            ConversationMessageModel.sequence_no, # 只有当 created_at 相同时，才按 sequence_no 排
                         )
                     )
                 ).all()
             )
         logger.info("读取PG数据：读取用户与ai信息，表名称：conversation_messages")
 
-        # ② 条数窗口（只数条数，与 token 无关）：limit=None 一条不截全量返回；token 窗口在下游
-        # history._split_recent 按真实 token 从最新往回逐条累加切分，溢出部分滚动进会话摘要——max_items 是装配期兜底上限。
-        # 不在 SQL LIMIT 的原因：主调用方（ContextEngine）要全量——溢出旧消息是会话摘要的原料、
-        # 绝对序号锚定需要 len(messages)；单会话消息量级小，全量读回不是瓶颈。
-        requested_limit = len(messages) if limit is None else max(0, limit)
+        # ②
+        requested_limit = len(messages) if limit is None else max(0, limit) # 返回的信息多少条
         selected_count = (
             min(requested_limit, self.max_items)
             if self.max_items is not None
@@ -74,8 +71,8 @@ class WorkingMemory:
         )
         if selected_count == 0:
             return []
-        selected = messages[-selected_count:]
-        # ③ 投影成 MemoryRecord：空内容跳过；message_index 是会话内绝对序号，供 compiler._message_index 还原多轮顺序。
+        selected = messages[-selected_count:] # 取回来的最大条数
+        # ③ 投影成 MemoryRecord
         records: list[MemoryRecord] = []
         # start_index：被选块首条的全会话绝对下标，供 ③ 的 message_index 锚定。用 len(selected)
         # 而非 selected_count——limit 可大于库存（messages[-100:] 只得 10 条），切片结果才是实拿条数。

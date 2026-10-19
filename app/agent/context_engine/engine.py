@@ -103,8 +103,7 @@ class ContextEngine:
             query_hash=query_hash,
         )
         logger.info(
-            "上下文构建审计开闸：start_build 落库 context_build_runs（build_id=%s）",
-            build_id,
+            "上下文构建审计开闸：start_build 落库 context_build_runs"
         )
 
         try:

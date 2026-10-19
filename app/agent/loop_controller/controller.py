@@ -78,7 +78,7 @@ class LoopController:
         context_engine: ContextEngine,
         planning_agent: PlanningPort,
         finalization_service: FinalizationPort,
-        run_store: HarnessRunStore, # HarnessRunStore的操作
+        run_store: HarnessRunStore, # Store的操作
         context_request_factory: HarnessContextRequestFactory | None = None,
         system_instructions: str = "你是一个数据分析助手。",
         action_committer: ActionCommitter | None = None,
@@ -124,6 +124,9 @@ class LoopController:
         state: HarnessRunState = self._new_state(command)
 
         await self.run_store.create(command.run_ref, state) #把run_store， 写入 PG数据库
+        logger.info("store成功写入PG数据库，表名称： harness_runs")
+        logger.info("初始化state信息=%s",state, extra={"state":state})
+
         self.event_writer.emit(
             EventType.RUN_STARTED,
             phase=LoopPhaseStatusType.START_RUN,
@@ -345,20 +348,9 @@ class LoopController:
         state = self._transition(
             state, status=HarnessStatusType.RUNNING, phase=LoopPhaseStatusType.BUILD_CONTEXT
         )
-        await self._save_running_state(command, state) # 修改PG数据库
         # 迁移状态成功
-        logger.info(
-            "Harness step=%s phase=%s: run_id=%s turn_id=%s",
-            "入口迁移构建上下文",
-            state["harness"]["phase"],
-            command.run_ref.run_id,
-            command.run_ref.turn_id,
-            extra={
-                "step": "入口迁移构建上下文",
-                "run_id": command.run_ref.run_id,
-                "turn_id": command.run_ref.turn_id,
-            },
-        )
+        await self._save_running_state(command, state) # 修改PG数据库
+        logger.info("修改PG：迁移store状态，表名称：harness_runs")
 
         # ② 构建首轮上下文（记忆读取 + 元数据召回），构建期间同样受 deadline 约束
         compiled_context = await self._await_with_deadline(
@@ -903,19 +895,6 @@ class LoopController:
             phase=phase,
             iteration=int(state["harness"]["iteration"]),
         )
-        logger.info(
-            "=====================第iteration=%s轮：Harness step=%s event=%s: run_id=%s turn_id=%s====================",
-            "构建上下文开始",
-            int(state["harness"]["iteration"]),
-            EventType.CONTEXT_STARTED,
-            run_ref.run_id,
-            run_ref.turn_id,
-            extra={
-                "step": "构建上下文开始",
-                "run_id": run_ref.run_id,
-                "turn_id": run_ref.turn_id,
-            },
-        )
 
         # ③ 组装请求（系统指令 + agent_type）并异步编译；编译期间受调用点的 _await_with_deadline 约束。
         try:
@@ -924,7 +903,21 @@ class LoopController:
                 system_instructions=self.system_instructions,
                 agent_type="data_agent",
             )
-            compiled_context = await self.context_engine.build(request) # 构建触发
+
+            logger.info(
+                "=====================第iteration=%s 轮：Harness step=%s event=%s: run_id=%s turn_id=%s====================",
+                "构建上下文开始",
+                int(state["harness"]["iteration"]),
+                EventType.CONTEXT_STARTED,
+                run_ref.run_id,
+                run_ref.turn_id,
+                extra={
+                    "step": "构建上下文开始",
+                    "run_id": run_ref.run_id,
+                    "turn_id": run_ref.turn_id,
+                },
+            )
+            compiled_context = await self.context_engine.build(request) # 构建上下文触发
         except Exception:
             # context 是唯一可能 started 后没有终态的阶段；补发失败事件保证生命周期配对。
             self.event_writer.emit(
