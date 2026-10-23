@@ -55,22 +55,28 @@ class ConversationHistoryManager:
         token_budget: int,
     ) -> PreparedHistory:
         """按消息索引更新摘要，再返回摘要和未覆盖的近期消息。"""
+        # ① 先按消息索引还原时间顺序，后面才能准确判断哪些消息已经进入摘要。
         ordered = sorted(working, key=self._message_index)
+        # ② 读取当前会话已有摘要，并记住它已经覆盖到哪一条消息。
         existing = await self.context_repository.get_summary(user_id, conversation_id)
         covered_through = existing.covered_through_index if existing is not None else -1
+        # ③ 找出摘要尚未覆盖的新历史；已经进入摘要的旧消息不重复处理。
         uncovered = [
             record
             for record in ordered
             if self._message_index(record) > covered_through
         ]
+        # ④ 从总预算中分出“近期原文窗口”的额度，至少保留最小压缩预算。
         recent_budget = max(
             self.policy.min_compression_tokens,
             int(max(0, token_budget) * self.policy.recent_history_ratio),
         )
+        # ⑤ 按近期预算拆分：能直接放入窗口的保留原文，放不下的归入 older。
         recent, older = self._split_recent(uncovered, recent_budget)
         summary = existing
         summary_updated = False
         if older:
+            # ⑥ 将被窗口挤出的较早消息合并进摘要，并持久化新的覆盖范围。
             summary = await self._update_summary(
                 existing=existing,
                 user_id=user_id,
@@ -79,6 +85,7 @@ class ConversationHistoryManager:
             )
             summary_updated = True
 
+        # ⑦ 把摘要和近期原文都转换成 ContextEngine 能继续筛选的候选项。
         items: list[ContextItem] = []
         if summary is not None and summary.content.strip():
             items.append(
@@ -106,6 +113,7 @@ class ConversationHistoryManager:
                 )
             )
         items.extend(self._working_items(recent, query))
+        # ⑧ 返回候选历史、摘要和“本轮是否更新过摘要”的标记，供后续预算筛选与审计使用。
         return PreparedHistory(tuple(items), summary, summary_updated)
 
     def _split_recent(

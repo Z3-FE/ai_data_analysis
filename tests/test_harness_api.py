@@ -333,6 +333,21 @@ class HarnessApiTest(unittest.TestCase):
             json={"input_text": "分析销售数据", "user_id": "user-1"},
         )
 
+    def test_greeting_uses_chat_branch_and_commits_final_answer(self) -> None:
+        self.llm.set_responses("你好！有什么可以帮你？")
+        response = self.client.post(
+            "/api/harness/run",
+            json={"input_text": "你好", "user_id": "user-1"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["finalization_result"]["final_answer"], "你好！有什么可以帮你？")
+        self.assertEqual(len(self.action_committer.calls), 1)
+        self.assertEqual(self.action_committer.calls[0].action.action_type.value, "final_answer")
+        self.assertEqual(self.query.await_count, 0)
+        self.assertTrue(self.conversation.finished)
+
     def post_run_stream(self, *planner_responses: str):
         self.llm.set_responses(*planner_responses)
         return self.client.post(

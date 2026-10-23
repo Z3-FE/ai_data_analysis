@@ -121,6 +121,11 @@ class FakeSession:
 
     async def scalars(self, statement):
         params = statement.compile().params
+        if "status_1" in params:
+            return FakeScalarResult([
+                row.turn_id for row in self.rows
+                if getattr(row, "turn_status", None) == params["status_1"]
+            ])
         conversation_id = next(
             value for key, value in params.items() if key.startswith("conversation_id")
         )
@@ -284,6 +289,24 @@ class MemoryManagerContextBoundaryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [record.structured_data["message_index"] for record in records], [0, 1, 2]
         )
+
+    async def test_budget_exceeded_turn_is_excluded_without_renumbering(self):
+        rows = _message_rows()
+        rows[0].turn_status = "budget_exceeded"
+        rows[1].turn_status = "budget_exceeded"
+        records = await WorkingMemory(FakeSessionFactory(rows)).load(
+            user_id="user-1", conversation_id="conversation-1"
+        )
+        self.assertEqual([record.content for record in records], ["第三条"])
+        self.assertEqual(records[0].structured_data["message_index"], 2)
+
+    async def test_execution_failure_is_not_treated_as_budget_exceeded(self):
+        rows = _message_rows()
+        rows[0].turn_status = "failed"
+        records = await WorkingMemory(FakeSessionFactory(rows)).load(
+            user_id="user-1", conversation_id="conversation-1"
+        )
+        self.assertEqual(len(records), 3)
 
     async def test_working_memory_preserves_context_reference_metadata(self):
         records = await WorkingMemory(FakeSessionFactory(_message_rows())).load(

@@ -2,6 +2,18 @@
 
 这些表属于独立的 ``agent_app`` 数据库，只保存会话恢复和前端重新渲染所需的
 最小数据，不与 DW、Meta 的业务数据表混用。
+
+ConversationModel：一个聊天会话
+  │
+  ├─ ConversationTurnModel：第 1 次提问及其执行
+  │    ├─ ConversationMessageModel：用户问题
+  │    ├─ ConversationMessageModel：助手回复
+  │    └─ TurnOutputModel：结构化结果、执行轨迹等
+  │
+  └─ ConversationTurnModel：第 2 次提问及其执行
+       ├─ ConversationMessageModel：用户问题
+       ├─ ConversationMessageModel：助手回复
+       └─ TurnOutputModel：结构化结果、执行轨迹等
 """
 
 from datetime import datetime
@@ -17,7 +29,7 @@ class ConversationModel(Base):
     """一个用户可持续访问的聊天会话。"""
 
     __tablename__ = "conversations"
-    __table_args__ = {"comment": "Agent 应用会话"}
+    __table_args__ = {"comment": "Agent 历史会话列表(理解为前端左侧标题的列表)"}
 
     conversation_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)

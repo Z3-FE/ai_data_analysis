@@ -1028,7 +1028,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
             } else if (reconciled.status === "completed") {
               terminalEventReceived = true;
             } else if (
-              reconciled.status === "failed"
+              reconciled.status === "budget_exceeded" || reconciled.status === "failed"
               || reconciled.status === "timeout"
               || reconciled.status === "cancelled"
             ) {
@@ -1112,7 +1112,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
             continue;
           }
 
-          if (runEvent.type === "run.failed"
+          if (runEvent.type === "run.budget_exceeded" || runEvent.type === "run.failed"
             || runEvent.type === "run.timeout"
             || runEvent.type === "run.cancelled") {
             terminalEventReceived = true;
@@ -1325,7 +1325,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
               } else if (reconciled.status === "completed") {
                 terminalEventReceived = true;
               } else if (
-                reconciled.status === "failed"
+                reconciled.status === "budget_exceeded" || reconciled.status === "failed"
                 || reconciled.status === "timeout"
                 || reconciled.status === "cancelled"
               ) {
@@ -1400,7 +1400,7 @@ export default function ChatSessionView({ conversationId }: ChatSessionViewProps
               continue;
             }
 
-            if (runEvent.type === "run.failed"
+            if (runEvent.type === "run.budget_exceeded" || runEvent.type === "run.failed"
               || runEvent.type === "run.timeout"
               || runEvent.type === "run.cancelled") {
               terminalEventReceived = true;

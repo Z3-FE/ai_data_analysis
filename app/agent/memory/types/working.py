@@ -12,7 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.agent.memory.enums import MemoryScope, MemoryStatus, MemoryType
 from app.agent.memory.interfaces import MemoryRecord, MemorySearchResult
 from app.agent.memory.lexical import lexical_scores
-from app.models.agent_history import ConversationMessageModel, ConversationModel
+from app.models.agent_history import ConversationMessageModel, ConversationModel, ConversationTurnModel
+from app.agent.state_result_store.contracts import HarnessStatusType
 
 logger = logging.getLogger(__name__)
 class WorkingMemory:
@@ -60,10 +61,22 @@ class WorkingMemory:
                     )
                 ).all()
             )
+            excluded_turns = set((await session.scalars(
+                select(ConversationTurnModel.turn_id).where(
+                    ConversationTurnModel.conversation_id == conversation_id,
+                    ConversationTurnModel.user_id == user_id,
+                    ConversationTurnModel.status == HarnessStatusType.BUDGET_EXCEEDED,
+                )
+            )).all())
         logger.info("读取PG数据：读取用户与ai信息，表名称：conversation_messages")
 
+        # 先保留全会话索引再过滤，避免摘要 covered_through_index 因排除轮次而漂移。
+        indexed_messages = [
+            (index, message) for index, message in enumerate(messages)
+            if message.turn_id not in excluded_turns
+        ]
         # ②
-        requested_limit = len(messages) if limit is None else max(0, limit) # 返回的信息多少条
+        requested_limit = len(indexed_messages) if limit is None else max(0, limit) # 返回的信息多少条
         selected_count = (
             min(requested_limit, self.max_items)
             if self.max_items is not None
@@ -71,13 +84,10 @@ class WorkingMemory:
         )
         if selected_count == 0:
             return []
-        selected = messages[-selected_count:] # 取回来的最大条数
+        selected = indexed_messages[-selected_count:] # 取回来的最大条数
         # ③ 投影成 MemoryRecord
         records: list[MemoryRecord] = []
-        # start_index：被选块首条的全会话绝对下标，供 ③ 的 message_index 锚定。用 len(selected)
-        # 而非 selected_count——limit 可大于库存（messages[-100:] 只得 10 条），切片结果才是实拿条数。
-        start_index = len(messages) - len(selected)
-        for offset, message in enumerate(selected):
+        for message_index, message in selected:
             content = (message.content or "").strip()
             if not content:
                 continue
@@ -102,7 +112,7 @@ class WorkingMemory:
                     content=content,
                     structured_data={
                         "role": message.role,
-                        "message_index": start_index + offset,
+                        "message_index": message_index,
                         "turn_id": message.turn_id,
                         "execution_mode": str(metadata.get("execution_mode") or ""),
                         "output_type": str(metadata.get("output_type") or ""),

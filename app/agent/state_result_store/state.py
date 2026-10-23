@@ -163,6 +163,7 @@ def transition_harness_state(
     """执行阶段转换，并阻止业务阶段直接伪造终态。"""
     current = HarnessStateSnapshot.model_validate(state)
     terminal_statuses = {
+        HarnessStatusType.BUDGET_EXCEEDED,
         HarnessStatusType.COMPLETED,
         HarnessStatusType.FAILED,
         HarnessStatusType.CANCELLED,

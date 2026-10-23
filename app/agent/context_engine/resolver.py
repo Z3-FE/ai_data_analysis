@@ -63,17 +63,21 @@ class ContextReferenceResolver:
         self, request: ContextRequest, working: Sequence[MemoryRecord]
     ) -> ReferenceResolution:
         """解析并校验本轮直接附件以及可唯一确定的历史附件。"""
+        # ① 识别指代线索：“刚才/继续”等标记历史依赖，“文件/图片”等标记附件引用。
         query = request.query.strip().lower()
         needs_working = any(cue in query for cue in self._history_cues)
         mentions_asset = any(cue in query for cue in self._asset_cues)
+        # ② 本轮附件去重并严格校验归属；不存在或无权访问时直接抛出 PermissionError。
         current_ids = tuple(dict.fromkeys(request.asset_ids))
         valid_current, current_errors = await self._validate_assets(
             current_ids, request.user_id, strict=True
         )
 
+        # ③ 从工作记忆中提取历史附件组，最近消息在前，同一消息的附件保持成组。
         historical_groups = self._historical_asset_groups(working)
         historical_ids: tuple[str, ...] = ()
         unresolved = list(current_errors)
+        # ④ 没有显式附件 ID 且问题提到附件时，才按文件名、序号或最近一组尝试解析历史指代。
         if not current_ids and mentions_asset:
             historical_ids, reference_error = await self._resolve_historical_assets(
                 query=query,
@@ -84,10 +88,12 @@ class ContextReferenceResolver:
             if reference_error:
                 unresolved.append(reference_error)
 
+        # ⑤ 历史附件再次校验可访问性；失效项记入未解析原因，不像本轮显式附件那样直接报错。
         valid_historical, historical_errors = await self._validate_assets(
             historical_ids, request.user_id
         )
         unresolved.extend(historical_errors)
+        # ⑥ 合并有效附件并去重；同时返回历史子集、历史依赖标记和未解析原因，供后续上下文构建使用。
         resolved_ids = tuple(dict.fromkeys((*valid_current, *valid_historical)))
         return ReferenceResolution(
             asset_ids=resolved_ids,

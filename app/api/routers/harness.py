@@ -29,6 +29,7 @@ from app.agent.loop_controller.contracts import (
     StartRunCommand,
 )
 from app.agent.loop_controller.controller import LoopController
+from app.agent.daily_chat_agent import DailyChatAgent
 from app.agent.planning_agent.agent import AutoLLMPlannerClient, PlanningAgent
 from app.agent.state import HarnessRunState
 from app.agent.state_result_store.contracts import (
@@ -331,9 +332,15 @@ def _build_controller(
     #    把当前状态包装成上下文构建请求
     return LoopController(
         context_engine=context_engine,
+        system_instructions=(
+            "你是一个数据分析助手。日常聊天请简洁自然地直接回答，不追问业务条件，"
+            "不编造业务数据。平台支持日常对话、简单问数和多步分析。"
+            "用户明确请求查询或分析数据时，由 Harness 规划并调用工具完成。"
+        ),
         planning_agent=PlanningAgent(
             llm_client=AutoLLMPlannerClient(llm_client),
             capabilities=PlannerCapabilities(allow_ask_user=True),
+            daily_chat_agent=DailyChatAgent(llm_client),
         ),
         finalization_service=finalization,
         run_store=run_store,
@@ -427,6 +434,7 @@ async def _finish_unhandled_start_failure(
         state = await run_store.load(run_ref)
         current_status = HarnessStatusType(state["harness"]["status"])
         terminal_statuses = {
+            HarnessStatusType.BUDGET_EXCEEDED,
             HarnessStatusType.COMPLETED,
             HarnessStatusType.FAILED,
             HarnessStatusType.CANCELLED,

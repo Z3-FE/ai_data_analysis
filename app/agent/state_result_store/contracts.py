@@ -18,6 +18,7 @@ class HarnessStatusType(StrEnum):
     WAITING_CONFIRMATION = "waiting_confirmation"  # 暂停等用户确认；resume 后回到 RUNNING
     COMPLETED = "completed"  # 终态：正常完成
     FAILED = "failed"  # 终态：不可恢复失败
+    BUDGET_EXCEEDED = "budget_exceeded"  # 终态：上下文超预算，该轮不参与后续记忆
     CANCELLED = "cancelled"  # 终态：用户取消/断连收口
     TIMEOUT = "timeout"  # 终态：超出运行级 deadline
 
@@ -285,7 +286,7 @@ class HarnessStateSnapshot(ContractModel):
     started_at: datetime | None = None
     deadline_at: datetime | None = None
     cancel_requested: bool = False
-    terminal_intent: Literal["completed", "failed", "cancelled", "timeout"] | None = None
+    terminal_intent: Literal["completed", "failed", "cancelled", "timeout", "budget_exceeded"] | None = None
     original_goal: str = Field(min_length=1)
     plan_progress: PlanProgress = Field(default_factory=PlanProgress)
     observations: list[RunObservation] = Field(default_factory=list)
@@ -305,6 +306,7 @@ class HarnessStateSnapshot(ContractModel):
     @model_validator(mode="after")
     def validate_combination(self) -> "HarnessStateSnapshot":
         terminal = {
+            HarnessStatusType.BUDGET_EXCEEDED,
             HarnessStatusType.COMPLETED,
             HarnessStatusType.FAILED,
             HarnessStatusType.CANCELLED,

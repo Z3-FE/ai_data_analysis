@@ -1,6 +1,7 @@
 """跨来源候选评分、预算选择和本轮压缩。"""
 
 from dataclasses import dataclass, replace
+from app.agent.context_engine.errors import ContextBudgetExceeded
 
 from app.agent.context_engine.contracts import (
     ContextItem,
@@ -70,7 +71,7 @@ class ContextSelector:
             )
             decisions.append(decision)
             if chosen is None:
-                raise ValueError(
+                raise ContextBudgetExceeded(
                     f"明确要求保留的上下文 {item.item_id} 无法放入本轮 token 预算"
                 )
             selected.append(chosen)

@@ -31,7 +31,7 @@ class ContextPolicy:
     """一个 Agent 的可注入上下文构建策略。"""
 
     # 编译后全部输入消息允许占用的最大 token 数。
-    max_context_tokens: int = 12_000
+    max_context_tokens: int = 1000
     # 为分区标题、引用标签和消息协议预留的 token。
     format_reserve_tokens: int = 384
     # Working Memory 可以使用的目标预算比例；超出时形成增量摘要。

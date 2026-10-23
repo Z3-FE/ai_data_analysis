@@ -1,7 +1,9 @@
 """切片 B PlanningAgent 的解析、校验和服务端发行测试。"""
 
 import unittest
+from types import SimpleNamespace
 
+from app.agent.daily_chat_agent import DailyChatAgent, is_greeting
 from app.agent.context_engine.contracts import ContextRequest
 from app.agent.planning_agent.agent import PlanningAgent
 from app.agent.planning_agent.contracts import ActionIssuanceContext
@@ -27,6 +29,51 @@ class ScriptedPlannerClient:
 
 
 class PlanningAgentTest(unittest.IsolatedAsyncioTestCase):
+    async def test_greeting_uses_daily_chat_without_planner(self) -> None:
+        class ChatClient:
+            async def ainvoke_auto(inner_self, messages):
+                inner_self.messages = messages
+                return SimpleNamespace(content="你好！有什么可以帮你？")
+
+        client = ChatClient()
+        planner = ScriptedPlannerClient("不应调用 Planner")
+        agent = PlanningAgent(llm_client=planner, daily_chat_agent=DailyChatAgent(client))
+        value = self.planner_input().model_copy(
+            update={"state_view": PlannerStateView(original_goal="你好", iteration=0)}
+        )
+        action = await agent.plan(value, issuance=self.issuance())
+        self.assertEqual(action.action_type, ActionType.FINAL_ANSWER)
+        self.assertEqual(action.final_answer, "你好！有什么可以帮你？")
+        self.assertEqual(planner.prompts, [])
+        self.assertEqual(client.messages, list(self.context.messages))
+
+    async def test_planner_can_select_daily_chat_for_general_questions(self) -> None:
+        class ChatClient:
+            async def ainvoke_auto(self, messages):
+                return SimpleNamespace(content="我可以帮你查询和分析数据。")
+
+        agent = PlanningAgent(
+            llm_client=ScriptedPlannerClient('{"action_type":"daily_chat"}'),
+            daily_chat_agent=DailyChatAgent(ChatClient()),
+        )
+        action = await agent.plan(self.planner_input(), issuance=self.issuance())
+        self.assertEqual(action.action_type, ActionType.FINAL_ANSWER)
+        self.assertEqual(action.action_seq, 1)
+
+    async def test_daily_chat_requires_enabled_answer_capability(self) -> None:
+        agent = PlanningAgent(
+            llm_client=ScriptedPlannerClient('{"action_type":"daily_chat"}'),
+            capabilities=PlannerCapabilities(allow_final_answer=False),
+        )
+        with self.assertRaises(PlannerFailure):
+            await agent.plan(self.planner_input(), issuance=self.issuance())
+
+    def test_greeting_shortcut_does_not_match_data_requests(self) -> None:
+        self.assertTrue(is_greeting("你好！"))
+        self.assertTrue(is_greeting(" Hi! "))
+        self.assertFalse(is_greeting("你好，帮我查询销售额"))
+        self.assertFalse(is_greeting("继续"))
+
     async def asyncSetUp(self) -> None:
         engine, _, _ = _engine(FakeMemoryReader())
         self.context = await engine.build(

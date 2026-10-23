@@ -5,7 +5,7 @@ export interface Conversation {
   active?: boolean;
 }
 
-export type ConversationStatus = 'created' | 'idle' | 'running' | 'waiting_user' | 'completed' | 'failed' | 'cancelled';
+export type ConversationStatus = 'created' | 'idle' | 'running' | 'waiting_user' | 'completed' | 'failed' | 'cancelled' | 'budget_exceeded';
 
 export interface ConversationDetail extends Conversation {
   threadId: string;

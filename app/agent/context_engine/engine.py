@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from app.agent.context_engine.compiler import ContextCompiler
+from app.agent.context_engine.errors import ContextBudgetExceeded
 from app.agent.context_engine.contracts import (
     CompiledContext,
     ContextBuildTrace,
@@ -149,8 +150,8 @@ class ContextEngine:
         # ① 基线复核：system_instructions 等固定开销先占预算，超了直接失败——召回只能花剩余空间。
         base_tokens = self.compiler.base_token_count(request)
         if base_tokens > token_budget:
-            raise ValueError(
-                "system_instructions 与当前问题已经超过本轮上下文 token 预算"
+            raise ContextBudgetExceeded(
+                "系统指令、运行态背景与当前问题已经超过本轮上下文 token 预算"
             )
         # ② 载入工作记忆：本会话近期消息，供引用解析与规划判断。
         working = await self.memory_reader.load_working(
@@ -158,18 +159,25 @@ class ContextEngine:
             conversation_id=request.conversation_id,
             limit=None,
         )
-        logger.info("引入工作记忆成功！")
-        # ③ 解析引用并规划检索：resolver 把附件等指代落成 asset_ids；planner 决定本轮召回来什么——context.plan 事件与 trace.retrieval_plan 的源头。
+        logger.info("===== 引入工作记忆成功！=======")
+        logger.info(
+            "working=%s ",
+            working,
+            extra={"working": working},
+        )
+        # ③ 解析引用并规划检索:。
         resolution = await self.resolver.resolve(request, working)
-        plan = await self.planner.plan(request, working, resolution)
 
-        # ④ 候选预算：总预算扣掉固定开销与格式保留；计划包含 working 且有空间时，压缩旧会话进候选（可能顺带滚动更新摘要）。
+        # 让 LLM 列出“这一轮需要召回哪些上下文”的计划
+        plan = await self.planner.plan(request, working, resolution)
+        print('上下文召回plan=================', plan)
+        # ④ 是否需要补充上下文 （进行摘要和压缩，或者更新摘要和压缩）
         candidate_budget = max(
             0,
             token_budget - base_tokens - self.policy.format_reserve_tokens,
         )
         history_result = None
-        if plan.include_working and candidate_budget > 0:
+        if plan.include_working and candidate_budget > 0: # 如果<=0, 就是异常了，一个上下文计划都超出了预算
             history_result = await self.history.prepare(
                 user_id=request.user_id,
                 conversation_id=request.conversation_id,
@@ -453,7 +461,7 @@ class ContextEngine:
                 )
             removable = [item for item in items if not item.required]
             if not removable:
-                raise ValueError("明确要求保留的上下文与当前问题超过本轮 token 预算")
+                raise ContextBudgetExceeded("明确要求保留的上下文与当前问题超过本轮 token 预算")
             scores = {
                 decision.item_id: decision.score
                 for decision in decisions

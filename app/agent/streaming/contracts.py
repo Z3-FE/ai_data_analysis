@@ -20,6 +20,7 @@ class EventType(StrEnum):
     RUN_RESULT = "run.result"  # API 层在 operation 返回后发：最终结果载荷（前端渲染最终答案用它）
     RUN_COMPLETED = "run.completed"  # 终态宣告：正常完成
     RUN_FAILED = "run.failed"  # 终态宣告：不可恢复失败
+    RUN_BUDGET_EXCEEDED = "run.budget_exceeded"  # 终态宣告：上下文超预算
     RUN_TIMEOUT = "run.timeout"  # 终态宣告：超出运行级 deadline
     RUN_CANCELLED = "run.cancelled"  # 终态宣告：用户取消/断连收口
     # —— SSE 流 ——

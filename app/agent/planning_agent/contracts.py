@@ -50,7 +50,7 @@ class AskUserDraft(ContractModel):
 class PlannerActionDraft(ContractModel):
     """LLM 解析结果；不进入状态、Checkpoint 或业务存储。"""
 
-    action_type: ActionType
+    action_type: ActionType | Literal["daily_chat"]
     tool_call: ToolCallDraft | None = None
     ask_user: AskUserDraft | None = None
     final_answer: str | None = Field(default=None, min_length=1, max_length=20_000)
@@ -59,6 +59,10 @@ class PlannerActionDraft(ContractModel):
     @model_validator(mode="after")
     def validate_payload(self) -> "PlannerActionDraft":
         payloads = (self.tool_call, self.ask_user, self.final_answer)
+        if self.action_type == "daily_chat":
+            if any(value is not None for value in payloads):
+                raise ValueError("daily_chat 草稿不包含动作 payload")
+            return self
         if sum(value is not None for value in payloads) != 1:
             raise ValueError("PlannerActionDraft 必须且只能包含一个动作 payload")
         if self.action_type is ActionType.TOOL_CALL and self.tool_call is None:

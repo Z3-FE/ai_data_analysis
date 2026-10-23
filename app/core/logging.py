@@ -5,15 +5,38 @@
 """
 
 import logging
+import os
+import sys
 
 from app.core.config import settings
 
 
+class ConsoleFormatter(logging.Formatter):
+    """只改变控制台显示，不改写 LogRecord 内容。"""
+
+    def __init__(self, fmt: str, *, use_color: bool) -> None:
+        super().__init__(fmt)
+        self.use_color = use_color
+
+    def format(self, record: logging.LogRecord) -> str:
+        text = super().format(record)
+        if self.use_color and record.levelno == logging.INFO:
+            return f"\033[36m{text}\033[0m"
+        return text
+
+
 def setup_logging() -> None:
     """初始化项目日志格式和日志级别。"""
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        ConsoleFormatter(
+            settings.logging.format,
+            use_color=sys.stderr.isatty() and "NO_COLOR" not in os.environ,
+        )
+    )
     logging.basicConfig(
         level=settings.logging.level,
-        format=settings.logging.format,
+        handlers=[handler],
         force=True,
     )
 

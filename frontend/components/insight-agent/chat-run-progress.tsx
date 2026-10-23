@@ -297,7 +297,7 @@ export function ChatRunSummaryChip({
   onOpenTrace?: () => void;
 }) {
   const waiting = status === "waiting_confirmation";
-  const failed = status === "failed" || status === "timeout" || status === "cancelled" || status === "stream_failed";
+  const failed = status === "budget_exceeded" || status === "failed" || status === "timeout" || status === "cancelled" || status === "stream_failed";
   const tone = waiting
     ? "text-amber-600"
     : failed

@@ -19,6 +19,8 @@ from app.agent.state_result_store.contracts import (
 )
 from app.agent.streaming.writer import NullHarnessEventWriter
 from app.models.agent_history import ConversationMessageModel
+from app.models.context_engine import ContextConversationSummaryModel
+from app.agent.memory.types.working import WorkingMemory
 from app.models.memory import MemoryFormationRunModel
 from app.repositories.conversation_repository import ConversationRepository
 from app.repositories.finalization_repository import (
@@ -112,6 +114,41 @@ class _SubmitFailingFormationService:
 
 
 class FinalizationRecoveryTest(unittest.IsolatedAsyncioTestCase):
+    async def test_budget_exceeded_is_saved_but_not_loaded_as_working_memory(self):
+        async with self.session_factory() as session:
+            session.add(ContextConversationSummaryModel(
+                summary_id=self.identity["run_id"], user_id=self.identity["user_id"],
+                conversation_id=self.identity["conversation_id"], content="包含本轮输入的旧摘要",
+                covered_from_index=0, covered_through_index=0, source_message_count=1,
+                token_count=10, version=1,
+            ))
+            await session.commit()
+        context_engine, _, _ = _engine(FakeMemoryReader())
+        ref = HarnessRunRef(**self.identity)
+        service = PostgresFinalizationService(
+            conversation_repository=self.repository,
+            run_store=self.run_store,
+            ledger=self.ledger,
+        )
+        controller = LoopController(
+            context_engine=context_engine,
+            planning_agent=FakePlanningAgent(final_answer="不应调用"),
+            finalization_service=service, run_store=self.run_store,
+            event_writer=NullHarnessEventWriter(run_ref=ref),
+        )
+        result = await controller.start(StartRunCommand(run_ref=ref, input_text="超长输入" * 2000))
+        self.assertEqual(result.status, HarnessStatusType.BUDGET_EXCEEDED)
+        history = await self.repository.get_conversation(ref.user_id, ref.conversation_id)
+        self.assertEqual(history["turns"][0]["status"], "budget_exceeded")
+        self.assertTrue(history["messages"])
+        self.assertIsNone(history["conversation"]["active_run_id"])
+        working = await WorkingMemory(self.session_factory).load(
+            user_id=ref.user_id, conversation_id=ref.conversation_id,
+        )
+        self.assertEqual(working, [])
+        async with self.session_factory() as session:
+            self.assertIsNone(await session.get(ContextConversationSummaryModel, ref.run_id))
+
     async def asyncSetUp(self) -> None:
         self.engine, self.session_factory = create_session_factory()
         await ensure_tables(self.engine)

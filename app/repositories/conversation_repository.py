@@ -19,11 +19,13 @@ from app.models.agent_history import (
     TurnOutputModel,
 )
 from app.models.harness import HarnessRunModel
+from app.models.context_engine import ContextConversationSummaryModel
 
 
 # 视为"占用者已死"的运行终态；running/waiting_confirmation 视为仍占用，照常拒绝。
 _DEAD_RUN_STATUSES = frozenset(
     {
+        HarnessStatusType.BUDGET_EXCEEDED,
         HarnessStatusType.COMPLETED,
         HarnessStatusType.FAILED,
         HarnessStatusType.CANCELLED,
@@ -328,6 +330,14 @@ class ConversationRepository:
             turn.error_message = error_message or None
             turn.completed_at = now
             conversation.updated_at = now
+            if status == HarnessStatusType.BUDGET_EXCEEDED:
+                # 后续循环才超预算时，该轮输入可能已进入摘要；下次从有效历史重建。
+                await session.execute(
+                    delete(ContextConversationSummaryModel).where(
+                        ContextConversationSummaryModel.conversation_id == conversation_id,
+                        ContextConversationSummaryModel.user_id == user_id,
+                    )
+                )
 
             if assistant_content:
                 # conversation_messages 写入源头②：assistant 最终回复固定 sequence_no=1。

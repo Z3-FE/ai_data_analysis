@@ -77,6 +77,7 @@ class FinalizationResult(ContractModel):
     @model_validator(mode="after")
     def validate_terminal_result(self) -> "FinalizationResult":
         if self.status not in {
+            HarnessStatusType.BUDGET_EXCEEDED,
             HarnessStatusType.COMPLETED,
             HarnessStatusType.FAILED,
             HarnessStatusType.CANCELLED,

@@ -134,6 +134,7 @@ function statusOf(value: unknown): RunStatus | undefined {
   if (value === "waiting_confirmation" || value === "needs_user") return "partial";
   if (
     value === "temporary_error"
+    || value === "budget_exceeded"
     || value === "unrecoverable_error"
     || value === "timeout"
     || value === "cancelled"
@@ -150,6 +151,7 @@ function terminal(status: RunStatus | undefined) {
 export function runFailed(events: DebugEvent[]) {
   return events.some((event) =>
     event.type === "run.failed"
+    || event.type === "run.budget_exceeded"
     || event.type === "run.timeout"
     || event.type === "run.cancelled"
     || event.type === "stream.failed");
@@ -168,7 +170,7 @@ export function formatDuration(ms: number) {
 
 function mainStep(sourceStep: string, type: string) {
   if (type === "run.started") return "开始执行";
-  if (type === "run.completed" || type === "run.failed" || type === "run.timeout" || type === "run.cancelled" || type === "run.result" || type === "stream.failed") return "运行结果";
+  if (type === "run.completed" || type === "run.budget_exceeded" || type === "run.failed" || type === "run.timeout" || type === "run.cancelled" || type === "run.result" || type === "stream.failed") return "运行结果";
   if (type.startsWith("context.")) return "构建上下文";
   if (type.startsWith("planner.")) return "任务划分";
   if (type === "action.committed") return "提交动作";
@@ -300,7 +302,7 @@ function statusFromEventType(type: string): RunStatus | undefined {
 /** 事件条目的展示状态：显式终态优先，其次按类型与同族生命周期推导。 */
 function itemStatus(event: DebugEvent, siblings: DebugEvent[]): RunStatus | undefined {
   if (event.status && event.status !== "running") return event.status;
-  if (event.type === "error" || event.type.endsWith(".failed") || event.type === "run.timeout" || event.type === "run.cancelled") return "failed";
+  if (event.type === "error" || event.type === "run.budget_exceeded" || event.type.endsWith(".failed") || event.type === "run.timeout" || event.type === "run.cancelled") return "failed";
   // 显式 running 不能短路同族终态判断：进度标记在所属工具完成后应随同族事件收敛。
   const derived = statusFromEventType(event.type) ?? (event.status === "running" ? "running" : undefined);
   if (derived === "running") {
@@ -320,6 +322,7 @@ function statusForEvents(events: DebugEvent[], fallback?: RunStatus, runComplete
   for (const event of events.slice().sort((left, right) => eventOrder(left) - eventOrder(right))) {
     if (
       event.type === "error"
+      || event.type === "run.budget_exceeded"
       || event.type.endsWith(".failed")
       || event.type === "run.timeout"
       || event.type === "run.cancelled"
@@ -334,7 +337,7 @@ function statusForEvents(events: DebugEvent[], fallback?: RunStatus, runComplete
   }
   if (runCompleted && events.length && latestStatus !== "failed") return "success";
   // 运行已到终态（取消/超时/失败）：已完成模块保持终态，仍在执行的模块标记为中断（partial）。
-  const interrupted = events.some((event) => event.type === "run.cancelled" || event.type === "run.timeout" || event.type === "run.failed");
+  const interrupted = events.some((event) => event.type === "run.budget_exceeded" || event.type === "run.cancelled" || event.type === "run.timeout" || event.type === "run.failed");
   if (interrupted) return latestStatus === "running" ? "partial" : latestStatus || "pending";
   return latestStatus || "pending";
 }
@@ -403,6 +406,7 @@ function displayLabel(event: DebugEvent) {
   if (event.type === "run.started") return "运行开始";
   if (event.type === "run.completed") return "运行完成";
   if (event.type === "run.failed") return "运行失败";
+  if (event.type === "run.budget_exceeded") return "上下文超预算";
   if (event.type === "run.timeout") return "运行超时";
   if (event.type === "run.cancelled") return "运行已取消";
   if (event.type === "run.result") return "运行结果";

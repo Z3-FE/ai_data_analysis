@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.agent.context_engine.engine import ContextEngine
+from app.agent.context_engine.errors import ContextBudgetExceeded
 from app.agent.context_engine.harness_context import HarnessContextRequestFactory
 from app.agent.context_engine.contracts import CompiledContext, ContextSourceKind
 from app.agent.finalization.errors import FinalizationFailure
@@ -235,6 +236,20 @@ class LoopController:
                 # 当前请求已无法返回结果，让收口任务继续完成并消费异常。
                 finalization_task.add_done_callback(self._consume_task_result)
                 raise
+        except ContextBudgetExceeded as exc:
+            state = await self._prepare_interruption_state(
+                command=command,
+                state=state,
+                code="context_budget_exceeded",
+                message=str(exc),
+            )
+            return await self._finalize(
+                command=command,
+                state=state,
+                compiled_context=None,
+                final_answer="本轮上下文超过 token 预算，请缩短输入或调整上下文预算后重试。",
+                terminal_status=HarnessStatusType.BUDGET_EXCEEDED,
+            )
         except FinalizationFailure:
             # 收口中断必须保持 running/finalization 现场，交给 reconcile 恢复；
             # 在这里降级成 FAILED 会伪造一个用户从未见过的终态。
@@ -272,7 +287,9 @@ class LoopController:
     ) -> None:
         """把运行级中断写进下一次可恢复/可查询的 Harness 现场。"""
         state["harness"]["last_error"] = RunError(
-            category=ErrorCategory.TIMEOUT
+            category=ErrorCategory.CONTEXT
+            if code == "context_budget_exceeded"
+            else ErrorCategory.TIMEOUT
             if code == "run_deadline_exceeded"
             else ErrorCategory.CANCELLED,
             code=code,
@@ -1125,6 +1142,7 @@ class LoopController:
         )
         # 终态已成功持久化，发布一次本次运行的终态事件
         event_type = {
+            HarnessStatusType.BUDGET_EXCEEDED: EventType.RUN_BUDGET_EXCEEDED,
             HarnessStatusType.COMPLETED: EventType.RUN_COMPLETED,
             HarnessStatusType.FAILED: EventType.RUN_FAILED,
             HarnessStatusType.TIMEOUT: EventType.RUN_TIMEOUT,

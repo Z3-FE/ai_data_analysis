@@ -23,10 +23,15 @@ from app.agent.memory.interfaces import MemoryRecord
 class _PlannerDecision(BaseModel):
     """LLM 规划器的受控输出，模型不能直接执行检索。"""
 
+    # 是否保留当前会话历史；若引用解析判定依赖历史，后续规则仍会强制开启。
     include_working: bool = True
+    # 建议召回的长期记忆类型；WORKING 会被过滤，由 include_working 单独控制。
     memory_types: list[MemoryType] = Field(default_factory=list)
+    # 是否建议检索外部业务知识；仅当调用方同时开启 enable_rag 时生效。
     use_rag: bool = False
+    # 召回使用的查询文本，可消解明确指代；为空时回退到本轮原始问题。
     search_query: str = ""
+    # 选择这些信息源的简要理由；为空时使用默认说明，写入最终检索计划。
     reason: str = ""
 
 

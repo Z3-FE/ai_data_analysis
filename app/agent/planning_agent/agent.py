@@ -6,6 +6,7 @@ import json
 import logging
 from typing import Any
 
+from app.agent.daily_chat_agent import DailyChatAgent, is_greeting
 from app.agent.planning_agent.contracts import (
     ActionIssuanceContext,
     PlannerActionDraft,
@@ -16,7 +17,7 @@ from app.agent.planning_agent.errors import PlannerFailure, planner_error
 from app.agent.planning_agent.normalizer import normalize_action
 from app.agent.planning_agent.validator import validate_draft
 from app.agent.prompts.prompt_loader import load_prompt
-from app.agent.state_result_store.contracts import PlannerCapabilities, PlannerInput, NextAction
+from app.agent.state_result_store.contracts import ActionType, PlannerCapabilities, PlannerInput, NextAction
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +30,11 @@ class PlanningAgent(PlanningPort):
         *,
         llm_client: PlannerModelClient,
         capabilities: PlannerCapabilities | None = None,
+        daily_chat_agent: DailyChatAgent | None = None,
     ) -> None:
         self.llm_client = llm_client
         self.capabilities = capabilities or PlannerCapabilities()
+        self.daily_chat_agent = daily_chat_agent
         self.calls: list[PlannerInput] = []
 
     async def plan(
@@ -46,8 +49,26 @@ class PlanningAgent(PlanningPort):
         )
         raw: str | None = None
         try:
-            raw = await self.llm_client.complete(prompt)
-            draft = PlannerActionDraft.model_validate_json(self._extract_json(raw))
+            # 仅首次规划的纯问候走快捷分支；确认回复与工具迭代仍交给 Planner。
+            if (
+                self.daily_chat_agent is not None
+                and value.state_view.iteration == 0
+                and issuance.action_seq == 1
+                and is_greeting(value.state_view.original_goal)
+            ):
+                draft = PlannerActionDraft(action_type="daily_chat")
+            else:
+                raw = await self.llm_client.complete(prompt)
+                draft = PlannerActionDraft.model_validate_json(self._extract_json(raw))
+            if draft.action_type == "daily_chat":
+                if self.daily_chat_agent is None or not self.capabilities.allow_final_answer:
+                    raise planner_error("action_not_allowed", "当前 Planner 不允许日常聊天")
+                answer = await self.daily_chat_agent.answer(messages=value.compiled_context.messages)
+                draft = PlannerActionDraft(
+                    action_type=ActionType.FINAL_ANSWER,
+                    final_answer=answer,
+                    rationale_summary="由日常聊天分支直接作答",
+                )
             validate_draft(
                 draft,
                 tool_specs=value.tool_specs,
