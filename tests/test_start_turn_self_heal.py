@@ -6,11 +6,11 @@
 """
 
 import unittest
-from datetime import datetime
 
 from sqlalchemy import select
 
 from app.agent.state_result_store.contracts import HarnessStatusType
+from app.models.base import utcnow
 from app.models.agent_history import ConversationModel, ConversationTurnModel
 from app.models.harness import HarnessRunModel
 from app.repositories.conversation_repository import ConversationRepository
@@ -70,7 +70,7 @@ class StartTurnSelfHealTest(unittest.IsolatedAsyncioTestCase):
                     run_id=occupant["run_id"],
                     input_text="历史问题",
                     status="running",
-                    started_at=datetime.utcnow(),
+                    started_at=utcnow(),
                 )
             )
             if occupant_status is not None:

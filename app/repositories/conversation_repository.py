@@ -4,7 +4,7 @@
 """
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -20,6 +20,11 @@ from app.models.agent_history import (
 )
 from app.models.harness import HarnessRunModel
 from app.models.context_engine import ContextConversationSummaryModel
+
+
+def _utcnow() -> datetime:
+    """返回与当前 PostgreSQL TIMESTAMP 字段一致的无时区 UTC 时间。"""
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 # 视为"占用者已死"的运行终态；running/waiting_confirmation 视为仍占用，照常拒绝。
@@ -166,7 +171,7 @@ class ConversationRepository:
         input_text: str,
     ) -> bool:
         """以一个事务写入用户问题，并把会话置为 running。"""
-        now = datetime.utcnow()
+        now = _utcnow()
         # 幂等操作： 同一个操作，执行一次和执行多次，对系统产生的结果/状态影响是一样的
         async with self.session_factory() as session:
             conversation = await session.scalar(
@@ -274,7 +279,7 @@ class ConversationRepository:
         error_message: str = "",
     ) -> bool:
         """保存助手最终消息和受控结构化输出，并结束当前轮次。"""
-        now = datetime.utcnow()
+        now = _utcnow()
         async with self.session_factory() as session:
             conversation = await session.scalar(
                 select(ConversationModel)
@@ -389,7 +394,7 @@ class ConversationRepository:
         只有 active_run_id 与当前 run 一致时才允许释放，防止收口
         误清其他运行的责任字段。
         """
-        now = datetime.utcnow()
+        now = _utcnow()
         async with self.session_factory() as session:
             conversation = await session.scalar(
                 select(ConversationModel)
@@ -408,6 +413,18 @@ class ConversationRepository:
             conversation.updated_at = now
             await session.commit()
             return True
+
+    async def get_active_run_id(
+        self, *, conversation_id: str, user_id: str
+    ) -> str | None:
+        """读取会话当前占用的 run_id；会话不存在或未占用时返回 None。"""
+        async with self.session_factory() as session:
+            return await session.scalar(
+                select(ConversationModel.active_run_id).where(
+                    ConversationModel.conversation_id == conversation_id,
+                    ConversationModel.user_id == user_id,
+                )
+            )
 
     async def list_conversations(
         self, user_id: str, limit: int = 50

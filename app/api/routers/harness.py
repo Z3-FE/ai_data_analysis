@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -24,6 +25,7 @@ from app.agent.loop_controller.action_commit import (
     ActionCommitter,
 )
 from app.agent.loop_controller.contracts import (
+    FinalizationInput,
     LoopResult,
     ResumeRunCommand,
     StartRunCommand,
@@ -90,6 +92,9 @@ from app.repositories.qdrant.qa_meta_tables_repository import (
 
 router = APIRouter(prefix="/harness", tags=["harness"])
 logger = logging.getLogger(__name__)
+
+# 过期后再等一会儿，让仍存活的控制器有机会自己完成超时处理，避免两边同时结束同一个运行。
+_EXPIRED_RUN_GRACE = timedelta(seconds=60)
 
 
 class HarnessRunRequest(BaseModel):
@@ -419,6 +424,8 @@ def _http_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=status_code, detail=message)
     if isinstance(exc, ValueError):
         return HTTPException(status_code=409, detail=str(exc))
+    # 未识别的异常只给前端通用提示，完整堆栈写进服务端日志，方便排查。
+    logger.error("Harness request failed", exc_info=exc)
     return HTTPException(status_code=500, detail="Harness 运行失败")
 
 
@@ -500,6 +507,97 @@ async def _finish_unhandled_start_failure(
         logger.exception(
             "Harness startup failure conversation cleanup failed: run_id=%s",
             run_ref.run_id,
+        )
+
+
+async def _finish_expired_active_run(
+    *,
+    session_factory: Any,
+    conversation_id: str,
+    user_id: str,
+) -> None:
+    """会话被已过截止时间的运行占用时，按 timeout 结束它并释放会话。
+
+    进程被强制结束（调试停止、重启、崩溃）后，运行会一直停在 running；
+    这里只处理已超过 deadline_at 的运行，未过期的运行仍由 start_turn() 拒绝。
+    """
+    try:
+        run_id = await ConversationRepository(session_factory).get_active_run_id(
+            conversation_id=conversation_id, user_id=user_id
+        )
+        if run_id is None:
+            return
+        run_store = PostgresHarnessRunStore(session_factory)
+        try:
+            state = await run_store.load_by_id(run_id=run_id, user_id=user_id)
+        except HarnessPersistenceError:
+            # 运行记录不存在时由 start_turn() 释放占用。
+            return
+        snapshot = HarnessStateSnapshot.model_validate(state["harness"])
+        if snapshot.status not in {
+            HarnessStatusType.RUNNING,
+            HarnessStatusType.WAITING_CONFIRMATION,
+        }:
+            return
+        if (
+            snapshot.deadline_at is None
+            or datetime.now(UTC) < snapshot.deadline_at + _EXPIRED_RUN_GRACE
+        ):
+            return
+
+        run_ref = _run_ref_from_state(state)
+        ledger = PostgresFinalizationLedger(session_factory)
+        finalization = PostgresFinalizationService(
+            conversation_repository=ConversationRepository(session_factory),
+            ledger=ledger,
+            run_store=run_store,
+        )
+        if await ledger.get(run_id=run_id, user_id=user_id) is not None:
+            # 结束内容已锁定，只把中断的结束处理继续做完。
+            await finalization.reconcile(run_id=run_id, user_id=user_id)
+            return
+
+        harness_state = state["harness"]
+        if snapshot.status is HarnessStatusType.WAITING_CONFIRMATION:
+            # 状态版本只允许每次保存加 1，所以先单独保存“退出等待”这一步。
+            state["harness"] = transition_harness_state(
+                harness_state,
+                status=HarnessStatusType.RUNNING,
+                phase=LoopPhaseStatusType.RESTORE_RUN,
+            )
+            await run_store.save(run_ref, state)
+            harness_state = state["harness"]
+        harness_state["last_error"] = RunError(
+            category=ErrorCategory.TIMEOUT,
+            code="run_deadline_exceeded",
+            message="运行超过截止时间且未正常结束，进入新请求前已自动停止。",
+            retryable=False,
+        ).model_dump(mode="json")
+        final_answer = "上次任务未正常结束且已超过运行时限，系统已自动停止。"
+        harness_state["final_answer"] = final_answer
+        state["harness"] = transition_harness_state(
+            harness_state,
+            status=HarnessStatusType.RUNNING,
+            phase=LoopPhaseStatusType.FINALIZATION,
+            terminal_intent=HarnessStatusType.TIMEOUT.value,
+        )
+        await run_store.save(run_ref, state)
+        await finalization.finalize(
+            FinalizationInput(
+                run_ref=run_ref,
+                user_query=state["input_text"],
+                final_answer=final_answer,
+                terminal_status=HarnessStatusType.TIMEOUT,
+                error_message=harness_state["last_error"]["message"],
+                asset_ids=tuple(state.get("asset_ids", ())),
+            )
+        )
+        logger.info("Expired harness run finalized as timeout: run_id=%s", run_id)
+    except Exception:
+        # 清理失败时保持原状态，后续 start_turn() 仍会拒绝并返回 409。
+        logger.exception(
+            "Expired harness run cleanup failed: conversation_id=%s",
+            conversation_id,
         )
 
 
@@ -657,6 +755,11 @@ async def run_harness(payload: HarnessRunRequest) -> dict[str, Any]:
                 meta_session=meta_session,
                 dw_session=dw_session,
             )
+            await _finish_expired_active_run(
+                session_factory=session_factory,
+                conversation_id=conversation_id,
+                user_id=payload.user_id,
+            )
             await ConversationRepository(session_factory).start_turn(
                 conversation_id=conversation_id,
                 user_id=payload.user_id,
@@ -718,6 +821,20 @@ async def run_harness_stream(payload: HarnessRunRequest) -> StreamingResponse:
         event_sink = QueueEventSink(queue)         #   event_sink —— 入队适配器（put_nowait 非阻塞，不拖慢工具执行），同时留存全量事件，
         writer = HarnessEventWriter(run_ref=run_ref, sink=event_sink)   #   writer —— Harness 内部统一事件出口：补 run_ref/event_id/时间戳与 source/phase/iteration
 
+        # 先结束过期的遗留运行，再检查并登记会话占用；冲突直接返回 409。
+        await _finish_expired_active_run(
+            session_factory=session_factory,
+            conversation_id=conversation_id,
+            user_id=payload.user_id,
+        )
+        await ConversationRepository(session_factory).start_turn(
+            conversation_id=conversation_id,
+            user_id=payload.user_id,
+            thread_id=conversation_id,
+            turn_id=run_ref.turn_id,
+            run_id=run_ref.run_id,
+            input_text=payload.input_text,
+        )
 
         async def operation() -> LoopResult:
             async with meta_factory() as meta_session, dw_factory() as dw_session:
@@ -731,15 +848,6 @@ async def run_harness_stream(payload: HarnessRunRequest) -> StreamingResponse:
                     meta_session=meta_session,
                     dw_session=dw_session,
                     event_writer=writer,
-                )
-                # 开始一轮对话
-                await ConversationRepository(session_factory).start_turn(
-                    conversation_id=conversation_id,
-                    user_id=payload.user_id,
-                    thread_id=conversation_id,
-                    turn_id=run_ref.turn_id,
-                    run_id=run_ref.run_id,
-                    input_text=payload.input_text,
                 )
                 # 开始调度中心
                 return await controller.start(

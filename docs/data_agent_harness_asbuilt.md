@@ -1,158 +1,89 @@
-# Data Agent Harness 全量技术文档（as-built）
+# Data Agent：跟着一次请求读懂 Harness（as-built）
 
-> **定位**：记录当前代码实际行为的技术文档。每个结论必须带代码引用（项目相对路径 + 函数/步骤号）；与设计文档 SDD（`data_agent_harness_sdd.md` / `data_agent_harness_incremental_sdd.md`）不一致时以代码为准，并在当节标注「与 SDD 偏差：…」。
-> **只写现状**：不写"将来会做"、"计划支持"。未实现的能力在疑点清单里登记。
-> **内容放在哪里**：整体结构和模块职责写在本文对应章节；节点内部细节（LLM 原始返回等）查看后端日志；完整事件数据查看执行面板的「全部事件」页签。
-
-## 阅读指引
-
-- **初次阅读**：先读第 1 章总览，再按第 2～7 章查阅模块、事件、记忆、前端、配置和测试内容。
-- **维护者**：直接查对应模块章节、参考表与附录字段字典。
-- **图**：三张图已按代码核对（2026-09-17，关键结论附 `file:line`）；后续代码变更需同步更新图与结论。
-
----
-
-# 架构与模块概览
-
-以下通过架构图、时序图、状态迁移图和模块章节说明 Harness 的整体结构。
-
-## 1. 总览
-
-### 1.1 架构图（初稿，待校对）
-
-```mermaid
-flowchart TB
-    UI[前端 insight-agent<br/>聊天 + 执行面板] -->|HTTP / SSE| API[FastAPI 路由<br/>app/api/routers]
-
-    API --> OLD[旧图 AgentGraph<br/>问数 / 分析 / 日常聊天<br/>app/agent/graph.py]
-    API --> HC[Harness LoopController<br/>app/agent/loop_controller/controller.py]
-
-    subgraph HARNESS[Harness 内核]
-        CE[ContextEngine<br/>记忆 / 知识 / 证据]
-        PL[Planner<br/>NextAction]
-        AC[ActionNormalizer / Committer<br/>action_seq + fencing_token]
-        TR[ToolRuntime<br/>注册表 + 超时 + artifact]
-        FS[FinalizationService<br/>Ledger 固定顺序 + reconcile]
-        QG[query_data 内部图<br/>召回 → SQL → 执行 → 增强]
-    end
-
-    HC --> CE
-    HC --> PL
-    HC --> AC
-    HC --> TR
-    TR --> QG
-    HC --> FS
-
-    HC -->|HarnessEvent| EW[HarnessEventWriter<br/>app/agent/streaming/writer.py]
-    OLD -->|stream_writer 事件| EW
-    EW --> SINK[QueueEventSink<br/>SSE 实时推送 + 保存过程记录]
-
-    PG[(PostgreSQL<br/>harness_runs / checkpointer / 会话)]
-    MY[(MySQL<br/>dw 数仓 / meta 元数据)]
-    QDR[(Qdrant<br/>向量检索 / 记忆)]
-    ES[(Elasticsearch<br/>维度值全文)]
-    N4[(Neo4j<br/>记忆中的实体与关系检索数据)]
-
-    FS --> PG
-    HC --> PG
-    TR --> MY
-    CE --> QDR
-    CE --> ES
-```
-
-### 1.2 正常路径时序图（已按代码核对）
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant FE as 前端
-    participant API as harness 路由
-    participant LC as LoopController
-    participant CE as ContextEngine
-    participant PL as Planner
-    participant TR as ToolRuntime
-    participant FZ as Finalization
-
-    FE->>API: POST /run（用户问题）
-    activate API
-    API->>LC: start（建 run 现场：iteration=0、deadline_at）
-    API-->>FE: SSE 建立，后续事件实时推送
-    deactivate API
-
-    loop 每一轮
-        LC->>CE: build（问题 + 记忆/知识/证据）
-        CE-->>LC: CompiledContext
-        Note over LC: context.started → context.memory_retrieved<br/>→ context.knowledge_retrieved → context.plan<br/>→ context.compiled → context.completed
-        LC->>PL: CompiledContext（+ 按规定格式整理的错误信息）
-        PL-->>LC: NextAction（tool_call / ask_user / finish）
-        Note over LC: planner.started → planner.completed<br/>→ action.committed（action_seq 递增）
-        LC->>TR: execute（idle 超时包装，attempt 从 1 起）
-        TR->>TR: query_data 内部图（事件桥接为 tool.progress）
-        TR-->>LC: ToolResult（真实结果或分类错误，不伪造）
-        Note over LC: 记录观察 → iteration += 1<br/>达到 max_iterations 则 _finalize(TIMEOUT)
-    end
-
-    LC->>FZ: _finalize（Planner 判定 finish）
-    Note over FZ: ledger：prepared → history_saved →<br/>checkpoint_saved → released →<br/>formation_submitted → completed
-    FZ-->>FE: run.completed + run.result（final_answer）
-```
-
-### 1.3 HarnessStatusType / LoopPhaseStatusType 状态迁移图（已按代码核对）
-
-```mermaid
-stateDiagram-v2
-    direction TB
-    [*] --> RUNNING: run.started（iteration=0）
-
-    state RUNNING {
-        [*] --> BUILD_CONTEXT
-        BUILD_CONTEXT --> PLAN: context.completed
-        PLAN --> PLAN: planner.retrying（重试预算内）
-        PLAN --> VALIDATE_ACTION: 产出动作
-        PLAN --> COMPLETED: finish 动作（COMPLETED 唯一入口）
-        VALIDATE_ACTION --> EXECUTE_TOOL: action.committed（tool_call）
-        VALIDATE_ACTION --> PLAN: 校验失败 → 反馈重规划
-        VALIDATE_ACTION --> WAITING_CONFIRMATION: ask_user（提交后暂停）
-        EXECUTE_TOOL --> EXECUTE_TOOL: 允许重复调用的工具临时失败（attempt+1）
-        EXECUTE_TOOL --> HANDLE_TOOL_RESULT: tool.completed / tool.failed
-        HANDLE_TOOL_RESULT --> WAITING_CONFIRMATION: 工具返回 NEEDS_USER
-        HANDLE_TOOL_RESULT --> RECORD_OBSERVATION: 非确认类结果
-        RECORD_OBSERVATION --> BUILD_CONTEXT: iteration += 1<br/>（controller.py:510）
-    }
-
-    WAITING_CONFIRMATION --> BUILD_CONTEXT: confirmation.resolved<br/>（resume 后重建上下文重走一轮）
-
-    RUNNING --> TIMEOUT: deadline_at 到期 / 达到 max_iterations
-    RUNNING --> CANCELLED: 客户端断开（shield 尝试保护结束保存）
-    RUNNING --> FAILED: 未预期异常
-
-    note right of WAITING_CONFIRMATION
-        唯一非终态分支：不走 Finalization Ledger。
-        两个进入点：planner ask_user（VALIDATE_ACTION 后）、
-        工具返回 NEEDS_USER（HANDLE_TOOL_RESULT 后）。
-        恢复不原地续跑：从 BUILD_CONTEXT 重走一轮。
-    end note
-    note bottom of COMPLETED
-        四种终态统一经 _finalize 处理（phase=FINALIZATION）：
-        按固定顺序保存结果并记录进度，解除 active_run 占用
-    end note
-```
-
-> **已核对（2026-09-17）**，原三个待校对点的结论：
-> ① 恢复不是从暂停处接着执行：`resume()` 在同一个数据库事务中保存用户回复并将确认标为已处理，然后通过 `_run_guarded` 重新进入 `_run`，回到 `BUILD_CONTEXT` 准备上下文、重新规划（controller.py:137-181、336-342）；用户答复已写入 state，Planner 可以从输入中读到。`confirmation.resolved` 事件的 phase 为 `RESTORE_RUN`（controller.py:159-165）。
-> ② `max_iterations` 检查在 RECORD_OBSERVATION 阶段、`iteration += 1` 与保存现场之后（controller.py:510-519），达到即 `_finalize(TIMEOUT)`——终态是 **TIMEOUT** 而非 FAILED。
-> ③ `COMPLETED` 只从 FINAL_ANSWER 处理分支进入（controller.py:423）；`_finalize` 默认 `terminal_status=COMPLETED`（controller.py:1013），其余全部调用点均显式指定 FAILED / CANCELLED / TIMEOUT。
+> 本文是当前实现的学习说明，不是目标设计。以 2026-10-23 核对的源码为准，关键步骤附项目相对路径和函数名，方便在编辑器中搜索。示例中的问题、编号和 token 数是教学用数据，不代表真实运行结果。
 >
-> 另注：LoopPhaseStatusType 还有三个未在图中单独画成步骤的值：`START_RUN`（start 入口事件，controller.py:126）、`RESTORE_RUN`（准备恢复或中断所需的运行状态）、`FINALIZATION`（保存结果、处理运行结束）。
+> 阅读范围只包含新 Harness 的流式主链：`/api/harness/run/stream` 与 `/api/harness/run/resume/stream`，不介绍旧的顶层路由或非流式调用方式。
+>
+> **当前讲解进度**：ContextEngine 的 `ConversationHistoryManager.prepare()`。后面的处理暂时只保留标题；接下来随源码讲解逐段补充，不提前展开。
 
-### 1.4 术语表
+## 阅读路线
 
-<!-- 逐条补充：run / turn / thread、iteration、NextAction、action、action_seq、attempt、fencing_token、ledger stage、CompiledContext、ToolResult、observation -->
+第一次阅读建议按顺序走：**先看完整请求 → 找到源码位置 → 理解循环 → 理解上下文预算 → 跟着消息变化理解 `prepare()`**。
 
+- 第 1 章建立全景，并用一个例子串起完整任务。
+- 第 2 章沿真实数据流拆解实现。2.3 说明入口组装，2.4 解释循环设计，2.5 当前写到历史整理和增量摘要。
+- 2.5 中 `prepare()` 之后的步骤，以及 2.6 起的模块章节，暂时保留标题。
+- 后续的事件、记忆、前端、配置和测试章节也只保留提纲，讲到时再补充。
 
-| 术语     | 含义                                                                                                                                       | 定义位置              |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------ | --------------------- |
-| Artifact | 保存工具完整结果的记录，存放在 `harness_artifacts` 表中。编号根据运行、动作和结果内容生成；模块之间传递的是结果引用 `result_ref`，需要完整内容时，再通过 ArtifactStore 按引用读取，并检查它是否属于当前运行。 | app/models/harness.py::HarnessArtifactModel；app/repositories/harness_artifact_repository.py::PostgresResultArtifactStore |
+文中的简化代码只用于展示顺序，不可直接替换源码；异常、保存和检查仍以对应函数为准。
+
+## 1. 先看完整请求，再看模块
+
+### 1.1 项目到底要完成什么
+
+这是一个让用户通过对话查询、分析业务数据并查看报告的应用。它不只是把问题转给 LLM：涉及真实数据时，需要找到数据库中的表、字段和指标，生成并执行查询，必要时分任务计算，最后把有依据的结果交给用户。
+
+当前 Harness 已注册三个业务工具：`query_data` 查询数据、`analyze_data` 完成多任务分析、`build_report` 将已有结果整理为报告；普通聊天则由 `DailyChatAgent` 作答。是否调用工具、调用哪个工具、何时回答，由 PlanningAgent 每次决定一个动作。依据：`app/api/routers/harness.py::_build_controller()`；`app/agent/planning_agent/agent.py::PlanningAgent.plan()`。
+
+这里说的 **Harness** 是支撑一次任务运行的整套流程：除了模型，还包括上下文、工具、状态、暂停恢复、事件和结果保存。代码中的 `harness.py` 是这套流程的入口与组装位置；`LoopController` 是其中真正推进执行的独立模块，二者不是同一个职责。
+
+### 1.2 一次请求经过哪些地方
+
+```text
+用户发送问题
+  → Harness 入口创建身份、检查会话占用、保存本轮用户消息、组装模块
+  → LoopController 创建并保存运行状态
+  → ContextEngine 整理这轮需要的背景
+  → PlanningAgent 决定一个下一步动作
+  → ActionCommitter 先保存动作
+      ├─ 直接回答：保存最终答案并结束
+      ├─ 询问用户：保存问题与运行状态，暂停等待
+      └─ 调用工具：检查参数、执行、保存完整结果
+                    → 把结果摘要记入运行状态
+                    → 重建上下文，再让 PlanningAgent 决定下一步
+  → FinalizationService 保存历史和最终状态、解除会话占用
+  → SSE 返回结束事件与结果，前端刷新已保存内容
+```
+
+关键调用位置：`app/api/routers/harness.py::run_harness_stream()` → `app/agent/loop_controller/controller.py::LoopController.start()`、`_run()` → `app/agent/finalization/service.py::PostgresFinalizationService._drive()`。
+
+### 1.3 用一个连续例子理解“循环”
+
+假设用户提出：“比较两个已明确月份的销售情况，找出下降明显的品类，并生成报告。”以下是一条**可能的执行路线**，不是代码固定写死的步骤，实际动作由模型和可用数据决定。
+
+| 经过的步骤 | 本次拿到什么 | 留给下一步什么 |
+| --- | --- | --- |
+| 入口 | 原始问题和会话 ID。 | 新 `turn_id`、`run_id`，已保存的 user 消息。 |
+| 首次 ContextEngine | 问题、系统指令、会话历史、运行目标。 | 一份经过预算筛选的 `CompiledContext`。 |
+| 首次 PlanningAgent | 上下文、工具说明，目前没有工具结果。 | `tool_call: analyze_data`。 |
+| 执行分析 | 具体分析问题与目标。 | 完整任务结果保存在 Artifact，摘要与 `result_ref` 返回主循环。 |
+| 第二次 PlanningAgent | 新上下文，以及“分析做完了、结果在哪里”的记录。 | `tool_call: build_report`，带分析结果的引用。 |
+| 执行报告 | 原目标和分析结果引用。 | 完整报告 Artifact，以及报告摘要。 |
+| 第三次 PlanningAgent | 分析与报告均已完成的记录。 | `final_answer`。 |
+| 结束处理 | 最终文字和最近可用的报告引用。 | assistant 消息、报告输出、最终运行状态。 |
+
+这个例子中，PlanningAgent 不是第一次就把整个程序生成出来，也不会自己执行数据库查询。它看到一次结果，再决定下一步；Python 代码负责检查和执行。这就是理解本项目主流程最重要的一点。依据：`LoopController._run()`；`PlanningAgent.plan()`；`LoopController._final_output()`。
+
+### 1.4 几个对象先分清楚
+
+| 源码名称 | 在这个项目里具体指什么 |
+| --- | --- |
+| `conversation` / `thread` | 一段连续聊天；当前 `thread_id` 与 `conversation_id` 相同。 |
+| `turn` | 用户发起的一轮任务，可能包含多次工具调用和补充条件，不等于一次 LLM 调用。 |
+| `run` | 执行这轮任务的一次 Harness 运行；当前新请求同时创建 turn 和 run，确认恢复沿用二者。 |
+| `state` | 运行中持续更新的数据：问题、身份、做到哪一步、已有结果和错误等。 |
+| `CompiledContext` | ContextEngine 为本轮选好并整理的背景消息，还不是 PlanningAgent 最终发送的完整提示词。 |
+| `NextAction` | 下一步只做一件事：调用工具、询问用户或给出最终答案。 |
+| `ToolResult` / `RunObservation` | 前者是工具返回的统一结果，后者是主循环保存、供后续规划参考的执行记录。 |
+| Artifact / `result_ref` | 前者保存完整工具结果；后者是读取它的引用，不把整批行数据塞回规划器。 |
+
+数据结构见：`app/agent/state_result_store/contracts.py`；`app/agent/context_engine/contracts.py`；`app/agent/tool_runtime/artifacts.py`。它们分开放置，是为了区分“这轮知道什么”“下一步做什么”和“实际做出了什么”，不能仅凭名称混为一份聊天历史。
+
+### 1.5 技术栈怎样支撑这条路线
+
+后端使用 Python 3.14、FastAPI、Pydantic 和 SQLAlchemy 异步访问；LangChain/模型适配器连接 LLM，LangGraph 用于工具内部的问数子图，**Harness 顶层循环并不是 LangGraph 图**。token 计数使用 tiktoken。前端使用 Next.js、React、TypeScript、assistant-ui、Tailwind 和 ECharts，通过 HTTP 请求与 SSE 接收过程数据。依据：`pyproject.toml`；`frontend/package.json`；`app/agent/query_graph.py`；`app/agent/loop_controller/controller.py`。
+
+数据库不是按“前端一个、后端一个”划分：PostgreSQL 保存应用运行和记忆记录；MySQL 的 Meta 保存数据说明、DW 保存实际业务数据；Qdrant、Elasticsearch、Neo4j 分别提供不同形式的查找能力。这里先分清职责，不展开各自内部实现。
 
 ---
 
@@ -160,7 +91,7 @@ stateDiagram-v2
 
 ### 2.1 项目文件目录
 
-本章只沿新 Harness 的流式主链阅读：发送问题走 `/api/harness/run/stream`，确认后继续走 `/api/harness/run/resume/stream`。下面列出这条链路及其必要支撑文件；业务工具只看到调用边界，不展开内部业务节点。
+本章只沿新 Harness 的流式主链阅读：发送问题走 `/api/harness/run/stream`，确认后继续走 `/api/harness/run/resume/stream`。下面列出这条链路及其必要支撑文件，工具内部正在使用的业务节点也列出阅读入口。
 
 目录是阅读地图，不是仓库所有文件的清单。省略包初始化文件、依赖目录、缓存、模型权重和运行数据；文件后的注释说明它在当前链路中的作用。
 
@@ -213,13 +144,30 @@ ai_data_analysis/
 |   |   |   |-- runtime.py                    # 校验入参、限时执行、保存完整结果、返回 ToolResult
 |   |   |   |-- contracts.py                  # 工具执行时需要的参数及其数据格式
 |   |   |   `-- artifacts.py                  # 完整工具结果的保存、读取方法及结果引用格式
-|   |   |-- business_tools/                   # 当前注册的三个业务能力，仅列工具边界
+|   |   |-- business_tools/                   # 当前注册的三个业务能力
 |   |   |   |-- query_data/tool.py            # 查询数据的工具入口，返回摘要和完整查询输出
 |   |   |   |-- query_data/contracts.py       # 问数工具入参和出参
 |   |   |   |-- analyze_data/tool.py          # 分析数据的工具入口，返回任务结果与证据
 |   |   |   |-- analyze_data/contracts.py     # 分析工具入参和出参
 |   |   |   |-- build_report/tool.py          # 按引用读取此前的工具结果，生成可展示的报告
 |   |   |   `-- build_report/contracts.py     # 报告工具入参和出参
+|   |   |-- query_graph.py                    # 工具内部的问数子图：召回、生成 SQL、查询、补展示信息
+|   |   |-- nodes/                            # 当前工具复用的业务处理函数
+|   |   |   |-- extract_keywords.py           # 从查询问题提取召回词
+|   |   |   |-- retrieve_*.py                 # 查找相关表、字段、指标和维度值
+|   |   |   |-- merge_retrieved_info.py       # 合并查找到的元数据
+|   |   |   |-- filter_table.py              # 筛选与本次查询有关的表和字段
+|   |   |   |-- filter_metric.py             # 筛选与问题有关的指标
+|   |   |   |-- reconcile_filtered_context.py # 检查两组筛选结果、补齐需要的关联信息
+|   |   |   |-- add_extra_context.py         # 补充 SQL 生成需要的说明
+|   |   |   |-- generate_sql.py              # 让 LLM 生成 SQL 并解析结果
+|   |   |   |-- execute_sql.py               # 通过 DW 仓储执行查询
+|   |   |   |-- enrich_query_result.py       # 补字段含义和维度值显示名称
+|   |   |   |-- plan_analysis.py             # 将分析目标拆成有依赖关系的任务
+|   |   |   |-- execute_analysis.py          # 按依赖执行查询和 Python 计算
+|   |   |   |-- generate_report_plan.py      # 根据已有证据规划报告内容
+|   |   |   `-- render_report.py             # 将报告组件与真实结果绑定
+|   |   |-- python_sandbox.py                # 检查并在受限子进程中执行分析计算代码
 |   |   |-- finalization/
 |   |   |   |-- service.py                    # 结束时保存历史和最终状态、解除占用、提交记忆生成任务
 |   |   |   `-- errors.py                     # 结束处理失败时保留进度，方便后续继续完成
@@ -330,7 +278,7 @@ flowchart TB
 
 **沿数据流读图**：
 
-1. 前端发送问题后，入口准备身份、事件队列和各模块依赖，保存用户消息，再启动主循环。确认回复则恢复同一个 run，不另建 turn。代码：`frontend/services/harness.ts::harnessService.streamRun/streamResume`；`app/api/routers/harness.py::run_harness_stream()`、`resume_harness_stream()`。
+1. 前端发送问题后，入口准备身份和事件队列，检查会话占用并保存用户消息，再组装各模块、启动主循环。确认回复则恢复同一个 run，不另建 turn。代码：`frontend/services/harness.ts::harnessService.streamRun/streamResume`；`app/api/routers/harness.py::run_harness_stream()`、`resume_harness_stream()`。
 2. 主循环先让 ContextEngine 准备背景，再把 `CompiledContext + 运行视图 + 工具声明` 交给 PlanningAgent。两者不是串行调用对方，而是都由主循环调度。代码：`app/agent/loop_controller/controller.py::LoopController._build_context()`、`_planner_input()`、`_plan_action()`。
 3. PlanningAgent 返回 `NextAction` 后，仍先回到主循环，动作提交成功才允许执行。ActionCommitter 不直接调用工具；需要执行工具时，由主循环调用 ToolRuntime。代码：`app/agent/loop_controller/controller.py::LoopController._commit_action()`、`_run()` ⑧～⑩。
 4. 工具输出由 ToolRuntime 保存为 Artifact，返回摘要和引用。主循环将 `ToolResult` 整理成 observation，也就是留给下一轮参考的工具执行记录；普通结果经过迭代计数后回到 ContextEngine，再按“工具结果 → 新上下文 → 再规划”的顺序继续。代码：`app/agent/tool_runtime/runtime.py::ToolRuntime.execute()`；`app/agent/loop_controller/controller.py::LoopController._run()` ⑪～⑭。
@@ -347,18 +295,27 @@ flowchart TB
 | 会话历史与结束处理进度 | 入口先保存 user 消息；FinalizationService 经会话仓储保存 assistant 消息和输出，并由 ledger 记录结束处理已完成哪些步骤，方便中断后继续。代码：`app/api/routers/harness.py::run_harness_stream()`；`app/agent/finalization/service.py::PostgresFinalizationService._drive()`、`_save_history()`。 |
 | 事件通道 | 控制器、ToolRuntime 和业务工具将事件交给 `HarnessEventWriter → QueueEventSink → queue`，入口 `_sse_response()` 再推给前端；事件展示不替代运行快照。代码：`app/agent/streaming/writer.py`；`app/api/routers/harness.py::_sse_response()`。 |
 
-### 2.3 Harness 接收请求与组装运行流程
+### 2.3 Harness 入口：把一次 HTTP 请求准备成可运行的任务
 
 **主要内容**：接收前端的流式请求，准备本次运行的身份、数据库会话和各模块依赖，再把用户问题交给 `LoopController`。执行期间通过 SSE 返回进度与结果，用户确认后仍通过流式接口恢复；入口不负责决定下一步调用哪个工具。
 
 **主要代码**：`app/api/routers/harness.py`。下列入口的完整路径均以 `/api/harness` 开头。
 
 ```text
-用户问题 → 检查请求参数 → 准备运行身份和依赖 → 组装 LoopController
-        → 保存本轮用户消息 → controller.start() → SSE 过程事件与本次结果
+用户问题 → 检查请求参数 → 准备运行身份和依赖
+        → 检查并保存本轮用户消息 → 组装 LoopController → controller.start()
+        → SSE 过程事件与本次结果
 ```
 
-#### 功能 1：接收用户问题，检查运行依赖
+#### 设计思路：把“准备能力”和“使用能力”分开
+
+收到问题时，主循环需要的并不只是一个 LLM。它还需要记忆读取、数据库查询、运行保存、事件发送和结束处理等能力。如果这些对象都在循环内部临时创建，读循环时就得同时理解连接管理和业务决策。
+
+当前代码将这部分工作放在 `_build_controller()`：先准备对象，再传给控制器使用。因此，看 `harness.py` 应回答“这次运行具备哪些能力、各自连接哪里”；看 `controller.py` 才回答“这些能力按什么顺序调用”。这是代码体现出的职责划分，不表示 `harness.py` 自身没有逻辑，它仍处理 HTTP、SSE 和启动异常。
+
+还要分清两个创建时机：应用启动时，`app/main.py::lifespan()` 初始化共享客户端与 MemoryRuntime；每次请求到来时，入口才打开本次 Meta/DW 会话、创建工具和控制器。应用关闭时先等待已提交的记忆后台任务，再关闭它们依赖的客户端。依据：`app/clients/memory_client.py`；`app/main.py::lifespan()`；`_build_controller()`。
+
+#### 第一步：接收用户问题，检查运行依赖
 
 `run_harness_stream()` 接收 `POST /run/stream` 请求，用 `HarnessRunRequest` 校验输入：
 
@@ -373,7 +330,7 @@ flowchart TB
 
 代码：`app/api/routers/harness.py::HarnessRunRequest`、`_require_runtime()`、`run_harness_stream()`；路由前缀挂载见 `app/api/router.py`、`app/main.py`。
 
-#### 功能 2：准备运行身份，建立流式事件通道
+#### 第二步：准备运行身份，建立流式事件通道
 
 入口把用户与会话信息组成 `HarnessRunRef`，后续控制器、工具、结果仓储都使用这组身份关联数据。
 
@@ -389,9 +346,25 @@ flowchart TB
 
 代码：`app/api/routers/harness.py::run_harness_stream()`、`_build_controller()`；`app/agent/streaming/writer.py::QueueEventSink`、`HarnessEventWriter`。
 
-#### 功能 3：创建各模块，再交给 LoopController 使用
+#### 第三步：先登记本轮，并检查会话是否被占用
 
-入口先在请求作用域内打开 Meta、DW 数据库会话，再传给 `_build_controller()` 按以下顺序组装对象。这里是在准备执行能力，还没有开始查询数据或调用规划器。
+入口先调用 `_finish_expired_active_run()`，再调用 `ConversationRepository.start_turn()`。这两个步骤都在后台执行任务和 SSE 响应建立之前完成。
+
+`_finish_expired_active_run()` 处理进程被强制结束后留下的运行：如果占用会话的运行仍是 `running` 或 `waiting_confirmation`，并且已超过 `deadline_at` 60 秒，就复用 FinalizationService 把它结束为 `timeout`，保存提示消息并解除会话占用。多等 60 秒，是为了让仍在运行的控制器先完成自己的超时处理。清理失败时只记录日志，原占用保持不变。
+
+`start_turn()` 随后用一个 PostgreSQL 事务检查会话是否已有未结束的运行，并保存本轮的用户问题。
+
+如果 `active_run_id` 指向仍处于 `running` 或 `waiting_confirmation` 的运行，入口直接返回 HTTP 409，不创建控制器，也不会让前端拿一个尚未创建的 `run_id` 去查询状态。若占用者已经是终态，或只留下了没有对应运行记录的旧占用，`start_turn()` 会清理遗留占用后继续。
+
+因此，服务进程中断后，旧运行在截止时间之前仍会占用会话；当前配置下，最多约 30 分钟加 60 秒后，下一次提问会自动释放它。
+
+它会创建 `status=running` 的 turn、保存 `sequence_no=0` 的 user 消息，并设置会话的 `active_run_id`。这一步成功后，才进入后台执行函数打开 Meta、DW 数据库会话并组装控制器。
+
+代码：`app/api/routers/harness.py::run_harness_stream()`；`app/repositories/conversation_repository.py::ConversationRepository.start_turn()`。
+
+#### 第四步：创建各模块，再交给 LoopController 使用
+
+后台执行函数先在本次请求范围内打开 Meta、DW 数据库会话，再传给 `_build_controller()` 按以下顺序组装对象。这里是在准备执行能力，还没有开始查询数据或调用规划器。
 
 | 创建顺序 | 组装内容 | 交给谁使用 |
 | --- | --- | --- |
@@ -407,17 +380,17 @@ flowchart TB
 
 代码：`app/api/routers/harness.py::_build_controller()`、`_agent_context()`、`_query_tool_spec()`、`_analyze_tool_spec()`、`_report_tool_spec()`。
 
-#### 功能 4：先保存用户这一轮，再启动主循环
+#### 第五步：启动主循环
 
-控制器组装成功后，入口调用 `ConversationRepository.start_turn()`，在一个 PostgreSQL 事务中准备会话、创建 `status=running` 的 turn、保存 `sequence_no=0` 的 user 消息，并设置会话的 `active_run_id`。已有尚未结束的运行占用同一会话时，不允许再启动新运行；代码也会检查并清理已结束或不存在的运行留下的占用。
+控制器组装成功后，入口构造 `StartRunCommand(run_ref, input_text, asset_ids)`，调用 `controller.start()`。`harness_runs` 的初始运行快照由控制器在 `start()` 中创建，不是 `start_turn()` 创建。
 
-随后入口构造 `StartRunCommand(run_ref, input_text, asset_ids)`，调用 `controller.start()`。`harness_runs` 的初始运行快照由控制器在 `start()` 中创建，不是 `start_turn()` 创建。
+因此，新请求的顺序是：**检查并保存 turn 和用户消息 → 打开 Meta/DW 会话并组装控制器 → 创建 Harness 运行快照 → 进入循环**。运行快照就是把当前运行状态完整保存下来，方便后续读取或恢复。创建会话历史和创建运行快照不是同一个数据库事务，入口提供 `_finish_unhandled_start_failure()` 清理控制器启动阶段未处理的异常。
 
-因此，新请求的顺序是：**组装控制器 → 保存 turn 和用户消息 → 创建 Harness 运行快照 → 进入循环**。运行快照就是把当前运行状态完整保存下来，方便后续读取或恢复。创建会话历史和创建运行快照不是同一个数据库事务，入口提供 `_finish_unhandled_start_failure()` 清理未被控制器处理的启动异常。
+这个顺序也解释了一个排查现象：客户端已经拿到或记录了 `run_id`，不代表 `harness_runs` 一定已有数据。如果在组装控制器、创建 turn 或创建运行记录之前失败，状态查询仍可能返回“运行不存在”；应先查启动日志，不能据此判断是后续工具把记录丢了。
 
 代码：`app/api/routers/harness.py::run_harness_stream()`、`_finish_unhandled_start_failure()`；`app/repositories/conversation_repository.py::ConversationRepository.start_turn()`；`app/agent/loop_controller/controller.py::LoopController.start()`。
 
-#### 功能 5：通过 SSE 持续返回过程事件和本次结果
+#### 第六步：通过 SSE 持续返回过程事件和本次结果
 
 `_sse_response()` 建立后台执行任务，把队列中的事件转换成 SSE 格式，持续返回前端；没有新事件时发送心跳。主循环在后台执行，异步生成器则不断从队列读取事件，写入 HTTP 响应。
 
@@ -427,13 +400,13 @@ flowchart TB
 
 代码：`app/api/routers/harness.py::_serialize_result()`、`_sse_response()`；`app/repositories/conversation_repository.py::ConversationRepository.save_execution_trace()`。
 
-#### 功能 6：收到确认回复后，在同一个 run 上恢复流式运行
+#### 另一个入口：收到确认回复后，恢复同一个 run
 
 前端把确认回复发给 `POST /run/resume/stream`，由 `resume_harness_stream()` 接收。这是暂停之后的分支，不会再次调用 `start_turn()` 创建一轮用户任务。
 
 1. 用 `run_id + user_id` 读取服务端快照，从快照恢复完整运行身份和附件，不接受客户端覆盖 conversation、turn 或 thread。
 2. 把确认 ID、答案、确认/拒绝决策和条件组成 `ConfirmationReply`，重新建立本次请求的队列、sink、writer 和控制器。
-3. 调用 `controller.resume(ResumeRunCommand(...))`，沿用原 run、turn、thread；具体如何处理回复和重新准备上下文见 2.4 功能 8。
+3. 调用 `controller.resume(ResumeRunCommand(...))`，沿用原 run、turn、thread；具体如何处理回复和重新准备上下文见 2.4 的“暂停分支”。
 4. 复用 `_sse_response()` 推送恢复后的事件与 `run.result`，暂停前的 SSE 连接不需要一直保留。
 
 SSE 建立前的入口异常经 `_http_error()` 转为 HTTP 错误，例如权限错误为 403、运行不存在为 404、数据保存或状态冲突通常为 409。SSE 已开始后的执行异常则通过 `stream.failed` 等事件表达。查询运行状态、检查并继续未完成的结束处理属于辅助能力，本章不展开其请求方式。
@@ -455,7 +428,33 @@ start → 创建运行快照 → BUILD_CONTEXT → PLAN → VALIDATE_ACTION → 
                        └─ 记录观察 → iteration + 1 → 重建上下文 → PLAN
 ```
 
-#### 功能 1：根据启动参数创建初始运行状态
+#### 设计思路：模型每次选一步，代码负责推进和约束
+
+这里采用的是**显式循环 + 分阶段保存状态 + 结果反馈后再决策**的实现。所谓“显式循环”，就是 `_run()` 中确实存在 `while True`；不是给模型一个目标后让它无限自主执行，也不是由一个顶层 LangGraph 自动沿边运行。
+
+控制器反复回答四个具体问题：现在知道什么、下一步做什么、这一步是否允许执行、做完后得到什么。ContextEngine 回答第一个，PlanningAgent 提出第二个，校验与动作保存处理第三个，ToolRuntime 和 observation 处理第四个。控制器把它们按顺序连接，并决定继续、暂停还是结束。
+
+下面只保留顺序，省略状态保存、事件与异常处理；对应真实位置是 `LoopController._run()`：
+
+```python
+context = await build_context(state)
+while True:
+    action = await plan(context, state)
+    check_repeated_request(action, state)
+    await commit_action(action)
+    if action.is_final_answer:
+        return await finalize(action)
+    if action.is_ask_user:
+        return await pause(action, state)
+    result = await execute_tool(action)
+    record_observation(state, result)
+    check_iteration_limit(state)
+    context = await build_context(state)
+```
+
+这带来两个直接效果：后续动作可以使用刚得到的真实结果；运行进度和限制仍由 Python 控制。代价是一次复杂任务会多次构建上下文、多次调用模型，并不断积累运行背景，后面必须一起考虑时间和 token 预算。
+
+#### 第一步：根据启动参数创建初始运行状态
 
 `start()` 收到 `StartRunCommand` 后，先调用 `_new_state()`。外层 state 保存用户问题、完整运行身份、项目和附件；`state["harness"]` 保存主循环的控制信息。
 
@@ -463,9 +462,11 @@ start → 创建运行快照 → BUILD_CONTEXT → PLAN → VALIDATE_ACTION → 
 
 `status` 表示整次运行目前是运行、等待还是已结束，`phase` 表示正在执行哪一步。后续 `_transition()` 调用状态转换函数，检查是否允许进入下一个阶段，并更新状态版本号 `state_version`，再由 `_save_running_state()` 保存；这不只是修改前端展示的标签。
 
+例如 `status=running, phase=execute_tool` 表示任务还在进行、当前正在执行工具；`status=waiting_confirmation, phase=wait_confirmation` 表示程序已经暂停。状态转换函数还要求：结束状态只能在 `finalization` 阶段、按相符的 `terminal_intent` 写入。不能因为模型说“结束”，就跳过结果保存直接改成 `completed`。
+
 代码：`app/agent/loop_controller/controller.py::LoopController.start()`、`_new_state()`、`_transition()`、`_save_running_state()`；`app/agent/state_result_store/state.py::new_harness_control_state()`、`transition_harness_state()`。
 
-#### 功能 2：进入 BUILD_CONTEXT，为规划准备背景
+#### 第二步：进入 BUILD_CONTEXT，为规划准备背景
 
 `_run()` 先检查是否超过运行截止时间，再进入 `build_context` 阶段并保存状态，随后调用 `_build_context()`。后者用 `HarnessContextRequestFactory.create()` 从 state 中取出所需内容，组成 `ContextRequest`，交给 `ContextEngine.build()`，具体过程见 2.5。
 
@@ -475,7 +476,7 @@ start → 创建运行快照 → BUILD_CONTEXT → PLAN → VALIDATE_ACTION → 
 
 代码：`app/agent/loop_controller/controller.py::LoopController._run()` ①②、`_build_context()`、`_context_snapshot()`。
 
-#### 功能 3：进入 PLAN，把上下文与运行进展一起交给规划器
+#### 第三步：进入 PLAN，把上下文与运行进展一起交给规划器
 
 上下文准备好后，`_run()` 进入 `plan` 阶段并保存状态，再调用 `_planner_input()` 组装 `PlannerInput`：
 
@@ -491,7 +492,7 @@ start → 创建运行快照 → BUILD_CONTEXT → PLAN → VALIDATE_ACTION → 
 
 代码：`app/agent/loop_controller/controller.py::LoopController._run()` ③④、`_planner_input()`、`_plan_action()`；`app/agent/state_result_store/contracts.py::PlannerInput`、`PlannerStateView`；`app/agent/planning_agent/agent.py::PlanningAgent.plan()`。
 
-#### 功能 4：处理规划失败，拦截不能继续的重复动作，再提交
+#### 第四步：处理规划失败，拦截重复失败动作，再提交
 
 规划抛出 `PlannerFailure` 时，`_handle_planner_failure()` 记录 `last_error`。如果错误允许重试且未达到上限，就增加计数，用**同一份 CompiledContext 加上最新错误**重新组装 Planner 输入；此时不重新准备上下文，也不增加工具迭代次数。不能重试或次数用完时，结束运行并保存 `failed` 状态。
 
@@ -503,7 +504,7 @@ start → 创建运行快照 → BUILD_CONTEXT → PLAN → VALIDATE_ACTION → 
 
 代码：`app/agent/loop_controller/controller.py::LoopController._handle_planner_failure()`、`_has_failed_tool_request()`、`_should_stop_for_repeated_confirmation()`、`_commit_action()`；`app/repositories/harness_action_repository.py::PostgresActionCommitter.commit()`。
 
-#### 功能 5：按动作类型，选择结束、暂停或执行工具
+#### 第五步：按动作类型，选择结束、暂停或执行工具
 
 | `NextAction.action_type` | 控制器接下来的处理 | 输出或下一站 |
 | --- | --- | --- |
@@ -515,7 +516,7 @@ start → 创建运行快照 → BUILD_CONTEXT → PLAN → VALIDATE_ACTION → 
 
 代码：`app/agent/loop_controller/controller.py::LoopController._run()` ⑥～⑩；`app/agent/planning_agent/agent.py::PlanningAgent.plan()`；`app/agent/state_result_store/contracts.py::ActionType`。
 
-#### 功能 6：执行工具，把结果整理成下一轮可参考的记录
+#### 第六步：执行工具，把结果整理成下一轮可参考的记录
 
 `_execute_tool()` 把运行身份、已提交动作序号、工具调用、迭代数和 `attempt` 传给 ToolRuntime。重试同一动作时增加 `attempt`，不重新提交一个动作。只有工具返回可重试的 `temporary_error`、工具声明为 `idempotent`（允许安全地重复调用）、超时重试策略允许且仍有次数时，才会自动重试；不是所有异常都重试。
 
@@ -525,7 +526,7 @@ start → 创建运行快照 → BUILD_CONTEXT → PLAN → VALIDATE_ACTION → 
 
 代码：`app/agent/loop_controller/controller.py::LoopController._execute_tool()`、`_tool_error()`、`_run()` ⑪⑫；`app/agent/state_result_store/contracts.py::RunObservation`。
 
-#### 功能 7：记录本轮执行，带着新结果重新准备上下文
+#### 第七步：记录本轮执行，带着新结果重新准备上下文
 
 不需要用户确认的工具结果进入 `record_observation`，`iteration += 1` 后保存状态。达到 `max_iterations` 就结束运行并保存 `timeout` 状态，不再启动下一次规划。
 
@@ -533,9 +534,13 @@ start → 创建运行快照 → BUILD_CONTEXT → PLAN → VALIDATE_ACTION → 
 
 `iteration` 主要计数已走完记录阶段的工具迭代，`action_seq` 计数已提交动作，`attempt` 计数同一工具动作的执行尝试；三者不能混用。日常聊天直接回答、等待确认、规划重试都不必增加 `iteration`。
 
+回看第 1 章的例子：分析动作提交后 `action_seq=1`，分析完成后 `iteration=1`；报告动作提交后 `action_seq=2`，报告完成后 `iteration=2`；最终回答提交后 `action_seq=3`，但 `iteration` 仍是 2。若某个允许重试的工具动作执行了两次，两次属于同一个动作，只有 `attempt` 从 1 变成 2。
+
+还有一个容易忽略的边界：默认最大工具迭代数为 8，**第 8 次工具执行记录完就结束为 `timeout`**，不会再额外给 Planner 一次“根据第 8 次结果作答”的机会。即使最后一次工具已经生成了可用结果，也要按这段实际判断理解。
+
 代码：`app/agent/loop_controller/controller.py::LoopController._run()` ⑬⑭、`_execute_tool()`、`_commit_action()`。
 
-#### 功能 8：需要用户补充时保存状态，收到回复后重新准备上下文
+#### 暂停分支：保存问题和状态，回复后重新准备上下文
 
 `_pause_for_confirmation()` 生成带过期时间的确认凭证，通过 run store 在同一个 PostgreSQL 事务中保存待确认内容 `pending_confirmation` 和 `waiting_confirmation` 状态，再发出 `confirmation.required`。暂停不是失败，任务仍未结束，会话也仍由这次运行占用。
 
@@ -543,9 +548,13 @@ start → 创建运行快照 → BUILD_CONTEXT → PLAN → VALIDATE_ACTION → 
 
 恢复不是从暂停的代码行继续向下执行，而是从 `_run()` 开头重新 `build_context → plan`。用户回复会作为运行背景的一部分放入新上下文，原来的 `input_text` 和原始目标保持不变；沿用之前的 `deadline_at`，不会因为恢复而重新获得整段运行时限。
 
+例如原问题是“比较销售额”，模型询问比较月份；用户回复“比较 A 月和 B 月”。恢复时，目标仍是原问题，新条件则通过 `last_confirmation_answer`、`resolved_conditions` 等运行字段进入上下文。这样 Planner 可以重新判断该怎么查，而不是把这句补充当成一轮独立任务。
+
+确认凭证当前设置为 24 小时后过期，但运行总时限当前配置为 1,800 秒，两者不是同一限制。确认凭证还有效，也可能因原运行截止时间已到而结束为 `timeout`。代码没有在等待期间冻结截止时间。
+
 代码：`app/agent/loop_controller/controller.py::LoopController._pause_for_confirmation()`、`resume()`、`_remaining_seconds()`；`app/repositories/harness_run_repository.py::PostgresHarnessRunStore.pause_for_confirmation()`、`resolve_confirmation()`、`_validate_reply()`。
 
-#### 功能 9：统一处理结束或中断，保存答案和最终状态
+#### 结束分支：统一处理完成、失败和中断
 
 `_run_guarded()` 负责捕获主执行流程中的异常和取消。`_check_deadline()` 和 `_await_with_deadline()` 则保证准备上下文、规划、提交动作及执行工具都使用同一个运行截止时间。
 
@@ -579,7 +588,21 @@ FinalizationService 依次保存助手消息与输出、保存最终运行状态
           → 去重 → 按预算选择或截短内容 → 补充来源 → 组装消息并检查大小 → CompiledContext
 ```
 
-#### 功能 1：从运行状态中取出本轮问题与运行背景
+#### 设计思路：先整理一批可用背景，再决定本轮真正带什么
+
+用户可能说“继续上次的分析”，也可能提出完全独立的问题。会话越长，历史、附件和工具结果越多，不能把所有内容原样复制进每一次模型调用。本模块采用的方案是：**必带内容先占预算，其余背景按需查找；近期消息尽量保留原文，较早消息维护摘要；最后统一筛选并重新计数。**
+
+阅读时要特别区分三个阶段：
+
+| 阶段 | 数据现在处于什么状态 | 还没有发生什么 |
+| --- | --- | --- |
+| 读取与规划 | 历史已读到程序内，计划列出了需要的信息来源。 | 还没有决定哪些历史最终发给业务规划器。 |
+| 准备候选 | 历史被整理为摘要和近期原文，其他来源也转成 `ContextItem`。 | 候选仍可能太多、太长或重复。 |
+| 最终组装 | 去重、筛选、必要时截短，再整理为 `messages`。 | 后面的 PlanningAgent 还会加入自己的任务说明与运行数据。 |
+
+因此，“已经读取历史”“已经更新摘要”和“模型本轮已经收到这些内容”是三件事。下面按这三层逐步看。
+
+#### 第一步：从运行状态中取出本轮问题与运行背景
 
 `HarnessContextRequestFactory.create()` 从 state 中取出用户、会话、原始输入、项目和附件信息，组成 `ContextRequest`；再调用 `HarnessRuntimeContextProjector.project()`，整理出这一轮需要的运行背景 `runtime_context`。
 
@@ -589,7 +612,7 @@ FinalizationService 依次保存助手消息与输出、保存最终运行状态
 
 代码：`app/agent/context_engine/harness_context.py::HarnessContextRequestFactory.create()`、`HarnessRuntimeContextProjector.project()`、`_project_conditions()`、`_project_observations()`；`app/agent/loop_controller/controller.py::LoopController._build_context()`。
 
-#### 功能 2：检查请求参数，确定预算，记录这次上下文准备任务
+#### 第二步：检查请求参数，确定预算，记录本次处理
 
 `ContextEngine.build()` 先检查身份、问题是否为空、预算是否为正数，以及附件 ID 的数量和长度；然后生成本次处理编号 `build_id`、用于标识问题内容的哈希值 `query_hash`，并确定使用 `request.token_budget` 还是默认预算。接着 `start_build()` 向 `context_build_runs` 写入 `pending` 记录，表示本次处理尚未完成，再进入 `_build()`。
 
@@ -605,11 +628,11 @@ FinalizationService 依次保存助手消息与输出、保存最终运行状态
 | `summary_batch_tokens` | `6000` | 新增旧历史交给摘要器时的分批 token 上限。 |
 | `min_compression_tokens` | `64` | 给近期历史至少分配多少空间，以及剩余多少空间时才尝试截短过长内容。 |
 
-这个预算限制的是 ContextEngine 最后整理出的消息，不是整次任务所有 LLM 调用的总耗用，也不包含 PlanningAgent 后续另外组装的完整输入。请求参数不合要求时，在创建处理记录前就会报错；已进入 `_build()` 后发生的异常，则由 `build()` 尝试写入失败记录，再交给控制器处理。
+这个预算限制的是 ContextEngine 最后整理出的消息，不是整次任务所有 LLM 调用的总耗用。查找背景的规划、生成摘要，以及后面 PlanningAgent 另外组装的完整输入，都不能直接用这个数代表。请求参数不合要求时，在创建处理记录前就会报错；已进入 `_build()` 后发生的异常，则由 `build()` 尝试写入失败记录，再交给控制器处理。
 
 代码：`app/agent/context_engine/engine.py::ContextEngine.build()`、`_validate_request()`；`app/agent/context_engine/contracts.py::ContextPolicy`；`app/api/routers/harness.py::_build_controller()`；`app/repositories/context_repository.py::PostgresContextRepository.start_build()`、`fail_build()`；`app/agent/planning_agent/agent.py::PlanningAgent.plan()`。
 
-#### 功能 3：先计算本轮必带内容，确认有没有装背景的基础条件
+#### 第三步：计算本轮必带内容，先看基础部分是否装得下
 
 `_build()` 首先调用 `ContextCompiler.base_token_count(request)`，只组装并计算三部分：系统指令、运行背景、本轮用户问题。历史消息、长期记忆和附件内容都还没有加入；后面用于决定去哪找背景的计划，也不计入这里。
 
@@ -621,7 +644,7 @@ FinalizationService 依次保存助手消息与输出、保存最终运行状态
 
 代码：`app/agent/context_engine/engine.py::ContextEngine._build()` ①；`app/agent/context_engine/compiler.py::ContextCompiler.base_token_count()`、`_runtime_message()`；`app/agent/context_engine/token_counter.py::TiktokenCounter.count_text()`、`count_messages()`。
 
-#### 功能 4：读取当前会话的历史，先用于理解问题、判断要查哪些背景
+#### 第四步：读取当前会话历史，先用于理解问题
 
 基础检查通过后，调用 `MemoryManager.load_working(user_id, conversation_id, limit=None)`，再由 `WorkingMemory.load()` 读取 `conversation_messages`。消息按时间和轮内序号排序，并整理成 `MemoryRecord` 格式。这些会话消息就是这里所说的工作记忆，代码中用 `working` 表示。此时只是把历史读到内存中，**不代表这些消息已经全部放入最终发给模型的内容中**。
 
@@ -631,7 +654,7 @@ FinalizationService 依次保存助手消息与输出、保存最终运行状态
 
 代码：`app/agent/context_engine/engine.py::ContextEngine._build()` ②；`app/agent/memory/manager.py::MemoryManager.load_working()`；`app/agent/memory/types/working.py::WorkingMemory.load()`。
 
-#### 功能 5：结合消息中的稳定 ID，解析“刚才那个文件”等指代
+#### 第五步：确定“刚才那个文件”到底指谁
 
 `ContextReferenceResolver.resolve()` 接收当前请求和 working：先识别“继续、上次、那个”等历史线索，再校验本轮显式附件的归属；本轮附件不存在或无权访问会直接报错。
 
@@ -641,7 +664,7 @@ FinalizationService 依次保存助手消息与输出、保存最终运行状态
 
 代码：`app/agent/context_engine/resolver.py::ContextReferenceResolver.resolve()`、`_resolve_historical_assets()`、`_validate_assets()`。
 
-#### 功能 6：列出本轮要查找哪些背景，先不执行检索
+#### 第六步：列出本轮要查找哪些背景，先不执行检索
 
 `planner.plan(request, working, resolution)` 返回 `ContextRetrievalPlan`，主要说明：是否需要历史 `include_working`、检索哪些长期记忆 `memory_types`、是否使用 RAG、检索问题 `search_query` 和原因。
 
@@ -651,7 +674,7 @@ FinalizationService 依次保存助手消息与输出、保存最终运行状态
 
 代码：`app/agent/context_engine/engine.py::ContextEngine._build()` ③；`app/agent/context_engine/planner.py::LlmContextPlanner.plan()`、`DeterministicContextPlanner.plan()`；`app/agent/context_engine/contracts.py::ContextRetrievalPlan`。
 
-#### 功能 7：计算还剩多少空间，分一部分用于整理历史
+#### 第七步：计算剩余空间，分一部分给历史
 
 确定要查哪些背景后，代码计算：
 
@@ -666,11 +689,11 @@ history_budget = int(candidate_budget * working_history_ratio)
 
 例如仅为说明计算，假设 `base_tokens=300`，则默认策略下候选预算为 `1000-300-384=316`，历史目标预算为 `158`。这里的 158 还要继续在旧摘要与近期原文之间分配，并不表示已装入 158 token 的历史。
 
-如果结果为 0，就跳过历史整理，后续筛选也不会加入候选，但仍可能只用必带消息组成最终上下文。代码不会仅因剩余空间为 0 自动报错，也没有保证每轮至少带一条历史。负值已经被 `max(0, ...)` 变为 0。真正会抛出超预算异常的情况是：必带内容本身超出预算；还有候选空间，但必须保留的内容放不下；或最后组装完消息再次计数时仍然超限。
+如果结果为 0，就跳过历史整理，后续筛选也不会加入候选，但仍可能只用必带消息组成最终上下文。代码不会仅因剩余空间为 0 自动报错，也没有保证每轮至少带一条历史。负值已经被 `max(0, ...)` 变为 0。真正会抛出超预算异常的情况是：必带内容本身超出预算；还有候选空间，但必须保留的内容放不下；或最后组装完消息再次计数时仍然超限。这些是理解当前判断所需的边界，后续筛选的详细过程暂不展开。
 
 代码：`app/agent/context_engine/engine.py::ContextEngine._build()` ④；`app/agent/context_engine/selector.py::ContextSelector.select()`；`app/agent/context_engine/engine.py::ContextEngine._fit_compiled_budget()`。
 
-#### 功能 8：把未覆盖历史拆成“近期原文”和“较早摘要”，必要时保存摘要
+#### 第八步：用近期原文窗口和增量摘要整理历史
 
 `ConversationHistoryManager.prepare()` 接收到的是历史分配额度，不是总预算。它按以下顺序处理：
 
@@ -686,65 +709,76 @@ history_budget = int(candidate_budget * working_history_ratio)
 
 代码：`app/agent/context_engine/history.py::ConversationHistoryManager.prepare()`、`_split_recent()`、`_update_summary()`、`_summary_batches()`；`app/agent/context_engine/summarizer.py::LlmConversationSummarizer.summarize()`、`DeterministicConversationSummarizer.summarize()`；`app/repositories/context_repository.py::PostgresContextRepository.get_summary()`、`save_summary()`。
 
-#### 功能 9：按计划查找其他背景，整理成统一格式供后面筛选
+##### 跟着一组消息走一遍 `prepare()`
 
-`_gather_other_sources()` 根据 `plan.memory_types`，同时检索计划需要的长期记忆：语义记忆保存事实、偏好和规则，情景记忆保存过去任务与处理经验，感知记忆保存附件相关内容。这组检索结束后，再同时读取已确定附件的正文，以及计划允许的外部知识；不是每轮都把所有来源查一遍。
+继续使用前面的预算示例：总预算 1,000，必带内容 300，格式预留 384，候选预算 316，历史份额 158。`prepare()` 再计算近期窗口：`max(64, int(158 × 0.65)) = 102`。
 
-长期记忆通过 `_memory_item()` 整理成 `ContextItem` 格式，带上来源、与问题的相关程度、重要程度、可信程度和时间信息，方便后面排序。对于用户明确引用的附件，`_asset_items()` 会把可用的提取正文设为高优先级，并标记 `required=True`，表示还有候选预算时，筛选必须保留这部分内容；预算为 0 时的特殊处理见功能 10。附件没有提取正文时，不生成这一候选。
-
-`_knowledge_items()` 只有 `plan.use_rag=True` 才查询外部知识。当前 Harness 创建 ContextEngine 时没有传入 `knowledge_retriever`，请求也没有开启 `enable_rag`，因此当前入口没有启用这条 RAG 路径。问数工具内部检索表、字段等信息，是工具自己的处理过程，不能因此认为 ContextEngine 已经接通了外部知识检索。
-
-代码：`app/agent/context_engine/engine.py::ContextEngine._gather_other_sources()`、`_memory_item()`、`_asset_items()`、`_knowledge_items()`；`app/api/routers/harness.py::_build_controller()`。
-
-#### 功能 10：合并、去重，再按预算选择或局部压缩
-
-历史候选和其他背景合并后，`ContextDeduplicator.deduplicate()` 先检查它们是否属于同一事实、事件或附件，从中选择更合适的版本，再把正文整理成便于比较的形式、去掉重复内容。working 消息和摘要仍按各自对应的消息位置或覆盖范围区分，不会只因文字相同就被另一来源替换。
-
-`ContextSelector.select()` 接着按候选预算选择：
-
-1. 候选预算为 0 时直接返回空选择，记录候选落选原因；这一分支也不会单独强制装入 `required` 项。
-2. 正预算下先处理必要项，分配可用份额；即使压缩也无法装入时，抛出 `ContextBudgetExceeded`。
-3. 再处理可选历史：先在摘要份额中选择摘要，再按从新到旧的顺序选择 working 消息，受历史总份额限制。
-4. 最后按综合分选择其他可选背景，评分综合相关性、重要性、置信度、新近度和优先级。
-
-每个候选都经过 `_fit()`：能放下就保留原文；内容太长、但剩余空间仍达到压缩要求时，调用 `TokenBoundaryCompressor.compress()` 按 token 截短；否则不选入，并记录原因。
-
-这里的**局部压缩不等于更新摘要**：摘要把较早消息合并后保存到数据库；压缩只是缩短这次准备发送的某段内容，不改原始消息、长期记忆或已保存摘要。一轮构建可以只摘要、不压缩，也可以两者都有。
-
-代码：`app/agent/context_engine/engine.py::ContextEngine._build()` ⑥⑦；`app/agent/context_engine/deduplicator.py::ContextDeduplicator.deduplicate()`；`app/agent/context_engine/selector.py::ContextSelector.select()`、`_fit()`、`_score()`；`app/agent/context_engine/compressor.py::TokenBoundaryCompressor.compress()`。
-
-#### 功能 11：为选中的记忆补上来源，组装消息，再检查总大小
-
-`_enrich_selected_sources()` 只为已选中的长期记忆读取来源引用，不给未选中的内容额外查询来源。随后 `_fit_compiled_budget()` 调用 `ContextCompiler.compile()`，按以下顺序生成消息。这里的 `compile` 指把选好的内容整理成模型接收的消息格式：
+为了只观察算法，假设此时有五条消息 `m0～m4`，每条连同估算的消息开销都是 40 token；这些数字不是对中文长度的估算。
 
 ```text
-system：系统指令
-system：运行背景（存在时）
-system：摘要、事实、历史任务、附件、外部证据和未解决指代（存在时）
-user / assistant：按原消息顺序恢复的入选 working 消息
-user：本轮原始问题 request.query
+首次进入：尚无摘要，covered_through_index = -1
+
+原始消息： m0    m1    m2    m3    m4
+           40    40    40    40    40
+                             ← 从最新消息向前装入近期窗口
+
+先放 m4：40；再放 m3：80；再放 m2 就到 120，超过窗口 102。
+
+拆分结果： older = [m0, m1, m2]     recent = [m3, m4]
+摘要输入： previous_summary = 空   messages = [m0, m1, m2]
+保存结果： summary v1，覆盖索引 0～2，来源消息数 3
+返回候选： [summary v1, m3 原文, m4 原文]
 ```
 
-生成后通过 `count_messages()` 重新计数，这次连背景说明、分类标题等也一起计算。若超出总预算，就移除得分最低的可选内容，重新组装并计数，直到放得下；已经没有可移除内容却仍然超限时，抛出 `ContextBudgetExceeded`。`format_reserve_tokens` 只是提前留出的余量，不能代替最后这次检查。
+这里不是把 m0～m2 简单删掉：摘要器要保留其中的目标、约束、关键数字、修正和待办；原始消息也仍在消息表里。摘要只是另存一份更短、可在后续对话使用的历史说明。
 
-代码：`app/agent/context_engine/engine.py::ContextEngine._enrich_selected_sources()`、`_fit_compiled_budget()`；`app/agent/context_engine/compiler.py::ContextCompiler.compile()`、`_supplemental_message()`。
+再假设下次又增加两条同样大小的消息，近期窗口仍是 102：
 
-#### 功能 12：保存构建结果，交还主循环组装 Planner 输入
+```text
+已有摘要： v1 覆盖 0～2
+全部消息： m0 m1 m2 | m3 m4 m5 m6
+本次待处理：         m3 m4 m5 m6       # 只取覆盖位置之后的消息
+拆分结果： older = [m3, m4]   recent = [m5, m6]
+摘要输入： 旧摘要 v1 + 新增较早消息 m3、m4
+保存结果： 同一 summary_id，v2，覆盖 0～4，累计来源消息数 5
+返回候选： [summary v2, m5 原文, m6 原文]
+```
 
-上下文准备好后，`_build()` 创建 `ContextBuildTrace`，记录一共找到多少候选、选中了多少、用了多少 token、如何确定用户指代的对象、为什么保留或舍弃某些内容，以及是否更新摘要 `summary_updated`。`build()` 通过 `finish_build()` 更新 `context_build_runs`，再把 `CompiledContext` 返回 LoopController。
+这就是“增量”的意思：**旧摘要承接已经归纳过的部分，只把新移出近期窗口的消息合进去**。不是每轮把最早所有消息重新送进 LLM，也不是每轮创建一条独立摘要。数据库按用户和会话保存当前摘要；`save_summary()` 只允许更大的覆盖位置替换旧内容，避免较旧结果倒写覆盖进度。
 
-| 返回内容 | 下一步用途 |
-| --- | --- |
-| `messages` | 本轮整理好的模型消息，作为 Planner 输入的一部分；日常聊天回答使用这组消息。 |
-| `sections` | 将内容分成摘要、已知事实、附件等类别，方便生成事件中的上下文记录和展示。 |
-| `build_id`、`token_count`、`resolved_asset_ids` | 标识这次构建、记录大小及已解析附件。 |
-| `trace` | 解释这轮找了哪些来源、选入或舍弃了什么、是否更新摘要。 |
+##### 摘要文本到底怎样生成
 
-`context_build_runs` 中的处理记录不会复制全部候选正文，保存的查找计划也会去掉检索问题正文和模型额外生成的说明文字。但控制器另外生成的上下文事件可以包含最终整理好的消息，因此不能认为两个地方保存的内容相同。ContextEngine 的工作到这里结束，接着由 2.4 的 `_planner_input()` 把返回结果、工具执行记录和工具声明放在一起，再交给 PlanningAgent。
+`_update_summary()` 先取旧摘要正文，再按批次把新增 older 交给 `summarizer.summarize()`。每一批返回的新摘要成为下一批的 `previous_summary`，全部处理完才保存新的摘要记录和覆盖位置。
 
-最后，若运行在后续某轮才超预算，`finish_turn(status=budget_exceeded)` 会清除该会话已有摘要；下次读取 working 时已排除超预算 turn，可从有效历史重新形成摘要。原始聊天消息仍保留用于展示，不会因不参与上下文就从历史页面删除。
+默认 LLM 提示词要求保留目标、约束、指代对象、重要名称和数值，不新增历史中没有的事实；返回后还会按 `summary_max_tokens` 截断。这是提示词要求和长度控制，不是保证摘要绝无遗漏的验证器。若 LLM 不可用，固定规则会保留并截短原文；已有旧摘要时，旧摘要约分得可用正文空间的 45%，新历史分得其余空间。
 
-代码：`app/agent/context_engine/engine.py::ContextEngine._build()` ⑩⑪、`_trace_plan()`、`build()`；`app/repositories/context_repository.py::PostgresContextRepository.finish_build()`；`app/agent/loop_controller/controller.py::LoopController._build_context()`、`_planner_input()`；`app/repositories/conversation_repository.py::ConversationRepository.finish_turn()`；`app/agent/memory/types/working.py::WorkingMemory.load()`。
+长消息会先按 token 切块，再组成最多 `summary_batch_tokens` 的新增历史批次。注意，这个上限只约束新增历史部分；提示词和旧摘要还会占空间，所以不能把 6,000 理解成整次摘要调用的总输入上限。依据：`history.py::_summary_batches()`、`_update_summary()`；`summarizer.py`。
+
+##### 三种容易看错的现象
+
+- **有空间为什么还摘要？** 有的是“允许补充历史的空间”，不是“所有历史都放得下的空间”；102 的近期窗口仍装不下本例 200 的历史。
+- **进入了 `prepare()`，摘要表为什么为空？** 可能所有未覆盖消息都留在近期窗口，没有 `older`，也就不触发创建。仅剩一条超长消息时，算法仍把它留作 recent 候选，不会为了它单独生成 older。
+- **摘要表有了数据，为什么模型没带它？** `prepare()` 只准备候选，后面还要经过筛选，保存成功不等于本轮一定使用。这里先记住这个区别，筛选过程等读到时再展开。
+
+#### 到 `prepare()` 为止，我们得到了什么
+
+返回值 `PreparedHistory` 包含三部分：`items` 是摘要与近期原文组成的一组候选；`summary` 是已有或刚更新的摘要，没有时为 `None`；`summary_updated` 表示这次是否因存在 older 而执行过摘要更新。
+
+转换为候选时，摘要带上覆盖范围和版本；`_working_items()` 则保留原消息的角色、消息索引和来源，补上与当前查询的相关程度、新近程度等信息。这样后面的代码既知道它是什么内容，也知道它来自哪条消息，而不是只收到几段失去身份的字符串。依据：`app/agent/context_engine/history.py::ConversationHistoryManager.prepare()`、`_working_items()`。
+
+到这里可以把整段过程连起来：**有历史需求且有剩余空间 → 分出历史份额 → 读取摘要覆盖位置 → 拆出近期原文与较早消息 → 必要时合并并保存摘要 → 返回历史候选**。原始聊天记录没有因此被删除，候选也还没有全部变成最终模型输入。
+
+对照源码按这个顺序阅读：`app/agent/context_engine/engine.py::ContextEngine._build()` 中调用 `history.prepare()` 的部分 → `app/agent/context_engine/history.py::ConversationHistoryManager.prepare()` → `_split_recent()` → `_update_summary()`、`_summary_batches()` → `app/agent/context_engine/summarizer.py::LlmConversationSummarizer.summarize()` → `app/repositories/context_repository.py::PostgresContextRepository.save_summary()`。
+
+**本次讲解在这里结束。以下只保留后续标题，不继续展开。**
+
+#### 第九步：按计划查找其他背景，整理成同一类候选
+
+#### 第十步：合并、去重，再按预算选择或局部压缩
+
+#### 第十一步：补上来源，组装消息，再检查总大小
+
+#### 第十二步：保存本次处理记录，交还主循环
 
 ### 2.6 PlanningAgent 下一步规划
 
@@ -760,40 +794,17 @@ user：本轮原始问题 request.query
 
 ### 3.1 事件清单表
 
-> 事件名称说明某一步开始、完成、失败或正在重试：`.started` / `.completed` / `.failed` / `.retrying`。前端结合整次运行的结束事件判断展示状态，后端不在事件中重复增加 status 字段。
-
-
-| 事件                  | 发出位置 | 主要事件数据               | 前端如何展示                    | 对应的后续事件                         |
-| --------------------- | -------- | -------------------------- | ------------------------------- | -------------------------------------- |
-| run.started           |          |                            | 「开始执行」完成态              | run.completed/failed/timeout/cancelled |
-| context.started       |          |                            | 开始构建上下文（running→成功） | context.completed / context.failed     |
-| tool.progress         |          | custom_type + 内部图事件   | 工具进度（老图桥接）            | —                                     |
-| confirmation.required |          | confirmation_id / question | 等待用户确认（partial）         | confirmation.resolved                  |
-| run.result            |          | loop_result                | 最终回答                        | —                                     |
-
-<!-- 逐行补全全部事件类型；参考今日盘点：context.* 五连、planner.* 四连、action.committed、tool.started/progress/completed/failed、confirmation.*、run.* 六种 -->
-
 ### 3.2 SSE 事件推送与过程记录保存
-
-<!-- format_sse 帧结构、心跳（sse_heartbeat_seconds）、save_execution_trace、历史回放 toHistoricalStreamEvent -->
 
 ### 3.3 前端如何处理事件
 
-<!-- statusFromEventType / itemStatus 族内配对 / 按轮次分组（event.iteration）/ interrupted 判定 -->
-
 ## 4. 记忆系统
-
-<!-- 三类记忆、形成管线（formation_submitted）、embedding 配置（dashscope text-embedding-v3 / 维度自检） -->
 
 ## 5. 前端执行面板
 
 ## 6. 配置清单
 
-<!-- config.yaml 每一项：含义 + 哪段代码使用它（file:line）。查找调用位置后填入 -->
-
 ## 7. 测试地图
-
-<!-- 哪个测试文件守护哪条链路；184 通过 + 两个 D8 遗留失败文件 -->
 
 ---
 
@@ -801,18 +812,6 @@ user：本轮原始问题 request.query
 
 ## A. HarnessState 字段字典
 
-
-| 字段 | 含义 | 谁写 | 谁读 |
-| ---- | ---- | ---- | ---- |
-|      |      |      |      |
-
-## B. AgentState 字段字典（旧图）
-
-
-| 字段 | 含义 | 谁写 | 谁读 |
-| ---- | ---- | ---- | ---- |
-|      |      |      |      |
+## B. 当前主链使用的 AgentState 字段
 
 ## C. 疑点汇总
-
-<!-- 全文各章疑点清单的汇总索引；登记后转入 todolist 跟踪 -->

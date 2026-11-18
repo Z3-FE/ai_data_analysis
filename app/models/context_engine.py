@@ -15,7 +15,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base
+from app.models.base import Base, utcnow
 
 
 class ContextConversationSummaryModel(Base):
@@ -60,11 +60,11 @@ class ContextConversationSummaryModel(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     # 首次形成摘要的时间。
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=utcnow
     )
     # 最近一次扩展覆盖范围的时间。
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utcnow, onupdate=utcnow
     )
 
 
@@ -123,7 +123,7 @@ class ContextBuildRunModel(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 开始构建的时间。
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=utcnow
     )
     # 构建完成或失败的时间。
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

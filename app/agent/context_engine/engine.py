@@ -171,13 +171,14 @@ class ContextEngine:
         # 让 LLM 列出“这一轮需要召回哪些上下文”的计划
         plan = await self.planner.plan(request, working, resolution)
         print('上下文召回plan=================', plan)
-        # ④ 是否需要补充上下文 （进行摘要和压缩，或者更新摘要和压缩）
+        # ④ 是否需要补充上下文 （进行摘要或者更新摘要）
         candidate_budget = max(
             0,
             token_budget - base_tokens - self.policy.format_reserve_tokens,
         )
         history_result = None
-        if plan.include_working and candidate_budget > 0: # 如果<=0, 就是异常了，一个上下文计划都超出了预算
+        if plan.include_working and candidate_budget > 0:
+            #摘要
             history_result = await self.history.prepare(
                 user_id=request.user_id,
                 conversation_id=request.conversation_id,
@@ -256,6 +257,10 @@ class ContextEngine:
         resolution: ReferenceResolution,
     ) -> list[ContextItem]:
         """并行召回计划中的长期记忆、明确附件和可选 RAG。"""
+        # ① 按计划列出的记忆类型各发一次检索：只认 semantic/episodic/perceptual 三类，
+        #    WORKING 等其他类型直接跳过（会话历史已由 history.prepare() 单独整理）。
+        #    每类最多取 memory_recall_limit 条；只有感知记忆在已确定附件时才按附件 ID 收窄范围。
+        #    这里只是构造协程，尚未真正发出查询。
         memory_calls = [
             self.memory_reader.search(
                 memory_type=memory_type,
@@ -273,16 +278,24 @@ class ContextEngine:
             for memory_type in plan.memory_types
             if memory_type in self._kind_by_memory_type
         ]
+        # ② 几类记忆同时查询；计划里没有记忆类型时不调用 gather，结果为空列表。
         memory_groups = await asyncio.gather(*memory_calls) if memory_calls else []
+        # ③ 每条命中的记忆转成 ContextItem：检索得分作为相关度，并带上类型优先级；
+        #    记忆所属附件正是本轮已确定的附件时标为必带（required）。
         items = [
             self._memory_item(result, resolution)
             for group in memory_groups
             for result in group
         ]
+        # ④ 再同时读取附件正文和外部知识：附件只读 resolver 已校验过的 ID，正文为空则跳过，
+        #    读到的都标为必带；RAG 只有计划 use_rag 为真才查，否则返回空列表。
+        #    注意它和 ② 是先后两批，记忆查询结束后才开始这一批。
         assets, knowledge = await asyncio.gather(
             self._asset_items(request, resolution),
             self._knowledge_items(request, plan),
         )
+        # ⑤ 三类结果按“记忆 → 附件 → 知识”顺序拼成一个列表交回 _build()；
+        #    这里不去重、不按预算筛选，这两件事在 _build() ⑥⑦ 中处理。
         return [*items, *assets, *knowledge]
 
     def _memory_item(

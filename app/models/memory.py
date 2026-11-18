@@ -21,7 +21,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base
+from app.models.base import Base, utcnow
 
 
 class AgentMemoryModel(Base):
@@ -73,11 +73,11 @@ class AgentMemoryModel(Base):
     last_accessed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # 首次创建时间。
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=utcnow
     )
     # 最近一次内容或状态更新时间。
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utcnow, onupdate=utcnow
     )
 
 
@@ -109,7 +109,7 @@ class MemorySourceModel(Base):
     source_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # 该来源关联的创建时间。
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=utcnow
     )
 
 
@@ -165,11 +165,11 @@ class MemoryAssetModel(Base):
     )
     # 附件记录创建时间。
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=utcnow
     )
     # 附件记录最近更新时间。
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utcnow, onupdate=utcnow
     )
 
 
@@ -203,11 +203,11 @@ class MemoryGraphProjectionModel(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 图投影记录创建时间。
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=utcnow
     )
     # 图投影记录最近更新时间。
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utcnow, onupdate=utcnow
     )
 
 
@@ -245,11 +245,11 @@ class MemoryIndexJobModel(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 失败记录创建时间。
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=utcnow
     )
     # 失败记录最近更新时间。
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utcnow, onupdate=utcnow
     )
 
 
@@ -316,11 +316,11 @@ class MemoryFormationRunModel(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # 审计任务创建时间。
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=utcnow
     )
     # 审计任务最近更新时间。
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utcnow, onupdate=utcnow
     )
 
 

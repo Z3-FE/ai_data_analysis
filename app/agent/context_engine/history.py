@@ -120,17 +120,25 @@ class ConversationHistoryManager:
         self, records: list[MemoryRecord], token_budget: int
     ) -> tuple[list[MemoryRecord], list[MemoryRecord]]:
         """从后向前选择可放入窗口的完整消息，至少保留最近一条。"""
+        # ① 没有未被摘要覆盖的消息时，近期窗口和待摘要部分都为空。
         if not records:
             return [], []
         selected: list[MemoryRecord] = []
         used = 0
+        # ② 从最新一条往前看，越新的消息越先占用近期窗口的预算。
         for record in reversed(records):
+            # ③ 按正文计算 token，再加 6 个 token，粗略算上角色标签、消息分隔等格式开销。
             tokens = self.token_counter.count_text(record.content) + 6
+            # ④ 已经放进至少一条后，下一条放不下就停止，不跳过它去放更早的短消息。
+            #    这样窗口里始终是连续的最近若干条，前后对话不会断开。
+            #    第一条不检查预算：最新一条即使超出预算也保留，交给后面的 Selector 截短。
             if selected and used + tokens > token_budget:
                 break
             selected.append(record)
             used += tokens
+        # ⑤ 倒序收集的结果翻转回时间正序，方便后续按对话顺序展示。
         selected.reverse()
+        # ⑥ 窗口之前的消息都算“较早消息”，交给 _update_summary() 合并进摘要。
         split_at = len(records) - len(selected)
         return selected, records[:split_at]
 

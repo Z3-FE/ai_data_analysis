@@ -72,6 +72,9 @@ class FakeConversationRepository:
         self.turns.append(values)
         return True
 
+    async def get_active_run_id(self, **values) -> str | None:
+        return None
+
     async def finish_turn(self, **values) -> bool:
         self.finished.append(values)
         return True
@@ -526,6 +529,48 @@ class HarnessApiTest(unittest.TestCase):
             "stream_operation_failed",
         )
         self.assertNotIn("internal failure details", response.text)
+        self.assertEqual(len(self.conversation.turns), 1)
+        self.assertEqual(len(self.conversation.finished), 1)
+        self.assertEqual(
+            self.conversation.finished[0]["turn_id"],
+            self.conversation.turns[0]["turn_id"],
+        )
+        self.assertEqual(self.conversation.finished[0]["status"], "failed")
+        self.assertEqual(self.run_store.states, {})
+        self.assertEqual(self.llm.prompts, [])
+
+    def test_stream_busy_conversation_returns_conflict_before_starting_run(self) -> None:
+        with (
+            patch.object(
+                self.conversation,
+                "start_turn",
+                new=AsyncMock(side_effect=ValueError("当前会话已有未完成的 Harness 运行")),
+            ) as start_turn,
+            patch("app.api.routers.harness._build_controller") as build_controller,
+            patch(
+                "app.api.routers.harness._finish_unhandled_start_failure",
+                new_callable=AsyncMock,
+            ) as cleanup,
+        ):
+            response = self.client.post(
+                "/api/harness/run/stream",
+                json={
+                    "input_text": "新问题",
+                    "user_id": "user-1",
+                    "conversation_id": "busy-conversation",
+                },
+            )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(
+            response.json(), {"detail": "当前会话已有未完成的 Harness 运行"}
+        )
+        start_turn.assert_awaited_once()
+        build_controller.assert_not_called()
+        cleanup.assert_not_awaited()
+        self.assertEqual(self.run_store.states, {})
+        self.assertEqual(self.conversation.finished, [])
+        self.assertEqual(self.llm.prompts, [])
 
     def test_resume_passes_free_text_confirmation_to_next_planner(self) -> None:
         paused = self.post_run(

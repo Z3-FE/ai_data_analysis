@@ -19,7 +19,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.models.base import Base
+from app.models.base import Base, utcnow
 
 
 class HarnessRunModel(Base):
@@ -66,11 +66,11 @@ class HarnessRunModel(Base):
     state_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     # 创建时间。
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=utcnow
     )
     # 最近一次状态更新时间。
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utcnow, onupdate=utcnow
     )
 
 
@@ -106,11 +106,11 @@ class HarnessActionModel(Base):
     commit_stage: Mapped[str] = mapped_column(String(32), nullable=False)
     # 创建时间。
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=utcnow
     )
     # 最近一次阶段更新时间。
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utcnow, onupdate=utcnow
     )
 
 
@@ -167,7 +167,7 @@ class HarnessConfirmationModel(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     # 请求准备时间。
     prepared_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=utcnow
     )
     # 请求对前端可见时间。
     published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -218,7 +218,7 @@ class HarnessArtifactModel(Base):
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     # 创建时间。
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=utcnow
     )
     # 过期时间；到期后由治理任务删除或归档。
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
@@ -269,11 +269,11 @@ class HarnessFinalizationModel(Base):
     last_error: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # 创建时间。
     created_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow
+        DateTime, nullable=False, default=utcnow
     )
     # 最近一次阶段更新时间。
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime, nullable=False, default=utcnow, onupdate=utcnow
     )
 
 
