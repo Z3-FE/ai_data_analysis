@@ -1,0 +1,126 @@
+name: ai_data_analysis
+
+services:
+  # MySQL：同时承担业务数仓 dw 和元数据库 meta。
+  # dw 保存事实表、维度表；meta 保存表、字段、指标、关系等语义元数据。
+  mysql:
+    image: mysql:8.0
+    container_name: ai_data_analysis_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: "123456"
+      TZ: Asia/Shanghai
+    ports:
+      - "3309:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/init:/docker-entrypoint-initdb.d:ro
+      - ./mysql/data:/import-data:ro
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --local-infile=1
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p123456"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # Elasticsearch：全文检索服务。
+  # 使用 8.19.10 并安装 IK 中文分词插件，用于索引维度字段真实取值。
+  elasticsearch:
+    build: ./elasticsearch
+    container_name: ai_data_analysis_elasticsearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+      TZ: Asia/Shanghai
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", 'curl -fsS "http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s" || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 40s
+
+  # Kibana：Elasticsearch 的管理和调试界面。
+  # 用于查看索引、调试查询 DSL、验证维度值检索效果。
+  kibana:
+    image: kibana:8.19.10
+    container_name: ai_data_analysis_kibana
+    restart: unless-stopped
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      TZ: Asia/Shanghai
+    ports:
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # Qdrant：向量数据库。
+  # 用来存储字段说明、指标说明、业务术语等文本的 embedding 向量，支持语义相似度检索。
+  qdrant:
+    image: qdrant/qdrant:v1.16
+    container_name: ai_data_analysis_qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  # Neo4j：Semantic Memory 的实体和关系投影；当前使用原生 Cypher 即可。
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: ai_data_analysis_neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-password}
+      TZ: Asia/Shanghai
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "cypher-shell -a bolt://localhost:7687 -u ${NEO4J_USER:-neo4j} -p ${NEO4J_PASSWORD:-password} 'RETURN 1' >/dev/null || exit 1",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 40s
+
+  # Embedding：Text Embeddings Inference 服务。
+  # 加载本地挂载的 BAAI/bge-large-zh-v1.5 模型，把文本转换成向量。
+  embedding:
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
+    platform: linux/amd64
+    container_name: ai_data_analysis_embedding
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    environment:
+      MODEL_ID: /models/bge-large-zh-v1.5
+      MAX_CONCURRENT_REQUESTS: "4"
+      MAX_BATCH_TOKENS: "2048"
+      TZ: Asia/Shanghai
+    volumes:
+      - ./embedding/bge-large-zh-v1.5:/models/bge-large-zh-v1.5:ro
+
+volumes:
+  mysql_data:
+  es_data:
+  qdrant_data:
+  neo4j_data:
+  neo4j_logs:
