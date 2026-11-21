@@ -163,3 +163,7 @@ ALTER TABLE stg_sellers
 
 ALTER TABLE stg_product_category_translation
   ADD INDEX idx_stg_category_translation_name (product_category_name);
+
+-- 导入完成并建立索引后更新统计信息，避免后续构建事实表时选择全表扫描的低效执行计划。
+ANALYZE TABLE stg_customers, stg_orders, stg_order_items, stg_order_payments,
+  stg_order_reviews, stg_products, stg_sellers, stg_product_category_translation;

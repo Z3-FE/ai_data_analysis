@@ -39,7 +39,8 @@ mysql:
 postgres:
   # Agent 平台会话历史和 LangGraph Checkpointer 使用 PostgreSQL；分析数据仍在 MySQL。
   host: 127.0.0.1
-  port: 5432
+  # 本项目 PostgreSQL 映射到宿主机 5433，避免与其他 backend 项目的 5432 冲突。
+  port: 5433
   user: ${oc.env:POSTGRES_USER,z523}
   password: ${oc.env:POSTGRES_PASSWORD,""}
   database: agent_app

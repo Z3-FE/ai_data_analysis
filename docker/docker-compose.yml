@@ -1,6 +1,40 @@
 name: ai_data_analysis
 
 services:
+  # 项目管理容器：只作为 Docker Desktop 中本项目的统一入口。
+  # 前端和后端仍按项目原方式在宿主机运行，不在这个容器里重复启动。
+  project-manager:
+    image: alpine:3.20
+    container_name: ai_data_analysis
+    restart: unless-stopped
+    working_dir: /workspace
+    command: ["sh", "-c", "trap : TERM INT; sleep infinity & wait"]
+    volumes:
+      - ..:/workspace
+
+  # PostgreSQL：保存 Agent 会话历史、记忆和运行记录。
+  # 本地开发使用 trust 认证，与 config.yaml 中默认的 z523/空密码保持一致。
+  postgres:
+    image: postgres:16
+    container_name: ai_data_analysis_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: z523
+      POSTGRES_DB: agent_app
+      POSTGRES_HOST_AUTH_METHOD: trust
+      TZ: Asia/Shanghai
+    ports:
+      # 宿主机 5432 已被另一个 backend 项目占用；容器内部仍是 PostgreSQL 默认 5432。
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U z523 -d agent_app"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
   # MySQL：同时承担业务数仓 dw 和元数据库 meta。
   # dw 保存事实表、维度表；meta 保存表、字段、指标、关系等语义元数据。
   mysql:
@@ -101,24 +135,24 @@ services:
       retries: 20
       start_period: 40s
 
-  # Embedding：Text Embeddings Inference 服务。
-  # 加载本地挂载的 BAAI/bge-large-zh-v1.5 模型，把文本转换成向量。
-  embedding:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
-    platform: linux/amd64
-    container_name: ai_data_analysis_embedding
-    restart: unless-stopped
-    ports:
-      - "8081:80"
-    environment:
-      MODEL_ID: /models/bge-large-zh-v1.5
-      MAX_CONCURRENT_REQUESTS: "4"
-      MAX_BATCH_TOKENS: "2048"
-      TZ: Asia/Shanghai
-    volumes:
-      - ./embedding/bge-large-zh-v1.5:/models/bge-large-zh-v1.5:ro
+  # Embedding：当前使用硅基流动 API，暂不启动本地 Embedding 容器。
+  # embedding:
+  #   image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.8
+  #   platform: linux/amd64
+  #   container_name: ai_data_analysis_embedding
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8081:80"
+  #   environment:
+  #     MODEL_ID: /models/bge-large-zh-v1.5
+  #     MAX_CONCURRENT_REQUESTS: "4"
+  #     MAX_BATCH_TOKENS: "2048"
+  #     TZ: Asia/Shanghai
+  #   volumes:
+  #     - ./embedding/bge-large-zh-v1.5:/models/bge-large-zh-v1.5:ro
 
 volumes:
+  postgres_data:
   mysql_data:
   es_data:
   qdrant_data:

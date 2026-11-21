@@ -419,11 +419,11 @@ SELECT
   oi.price,
   oi.freight_value
 FROM stg_order_items AS oi
-JOIN stg_orders AS o ON oi.order_id = o.order_id
-JOIN dim_customer AS c ON o.customer_id = c.customer_id
-JOIN dim_product AS p ON oi.product_id = p.product_id
-JOIN dim_seller AS s ON oi.seller_id = s.seller_id
-JOIN dim_order_status AS os ON o.order_status = os.order_status;
+STRAIGHT_JOIN stg_orders AS o ON oi.order_id = o.order_id
+STRAIGHT_JOIN dim_customer AS c ON o.customer_id = c.customer_id
+STRAIGHT_JOIN dim_product AS p ON oi.product_id = p.product_id
+STRAIGHT_JOIN dim_seller AS s ON oi.seller_id = s.seller_id
+STRAIGHT_JOIN dim_order_status AS os ON o.order_status = os.order_status;
 
 CREATE TABLE fact_payment (
   payment_key BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '支付事实代理键',
